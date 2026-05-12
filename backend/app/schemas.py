@@ -102,6 +102,7 @@ class TranscriptionInDBBase(TranscriptionBase):
     processing_error: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    chord_chart_data: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -111,9 +112,11 @@ class TranscriptionInDB(TranscriptionInDBBase):
     chords_data: Optional[str] = None
     tablature_data: Optional[str] = None
     notation_data: Optional[str] = None
+    chord_chart_data: Optional[str] = None
 
 class Transcription(TranscriptionInDBBase):
     notes_data: Optional[str] = None
     chords_data: Optional[str] = None
     tablature_data: Optional[str] = None
     notation_data: Optional[str] = None
+    chord_chart_data: Optional[str] = None

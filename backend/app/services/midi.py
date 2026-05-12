@@ -9,6 +9,13 @@ from pathlib import Path
 import tempfile
 from typing import Dict, Any, Optional
 
+# Optional: music21 for MusicXML conversion
+try:
+    from music21 import converter, midi, xml
+    MUSIC21_AVAILABLE = True
+except ImportError:
+    MUSIC21_AVAILABLE = False
+
 
 def notes_to_midi(notes_data: Dict[str, Any], output_path: Optional[str] = None,
                   ticks_per_beat: int = 480, tempo_bpm: Optional[float] = None) -> str:
@@ -219,3 +226,30 @@ def midi_to_notes(midi_file_path: str) -> Dict[str, Any]:
         "model_outputs": {},
         "total_notes_detected": len(notes)
     }
+
+
+def midi_to_musicxml(midi_file_path: str) -> str:
+    """
+    Convert a MIDI file to MusicXML string using music21.
+
+    Args:
+        midi_file_path: Path to the MIDI file.
+
+    Returns:
+        MusicXML string representation of the MIDI file.
+
+    Raises:
+        ImportError: If music21 is not installed.
+        ValueError: If the MIDI file is invalid or conversion fails.
+    """
+    if not MUSIC21_AVAILABLE:
+        raise ImportError("music21 is not installed. Install it with 'pip install music21'")
+
+    try:
+        # Parse the MIDI file
+        midi_score = converter.parse(midi_file_path)
+        # Write MusicXML to a string
+        musicxml_string = midi_score.write('musicxml')
+        return musicxml_string
+    except Exception as e:
+        raise ValueError(f"Failed to convert MIDI to MusicXML: {e}")

@@ -63,4 +63,5 @@ class Transcription(Base):
     notes_data = Column(Text, nullable=True)  # JSON string of detected notes
     chords_data = Column(Text, nullable=True)  # JSON string of detected chords
     tablature_data = Column(Text, nullable=True)  # JSON string of generated tablature
-    notation_data = Column(Text, nullable=True)  # JSON string of standard notation
+    notation_data = Column(Text, nullable=True)  # MusicXML string of standard notation
+    chord_chart_data = Column(Text, nullable=True)  # SVG string of chord chart

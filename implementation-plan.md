@@ -29,8 +29,8 @@
 ## Phase 2: Basic Transcription Output & Storage
 - [x] Convert pitch detection output to MIDI notes (using music21 or mido)
 - [x] Generate guitar tablature from MIDI notes (fret position mapping)
-- [ ] Create standard music notation from MIDI (using music21 or VexFlow backend)
-- [ ] Generate chord charts from detected chords
+- [x] Create standard music notation from MIDI (using music21 or VexFlow backend)
+- [x] Generate chord charts from detected chords
 - [x] Implement export as MIDI file
 - [ ] Implement export as MusicXML file (using music21)
 - [ ] Implement export as plain text guitar tabs

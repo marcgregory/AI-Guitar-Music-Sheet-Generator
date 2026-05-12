@@ -5,6 +5,7 @@ from app import db, models
 from app.services import audio
 from app.services import midi
 from app.services import tablature
+from app.services import chord_chart
 import json
 import os
 from pathlib import Path
@@ -110,6 +111,14 @@ def process_audio_transcription(self, transcription_id: int):
                     settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
                 )
                 transcription.midi_file_path = midi_file_path
+                # Generate MusicXML from the MIDI file
+                try:
+                    musicxml_string = midi.midi_to_musicxml(midi_file_path)
+                    transcription.notation_data = musicxml_string
+                except Exception as xml_e:
+                    # Log the error but don't fail the pitch detection step
+                    print(f"Failed to generate MusicXML for transcription {transcription.id}: {str(xml_e)}")
+                    # Leave notation_data as None
             except Exception as midi_e:
                 # Log the error but don't fail the pitch detection step
                 # We'll just leave midi_file_path as None
@@ -221,6 +230,19 @@ def process_audio_transcription(self, transcription_id: int):
             transcription.chords_data = json.dumps(chord_result)
             db_session.add(transcription)
             db_session.commit()
+
+            # Generate chord charts from the detected chords
+            try:
+                chord_chart_json = chord_chart.chord_data_to_chord_chart_json(
+                    transcription.chords_data
+                )
+                transcription.chord_chart_data = chord_chart_json
+                db_session.add(transcription)
+                db_session.commit()
+            except Exception as chart_e:
+                # Log the error but don't fail the chord detection step
+                print(f"Failed to generate chord charts for transcription {transcription.id}: {str(chart_e)}")
+                # Leave chord_chart_data as None
         except Exception as e:
             # If chord detection fails, we'll continue without setting chord data
             self.update_state(state="PROGRESS", meta={"step": "chord_recognition_failed"})
