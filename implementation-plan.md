@@ -32,7 +32,7 @@
 - [x] Create standard music notation from MIDI (using music21 or VexFlow backend)
 - [x] Generate chord charts from detected chords
 - [x] Implement export as MIDI file
-- [ ] Implement export as MusicXML file (using music21)
+- [x] Implement export as MusicXML file (using music21)
 - [ ] Implement export as plain text guitar tabs
 - [ ] Store transcription results in database linked to user/project
 - [ ] Create API endpoints to retrieve transcription data

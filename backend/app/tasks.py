@@ -261,8 +261,6 @@ def process_audio_transcription(self, transcription_id: int):
         # Placeholder results for other data types - will be replaced with actual processing in subsequent tasks
         # Note: We don't overwrite notes_data, detected_tempo, or detected_key as they have been set by implemented steps
         # We also don't overwrite chords_data as it was set in the chord detection step
-        transcription.tablature_data = json.dumps({"placeholder": "tablature_data"})
-        transcription.notation_data = json.dumps({"placeholder": "notation_data"})
 
         db_session.add(transcription)
         db_session.commit()

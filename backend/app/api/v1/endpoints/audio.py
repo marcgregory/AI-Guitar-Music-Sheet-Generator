@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import os
@@ -403,4 +403,73 @@ async def get_transcription_midi(
         path=transcription.midi_file_path,
         media_type='audio/midi',
         filename=f"transcription_{transcription_id}.mid"
+    )
+
+
+@router.get("/{transcription_id}/musicxml")
+async def get_transcription_musicxml(
+    transcription_id: int,
+    db_session: Session = Depends(db.get_db),
+    current_user: schemas.User = Depends(get_current_user)
+):
+    """
+    Get the MusicXML file for a completed transcription.
+    """
+    # Get the transcription record
+    transcription = db_session.query(models.Transcription).filter(
+        models.Transcription.id == transcription_id
+    ).first()
+
+    if not transcription:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transcription not found"
+        )
+
+    # Check if the user owns this transcription (or has access via project)
+    if transcription.user_id != current_user.id:
+        # Check if it's in a project the user owns
+        if transcription.project_id:
+            project = db_session.query(models.Project).filter(
+                models.Project.id == transcription.project_id
+            ).first()
+            if not project or project.owner_id != current_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to access this transcription"
+                )
+        else:
+            # Not in a project and not owned by user
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this transcription"
+            )
+
+    # Check if processing is complete
+    if not transcription.is_processed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transcription is still processing"
+        )
+
+    if transcription.processing_error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Transcription failed: {transcription.processing_error}"
+        )
+
+    # Check if MusicXML data exists
+    if not transcription.notation_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="MusicXML data not available"
+        )
+
+    # Return the MusicXML data as a string with the appropriate media type
+    return Response(
+        content=transcription.notation_data,
+        media_type='application/xml',
+        headers={
+            "Content-Disposition": f"attachment; filename=transcription_{transcription_id}.musicxml"
+        }
     )
