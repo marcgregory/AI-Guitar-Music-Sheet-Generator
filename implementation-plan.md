@@ -34,9 +34,9 @@
 - [x] Implement export as MIDI file
 - [x] Implement export as MusicXML file (using music21)
 - [x] Implement export as plain text guitar tabs
-- [ ] Store transcription results in database linked to user/project
-- [ ] Create API endpoints to retrieve transcription data
-- [ ] Implement automatic cleanup of temporary audio files after processing
+- [x] Store transcription results in database linked to user/project
+- [x] Create API endpoints to retrieve transcription data
+- [x] Implement automatic cleanup of temporary audio files after processing
 
 ## Phase 3: Frontend - Basic Interface
 - [ ] Create login/logout/register pages

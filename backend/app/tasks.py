@@ -8,6 +8,7 @@ from app.services import tablature
 from app.services import chord_chart
 import json
 import os
+import shutil
 from pathlib import Path
 from sqlalchemy.orm import Session
 from typing import Dict, Any
@@ -82,10 +83,19 @@ def process_audio_transcription(self, transcription_id: int):
         self.update_state(state="PROGRESS", meta={"step": "source_separation"})
 
         # Separate audio sources to isolate guitar
+        # Create a temporary directory for source separation
+        sep_temp_dir = tempfile.mkdtemp()
         try:
-            separated_path = audio.separate_sources(preprocessed_path)
-            # Update transcription record with separated audio file path
-            transcription.separated_audio_file_path = separated_path
+            separated_path = audio.separate_sources(preprocessed_path, sep_temp_dir)
+            # Copy the separated audio file to a permanent location in uploads directory
+            uploads_dir = Path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads")
+            sep_upload_dir = uploads_dir / "separated"
+            sep_upload_dir.mkdir(parents=True, exist_ok=True)
+            separated_filename = Path(separated_path).name
+            permanent_separated_path = sep_upload_dir / separated_filename
+            shutil.copy2(separated_path, permanent_separated_path)
+            # Update transcription record with the permanent file path
+            transcription.separated_audio_file_path = str(permanent_separated_path)
             db_session.add(transcription)
             db_session.commit()
         except Exception as e:
@@ -94,13 +104,18 @@ def process_audio_transcription(self, transcription_id: int):
             self.update_state(state="PROGRESS", meta={"step": "source_separation_failed"})
             # We'll still continue processing with the preprocessed audio
             separated_path = preprocessed_path
+        finally:
+            # Clean up the temporary directory
+            shutil.rmtree(sep_temp_dir)
 
         # Update task state
         self.update_state(state="PROGRESS", meta={"step": "pitch_detection"})
 
         # Detect pitch (notes) from the separated audio
+        # Create a temporary directory for pitch detection output
+        pitch_temp_dir = tempfile.mkdtemp()
         try:
-            pitch_result = audio.detect_pitch(separated_path)
+            pitch_result = audio.detect_pitch(separated_path, pitch_temp_dir)
             # Update transcription record with pitch data
             transcription.notes_data = json.dumps(pitch_result)
             # Generate MIDI file from the pitch data
@@ -148,6 +163,9 @@ def process_audio_transcription(self, transcription_id: int):
             transcription.notes_data = json.dumps({"notes": [], "error": str(e)})
             db_session.add(transcription)
             db_session.commit()
+        finally:
+            # Clean up the temporary directory
+            shutil.rmtree(pitch_temp_dir)
 
         # Update task state
         self.update_state(state="PROGRESS", meta={"step": "beat_tempo_detection"})
@@ -213,6 +231,11 @@ def process_audio_transcription(self, transcription_id: int):
 
             # Update transcription record with enhanced notes data
             transcription.notes_data = json.dumps(enhanced_notes_data)
+
+            # Store audio duration
+            if rhythm_result.get("total_duration") is not None:
+                transcription.duration = int(round(rhythm_result["total_duration"]))
+
             db_session.add(transcription)
             db_session.commit()
         except Exception as e:

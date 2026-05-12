@@ -199,6 +199,7 @@ async def extract_audio_from_youtube(
     db_transcription = models.Transcription(
         title=title,
         audio_file_path=str(audio_file_path),
+        youtube_url=youtube_url,
         user_id=current_user.id,
         project_id=project_id,
         is_processed=False
