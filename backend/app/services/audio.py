@@ -121,11 +121,106 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
 
 def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
     """
-    Detect pitch (notes) from audio using Spotify Basic Pitch.
+    Detect pitch (notes) from audio using Spotify Basic Pitch with CREPE as fallback.
 
     Args:
         input_file_path: Path to the input audio file.
-        output_dir: Directory to save the Basic Pitch output. If None,
+        output_dir: Directory to save the output. If None,
+                   we will create a temporary directory.
+
+    Returns:
+        Dictionary containing note data with onset, offset, pitch, velocity, and confidence.
+    """
+    input_path = Path(input_file_path)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
+
+    # Determine output directory
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp()
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # First, try Basic Pitch
+    try:
+        # Run Basic Pitch to detect pitches
+        # Using basic-pitch command line interface
+        cmd = [
+            "basic-pitch",
+            input_file_path,
+            str(output_path)
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            # Basic Pitch outputs a MIDI file and a JSON file
+            # Look for the JSON output which contains the note data
+            input_stem = input_path.stem
+            json_path = output_path / f"{input_stem}_basic_pitch_output.json"
+
+            # If the exact filename pattern doesn't match, look for any JSON file
+            if not json_path.exists():
+                json_files = list(output_path.glob("*.json"))
+                if not json_files:
+                    raise FileNotFoundError("Could not find Basic Pitch JSON output")
+                json_path = json_files[0]
+
+            # Load the JSON data
+            with open(json_path, 'r') as f:
+                pitch_data = json.load(f)
+
+            # Basic Pitch output format typically includes:
+            # {
+            #   "notes": [
+            #     {
+            #       "onset": float,  # onset time in seconds
+            #       "offset": float, # offset time in seconds
+            #       "pitch": int,    # MIDI pitch number (0-127)
+            #       "velocity": int  # MIDI velocity (0-127)
+            #       # Confidence might be in a separate field or derived
+            #     }
+            #   ],
+            #   "model_outputs": {...}  # Additional model outputs
+            # }
+
+            # Extract and format note data for storage
+            formatted_notes = []
+            if "notes" in pitch_data:
+                for note in pitch_data["notes"]:
+                    formatted_note = {
+                        "onset": round(note.get("onset", 0), 3),
+                        "offset": round(note.get("offset", 0), 3),
+                        "pitch": note.get("pitch", 0),
+                        "velocity": note.get("velocity", 64),
+                        "confidence": round(note.get("confidence", 0.8), 3)  # Default confidence if not provided
+                    }
+                    formatted_notes.append(formatted_note)
+
+            return {
+                "notes": formatted_notes,
+                "model_outputs": pitch_data.get("model_outputs", {}),
+                "total_notes_detected": len(formatted_notes)
+            }
+        else:
+            # Basic Pitch failed, fall back to CREPE
+            raise RuntimeError(f"Basic Pitch failed: {result.stderr}")
+    except Exception as e:
+        # If Basic Pitch fails, try CREPE
+        try:
+            return _detect_pitch_crepe(input_file_path, output_dir)
+        except Exception as crepe_e:
+            # If both fail, raise an error
+            raise RuntimeError(f"Failed to detect pitch with both Basic Pitch and CREPE. Basic Pitch error: {str(e)}. CREPE error: {str(crepe_e)}")
+
+
+def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
+    """
+    Detect pitch (notes) from audio using CREPE as a fallback.
+
+    Args:
+        input_file_path: Path to the input audio file.
+        output_dir: Directory to save the CREPE output. If None,
                    we will create a temporary directory.
 
     Returns:
@@ -142,72 +237,94 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
     output_path.mkdir(parents=True, exist_ok=True)
 
     try:
-        # Run Basic Pitch to detect pitches
-        # Using basic-pitch command line interface
-        cmd = [
-            "basic-pitch",
-            input_file_path,
-            str(output_path)
-        ]
+        # Run CREPE to detect pitches
+        # Using CREPE command line interface (if available) or Python API
+        # We'll use the Python API for more control
+        import crepe
+        import numpy as np
+        from scipy.signal import medfilt
+        from scipy.interpolate import interp1d
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Load the audio file
+        sr = 16000  # CREPE expects 16kHz audio
+        audio, _ = librosa.load(input_file_path, sr=sr, mono=True)
 
-        if result.returncode != 0:
-            # If basic-pitch is not available or fails, we'll raise an error
-            # In a production environment, we might want to fall back to another method
-            raise RuntimeError(f"Basic Pitch failed: {result.stderr}")
+        # Run CREPE
+        time, frequency, confidence, activation = crepe.predict(
+            audio, sr, viterbi=True, step_size=10
+        )
 
-        # Basic Pitch outputs a MIDI file and a JSON file
-        # Look for the JSON output which contains the note data
-        input_stem = input_path.stem
-        json_path = output_path / f"{input_stem}_basic_pitch_output.json"
+        # Filter out low-confidence predictions
+        # We'll use a confidence threshold of 0.5
+        confidence_threshold = 0.5
+        valid = confidence > confidence_threshold
+        time = time[valid]
+        frequency = frequency[valid]
+        confidence = confidence[valid]
 
-        # If the exact filename pattern doesn't match, look for any JSON file
-        if not json_path.exists():
-            json_files = list(output_path.glob("*.json"))
-            if not json_files:
-                raise FileNotFoundError("Could not find Basic Pitch JSON output")
-            json_path = json_files[0]
+        # Convert frequency to MIDI note number
+        # MIDI note = 69 + 12 * log2(frequency / 440)
+        midi_notes = 69 + 12 * np.log2(frequency / 440.0)
+        # Round to the nearest MIDI note
+        midi_notes = np.round(midi_notes).astype(int)
+        # Ensure MIDI notes are within valid range (0-127)
+        midi_notes = np.clip(midi_notes, 0, 127)
 
-        # Load the JSON data
-        with open(json_path, 'r') as f:
-            pitch_data = json.load(f)
+        # Convert to note events (onset, offset, pitch, velocity)
+        # We'll assume each detected pitch is a note with a fixed duration (e.g., 0.1 seconds)
+        # or we can group consecutive same pitches.
+        # For simplicity, we'll create a note for each time step with a small duration.
+        # However, a better approach is to group consecutive same pitches.
 
-        # Basic Pitch output format typically includes:
-        # {
-        #   "notes": [
-        #     {
-        #       "onset": float,  # onset time in seconds
-        #       "offset": float, # offset time in seconds
-        #       "pitch": int,    # MIDI pitch number (0-127)
-        #       "velocity": int  # MIDI velocity (0-127)
-        #       # Confidence might be in a separate field or derived
-        #     }
-        #   ],
-        #   "model_outputs": {...}  # Additional model outputs
-        # }
+        # Group consecutive same pitches
+        if len(midi_notes) == 0:
+            notes = []
+        else:
+            notes = []
+            current_pitch = midi_notes[0]
+            start_time = time[0]
+            current_confidence = confidence[0]
 
-        # Extract and format note data for storage
-        formatted_notes = []
-        if "notes" in pitch_data:
-            for note in pitch_data["notes"]:
-                formatted_note = {
-                    "onset": round(note.get("onset", 0), 3),
-                    "offset": round(note.get("offset", 0), 3),
-                    "pitch": note.get("pitch", 0),
-                    "velocity": note.get("velocity", 64),
-                    "confidence": round(note.get("confidence", 0.8), 3)  # Default confidence if not provided
-                }
-                formatted_notes.append(formatted_note)
+            for i in range(1, len(midi_notes)):
+                if midi_notes[i] != current_pitch or i == len(midi_notes) - 1:
+                    # End of current note
+                    end_time = time[i]
+                    # If this is the last element and it's the same pitch, we need to adjust
+                    if i == len(midi_notes) - 1 and midi_notes[i] == current_pitch:
+                        end_time = time[i] + (time[1] - time[0])  # Assume one more step
+                    notes.append({
+                        "onset": round(start_time, 3),
+                        "offset": round(end_time, 3),
+                        "pitch": int(current_pitch),
+                        "velocity": 64,  # Default velocity
+                        "confidence": round(float(np.mean(confidence[start_i:i])), 3) if 'start_i' in locals() else round(float(current_confidence), 3)
+                    })
+                    if i < len(midi_notes):
+                        current_pitch = midi_notes[i]
+                        start_time = time[i]
+                        start_i = i
+                        current_confidence = confidence[i]
+                # else: continue the current note
+
+            # Handle the last note if the loop ended without adding it
+            if len(notes) == 0 or notes[-1]["offset"] != time[-1]:
+                # Add the last note
+                notes.append({
+                    "onset": round(start_time, 3),
+                    "offset": round(time[-1] + (time[1] - time[0]), 3),
+                    "pitch": int(current_pitch),
+                    "velocity": 64,
+                    "confidence": round(float(np.mean(confidence[start_i:])), 3) if 'start_i' in locals() else round(float(current_confidence), 3)
+                })
 
         return {
-            "notes": formatted_notes,
-            "model_outputs": pitch_data.get("model_outputs", {}),
-            "total_notes_detected": len(formatted_notes)
+            "notes": notes,
+            "model_outputs": {},  # CREPE doesn't provide the same model outputs as Basic Pitch
+            "total_notes_detected": len(notes)
         }
 
     except Exception as e:
-        raise RuntimeError(f"Failed to detect pitch: {str(e)}")
+        raise RuntimeError(f"CREPE pitch detection failed: {str(e)}")
 
 
 def detect_beat_and_tempo(input_file_path: str) -> dict:
@@ -218,7 +335,7 @@ def detect_beat_and_tempo(input_file_path: str) -> dict:
         input_file_path: Path to the input audio file.
 
     Returns:
-        Dictionary containing tempo (BPM) and beat frames/times.
+        Dictionary containing tempo (BPM), confidence, and beat frames/times.
     """
     input_path = Path(input_file_path)
     if not input_path.exists():
@@ -234,9 +351,25 @@ def detect_beat_and_tempo(input_file_path: str) -> dict:
         # Convert beat frames to time
         beat_times = librosa.frames_to_time(beat_frames, sr=sr)
 
-        # Return tempo and beat information
+        # Calculate tempo confidence based on consistency of beat intervals
+        tempo_confidence = 0
+        if len(beat_frames) > 1:
+            # Calculate intervals between beats
+            beat_intervals = np.diff(beat_frames)
+            # Convert to time intervals
+            time_intervals = np.diff(beat_times)
+            if len(time_intervals) > 0:
+                # Calculate coefficient of variation (std/mean) - lower is more consistent
+                mean_interval = np.mean(time_intervals)
+                if mean_interval > 0:
+                    cv = np.std(time_intervals) / mean_interval
+                    # Convert to confidence (0-100), where lower CV means higher confidence
+                    tempo_confidence = max(0, min(100, (1 - cv) * 100))
+
+        # Return tempo and beat information with confidence
         return {
             "tempo": float(tempo),  # Tempo in BPM
+            "tempo_confidence": int(tempo_confidence),  # Confidence percentage (0-100)
             "beat_frames": beat_frames.tolist(),  # Beat frame indices
             "beat_times": beat_times.tolist(),    # Beat times in seconds
             "beat_count": len(beat_frames)
@@ -254,7 +387,7 @@ def detect_key(input_file_path: str) -> dict:
         input_file_path: Path to the input audio file.
 
     Returns:
-        Dictionary containing key information (key name, scale, strength).
+        Dictionary containing key information (key name, scale, confidence).
     """
     input_path = Path(input_file_path)
     if not input_path.exists():
@@ -313,20 +446,23 @@ def detect_key(input_file_path: str) -> dict:
         if major_best_corr >= minor_best_corr:
             key_name = key_names[major_best_idx]
             scale = "major"
-            strength = float(major_best_corr)
+            confidence = float(major_best_corr)
         else:
             key_name = key_names[minor_best_idx]
             scale = "minor"
-            strength = float(minor_best_corr)
+            confidence = float(minor_best_corr)
 
         # Format key as "C major", "A minor", etc.
         key_string = f"{key_name} {scale}"
+
+        # Convert confidence to percentage (0-100)
+        confidence_percent = int(confidence * 100)
 
         return {
             "key": key_string,
             "key_name": key_name,
             "scale": scale,
-            "strength": strength,
+            "confidence": confidence_percent,
             "all_major_correlations": {key_names[i]: float(major_correlations[i]) for i in range(12)},
             "all_minor_correlations": {key_names[i]: float(minor_correlations[i]) for i in range(12)}
         }
@@ -464,12 +600,20 @@ def detect_chords(input_file_path: str) -> dict:
             chord_templates[key] = chord_templates[key] / np.linalg.norm(chord_templates[key])
 
         # For each time frame, compute the similarity to each chord template
-        chord_probs = np.zeros((chroma.shape[1], len(chord_names)))
-        for i, (chord_name, template) in enumerate(chord_templates.items()):
-            # Compute cosine similarity between chroma vector and template for each frame
-            # We'll normalize the chroma frame to unit vector for cosine similarity
-            chroma_norm = chroma[:, i] / np.linalg.norm(chroma[:, i]) if np.linalg.norm(chroma[:, i]) > 0 else chroma[:, i]
-            chord_probs[:, i] = np.dot(chroma_norm, template)
+        # Reshape chroma to (n_frames, 12) for easier computation
+        chroma_frames = chroma.T  # Shape: (n_frames, 12)
+
+        # Normalize each chroma frame to unit vector
+        chroma_norms = np.linalg.norm(chroma_frames, axis=1, keepdims=True)
+        # Avoid division by zero
+        chroma_norms = np.where(chroma_norms == 0, 1, chroma_norms)
+        chroma_frames_normalized = chroma_frames / chroma_norms  # Shape: (n_frames, 12)
+
+        # Stack all chord templates into a matrix (12, n_templates)
+        template_matrix = np.column_stack(list(chord_templates.values()))  # Shape: (12, n_templates)
+
+        # Compute similarity: (n_frames, 12) @ (12, n_templates) = (n_frames, n_templates)
+        chord_probs = chroma_frames_normalized @ template_matrix
 
         # For each frame, pick the chord with the highest similarity (if above a threshold)
         # We'll set a threshold of 0.3 (can be adjusted)
@@ -489,26 +633,31 @@ def detect_chords(input_file_path: str) -> dict:
         if len(chord_seq) > 0:
             current_chord = chord_seq[0]
             start_time = times[0]
+            start_idx = 0  # Start index of the current chord segment
             for i in range(1, len(chord_seq)):
                 if chord_seq[i] != current_chord:
                     # End of current chord segment
                     end_time = times[i]
+                    # Calculate average confidence for this segment
+                    segment_confidence = np.mean(chord_max_values[start_idx:i])
                     chords.append({
                         "chord": current_chord,
                         "onset": round(start_time, 3),
                         "offset": round(end_time, 3),
-                        "confidence": round(float(np.mean(chord_max_values[start_i:i])), 3) if 'start_i' in locals() else 0.5
+                        "confidence": round(float(segment_confidence), 3)
                     })
                     current_chord = chord_seq[i]
                     start_time = times[i]
-                    start_i = i
+                    start_idx = i
             # Add the last chord
             end_time = times[-1]
+            # Calculate average confidence for the last segment
+            segment_confidence = np.mean(chord_max_values[start_idx:])
             chords.append({
                 "chord": current_chord,
                 "onset": round(start_time, 3),
                 "offset": round(end_time, 3),
-                "confidence": round(float(np.mean(chord_max_values[start_i:])), 3) if 'start_i' in locals() else 0.5
+                "confidence": round(float(segment_confidence), 3)
             })
 
         return {

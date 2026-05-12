@@ -73,10 +73,13 @@ class TranscriptionBase(BaseModel):
     audio_file_path: Optional[str] = None
     preprocessed_audio_file_path: Optional[str] = None
     separated_audio_file_path: Optional[str] = None
+    midi_file_path: Optional[str] = None
     youtube_url: Optional[str] = None
     duration: Optional[int] = None
     detected_tempo: Optional[int] = None
+    tempo_confidence: Optional[int] = None
     detected_key: Optional[str] = None
+    key_confidence: Optional[int] = None
 
 class TranscriptionCreate(TranscriptionBase):
     project_id: int

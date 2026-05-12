@@ -41,10 +41,13 @@ class Transcription(Base):
     audio_file_path = Column(String, nullable=True)
     preprocessed_audio_file_path = Column(String, nullable=True)
     separated_audio_file_path = Column(String, nullable=True)
+    midi_file_path = Column(String, nullable=True)  # Path to generated MIDI file
     youtube_url = Column(String, nullable=True)
     duration = Column(Integer, nullable=True)  # in seconds
     detected_tempo = Column(Integer, nullable=True)  # BPM
+    tempo_confidence = Column(Integer, nullable=True)  # Confidence percentage (0-100)
     detected_key = Column(String, nullable=True)
+    key_confidence = Column(Integer, nullable=True)  # Confidence percentage (0-100)
     user_id = Column(Integer, ForeignKey("users.id"))
     project_id = Column(Integer, ForeignKey("projects.id"))
     is_processed = Column(Boolean, default=False)

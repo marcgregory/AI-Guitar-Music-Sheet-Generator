@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import os
 import uuid
@@ -336,3 +337,70 @@ async def get_transcription_result(
 
     # Return the transcription data
     return transcription
+
+
+@router.get("/{transcription_id}/midi")
+async def get_transcription_midi(
+    transcription_id: int,
+    db_session: Session = Depends(db.get_db),
+    current_user: schemas.User = Depends(get_current_user)
+):
+    """
+    Get the MIDI file for a completed transcription.
+    """
+    # Get the transcription record
+    transcription = db_session.query(models.Transcription).filter(
+        models.Transcription.id == transcription_id
+    ).first()
+
+    if not transcription:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transcription not found"
+        )
+
+    # Check if the user owns this transcription (or has access via project)
+    if transcription.user_id != current_user.id:
+        # Check if it's in a project the user owns
+        if transcription.project_id:
+            project = db_session.query(models.Project).filter(
+                models.Project.id == transcription.project_id
+            ).first()
+            if not project or project.owner_id != current_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to access this transcription"
+                )
+        else:
+            # Not in a project and not owned by user
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this transcription"
+            )
+
+    # Check if processing is complete
+    if not transcription.is_processed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transcription is still processing"
+        )
+
+    if transcription.processing_error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Transcription failed: {transcription.processing_error}"
+        )
+
+    # Check if MIDI file exists
+    if not transcription.midi_file_path or not os.path.exists(transcription.midi_file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="MIDI file not available"
+        )
+
+    # Return the MIDI file
+    return FileResponse(
+        path=transcription.midi_file_path,
+        media_type='audio/midi',
+        filename=f"transcription_{transcription_id}.mid"
+    )

@@ -13,8 +13,9 @@ librosa==0.10.1
 # essentia==2.1b6
 demucs==4.0.3
 # spotipy==2.22.1
-# crepe==0.0.9
+crepe==0.0.9
 basic-pitch==1.0.7
+mido==1.2.0
 # music21==8.0.0
 # weasyprint==61.2
 yt-dlp==2024.5.1

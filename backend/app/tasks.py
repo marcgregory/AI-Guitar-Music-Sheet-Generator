@@ -3,6 +3,8 @@ from app.celery import celery_app
 from app.core.config import settings
 from app import db, models
 from app.services import audio
+from app.services import midi
+from app.services import tablature
 import json
 import os
 from pathlib import Path
@@ -100,6 +102,34 @@ def process_audio_transcription(self, transcription_id: int):
             pitch_result = audio.detect_pitch(separated_path)
             # Update transcription record with pitch data
             transcription.notes_data = json.dumps(pitch_result)
+            # Generate MIDI file from the pitch data
+            try:
+                midi_file_path = midi.save_midi_from_transcription(
+                    transcription.notes_data,
+                    transcription.id,
+                    settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
+                )
+                transcription.midi_file_path = midi_file_path
+            except Exception as midi_e:
+                # Log the error but don't fail the pitch detection step
+                # We'll just leave midi_file_path as None
+                print(f"Failed to generate MIDI for transcription {transcription.id}: {str(midi_e)}")
+            # Generate tablature from the pitch data
+            try:
+                tab_file_path = tablature.save_tablature_from_transcription(
+                    transcription.notes_data,
+                    transcription.id,
+                    settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
+                )
+                # We are storing the tablature data in the database field, not the file path
+                # But we can also store the file path if we want. However, the model has a tablature_data field for JSON.
+                # Let's generate the tablature data and store it in the tablature_data field.
+                tablature_data = tablature.notes_to_tablature(transcription.notes_data)
+                transcription.tablature_data = json.dumps(tablature_data)
+            except Exception as tab_e:
+                # Log the error but don't fail the pitch detection step
+                print(f"Failed to generate tablature for transcription {transcription.id}: {str(tab_e)}")
+                # Leave tablature_data as None
             db_session.add(transcription)
             db_session.commit()
         except Exception as e:
@@ -118,6 +148,7 @@ def process_audio_transcription(self, transcription_id: int):
             beat_result = audio.detect_beat_and_tempo(separated_path)
             # Update transcription record with tempo data
             transcription.detected_tempo = int(round(beat_result["tempo"]))
+            transcription.tempo_confidence = beat_result.get("tempo_confidence", 0)
             db_session.add(transcription)
             db_session.commit()
         except Exception as e:
@@ -133,6 +164,7 @@ def process_audio_transcription(self, transcription_id: int):
             key_result = audio.detect_key(separated_path)
             # Update transcription record with key data
             transcription.detected_key = key_result["key"]
+            transcription.key_confidence = key_result.get("key_confidence", 0)
             db_session.add(transcription)
             db_session.commit()
         except Exception as e:

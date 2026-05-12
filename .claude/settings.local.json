@@ -15,7 +15,11 @@
       "Bash(curl *)",
       "Bash(docker-compose restart *)",
       "Bash(docker-compose run *)",
-      "Bash(docker-compose build *)"
+      "Bash(docker-compose build *)",
+      "WebSearch",
+      "PowerShell(pip install *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }
