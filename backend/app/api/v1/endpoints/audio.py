@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Body, UploadFile, File
 import json
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -6,13 +6,19 @@ import os
 import uuid
 from pathlib import Path
 import yt_dlp
+from pydantic import BaseModel
 
-from .... import db, core
+from .... import db, core, models
 from ....core.security import get_current_user
-from .. import schemas, models
+from .. import schemas
 from ....services import audio
 from ....services.tablature import tablature_to_ascii_tab
 from ....app import celery_app
+
+# Schema for YouTube URL request
+class YouTubeUploadRequest(BaseModel):
+    youtube_url: str
+    project_id: int = None
 
 router = APIRouter()
 
@@ -114,14 +120,16 @@ async def upload_audio_file(
 
 @router.post("/youtube", response_model=schemas.TranscriptionInDB)
 async def extract_audio_from_youtube(
-    youtube_url: str,
-    project_id: int = None,
+    request: YouTubeUploadRequest,
     db_session: Session = Depends(db.get_db),
     current_user: schemas.User = Depends(get_current_user)
 ):
     """
     Extract audio from a YouTube URL and save it for transcription.
     """
+    youtube_url = request.youtube_url
+    project_id = request.project_id
+
     # Validate the YouTube URL (basic validation)
     if not youtube_url.strip():
         raise HTTPException(

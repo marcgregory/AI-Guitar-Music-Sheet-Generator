@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { useAuth } from './AuthContext';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from "react";
+import { useAuth } from "./AuthContext";
+import { useNavigate } from "react-router-dom";
+import { useTheme } from "../ThemeProvider";
 
 interface Project {
   id: number;
@@ -8,9 +9,9 @@ interface Project {
   description: string;
   createdAt: string;
   audioFileName: string;
-  status: 'processing' | 'completed' | 'failed';
+  status: "processing" | "completed" | "failed";
   duration: number; // in seconds
-  difficulty: 'beginner' | 'intermediate' | 'advanced';
+  difficulty: "beginner" | "intermediate" | "advanced";
 }
 
 const Dashboard: React.FC = () => {
@@ -19,18 +20,18 @@ const Dashboard: React.FC = () => {
   const { toggleDarkMode, isDarkMode } = useTheme();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
 
   const handleLogout = () => {
     logout();
-    navigate('/login');
+    navigate("/login");
   };
 
   const handleNewTranscription = () => {
-    navigate('/upload');
+    navigate("/upload");
   };
 
-  const handleViewModeChange = (mode: 'grid' | 'list') => {
+  const handleViewModeChange = (mode: "grid" | "list") => {
     setViewMode(mode);
   };
 
@@ -39,56 +40,59 @@ const Dashboard: React.FC = () => {
     const loadProjects = async () => {
       try {
         // Simulate API call
-        await new Promise(resolve => setTimeout(resolve, 800));
+        await new Promise((resolve) => setTimeout(resolve, 800));
 
         // Mock data with rich details
         const mockProjects: Project[] = [
           {
             id: 1,
             title: "Hotel California - Eagles",
-            description: "Classic rock song with iconic guitar solo and complex chord progression",
+            description:
+              "Classic rock song with iconic guitar solo and complex chord progression",
             createdAt: "2026-05-10T14:30:00Z",
             audioFileName: "hotel_california.mp3",
             status: "completed",
             duration: 391,
-            difficulty: "advanced"
+            difficulty: "advanced",
           },
           {
             id: 2,
             title: "Stairway to Heaven - Led Zeppelin",
-            description: "Legendary progressive rock anthem with intricate fingerpicking",
+            description:
+              "Legendary progressive rock anthem with intricate fingerpicking",
             createdAt: "2026-05-09T09:15:00Z",
             audioFileName: "stairway_to_heaven.wav",
             status: "completed",
             duration: 482,
-            difficulty: "advanced"
+            difficulty: "advanced",
           },
           {
             id: 3,
             title: "Wonderwall - Oasis",
-            description: "Popular acoustic track with memorable strumming pattern",
+            description:
+              "Popular acoustic track with memorable strumming pattern",
             createdAt: "2026-05-08T16:45:00Z",
             audioFileName: "wonderwall.mp3",
             status: "completed",
             duration: 258,
-            difficulty: "intermediate"
+            difficulty: "intermediate",
           },
           {
             id: 4,
             title: "New Project",
-            description="Recently uploaded audio file awaiting processing",
+            description: "Recently uploaded audio file awaiting processing",
             createdAt: new Date().toISOString(),
             audioFileName: "unknown.mp3",
             status: "processing",
             duration: 0,
-            difficulty: "beginner"
-          }
+            difficulty: "beginner",
+          },
         ];
 
         setProjects(mockProjects);
         setLoading(false);
       } catch (error) {
-        console.error('Failed to load projects:', error);
+        console.error("Failed to load projects:", error);
         setLoading(false);
       }
     };
@@ -97,35 +101,35 @@ const Dashboard: React.FC = () => {
   }, []);
 
   if (!user) {
-    navigate('/login');
+    navigate("/login");
     return null;
   }
 
   // Generate a gradient based on project status
   const getStatusGradient = (status: string) => {
     switch (status) {
-      case 'completed':
-        return 'linear-gradient(135deg, #10b981, #059669)';
-      case 'processing':
-        return 'linear-gradient(135deg, #f59e0b, #d97706)';
-      case 'failed':
-        return 'linear-gradient(135deg, #ef4444, #dc2626)';
+      case "completed":
+        return "linear-gradient(135deg, #10b981, #059669)";
+      case "processing":
+        return "linear-gradient(135deg, #f59e0b, #d97706)";
+      case "failed":
+        return "linear-gradient(135deg, #ef4444, #dc2626)";
       default:
-        return 'linear-gradient(135deg, #6b7280, #4b5563)';
+        return "linear-gradient(135deg, #6b7280, #4b5563)";
     }
   };
 
   // Get difficulty color
   const getDifficultyColor = (difficulty: string) => {
     switch (difficulty) {
-      case 'beginner':
-        return '#10b981';
-      case 'intermediate':
-        return '#f59e0b';
-      case 'advanced':
-        return '#ef4444';
+      case "beginner":
+        return "#10b981";
+      case "intermediate":
+        return "#f59e0b";
+      case "advanced":
+        return "#ef4444";
       default:
-        return '#6b7280';
+        return "#6b7280";
     }
   };
 
@@ -144,16 +148,17 @@ const Dashboard: React.FC = () => {
               MusicSheet Generator
             </h1>
             <p className="dashboard-subtitle">
-              Welcome back, {user.username}! Transform audio into guitar tabs with AI
+              Welcome back, {user.username}! Transform audio into guitar tabs
+              with AI
             </p>
           </div>
           <div className="dashboard-header-actions">
             <button
               onClick={handleViewModeChange}
-              className={`view-mode-button ${viewMode === 'list' ? 'active' : ''}`}
-              title={viewMode === 'grid' ? 'List View' : 'Grid View'}
+              className={`view-mode-button ${viewMode === "list" ? "active" : ""}`}
+              title={viewMode === "grid" ? "List View" : "Grid View"}
             >
-              {viewMode === 'grid' ? '📊' : '🧱'}
+              {viewMode === "grid" ? "📊" : "🧱"}
             </button>
             <button
               onClick={handleNewTranscription}
@@ -162,10 +167,7 @@ const Dashboard: React.FC = () => {
               <span className="button-icon">✨</span>
               <span>New Transcription</span>
             </button>
-            <button
-              onClick={handleLogout}
-              className="logout-button"
-            >
+            <button onClick={handleLogout} className="logout-button">
               <span className="button-icon">🚪</span>
               <span>Logout</span>
             </button>
@@ -174,7 +176,7 @@ const Dashboard: React.FC = () => {
               className="theme-toggle-button"
               title="Toggle Dark/Light Mode"
             >
-              <span className="button-icon">{isDarkMode ? '☀️' : '🌙'}</span>
+              <span className="button-icon">{isDarkMode ? "☀️" : "🌙"}</span>
             </button>
           </div>
         </header>
@@ -192,14 +194,18 @@ const Dashboard: React.FC = () => {
             <div className="stat-card">
               <div className="stat-icon">✅</div>
               <div className="stat-content">
-                <h3 className="stat-value">{projects.filter(p => p.status === 'completed').length}</h3>
+                <h3 className="stat-value">
+                  {projects.filter((p) => p.status === "completed").length}
+                </h3>
                 <p className="stat-label">Completed</p>
               </div>
             </div>
             <div className="stat-card">
               <div className="stat-icon">⏳</div>
               <div className="stat-content">
-                <h3 className="stat-value">{projects.filter(p => p.status === 'processing').length}</h3>
+                <h3 className="stat-value">
+                  {projects.filter((p) => p.status === "processing").length}
+                </h3>
                 <p className="stat-label">Processing</p>
               </div>
             </div>
@@ -207,7 +213,10 @@ const Dashboard: React.FC = () => {
               <div className="stat-icon">⏱️</div>
               <div className="stat-content">
                 <h3 className="stat-value">
-                  {Math.floor(projects.reduce((sum, p) => sum + p.duration, 0) / 60)}h
+                  {Math.floor(
+                    projects.reduce((sum, p) => sum + p.duration, 0) / 60,
+                  )}
+                  h
                 </h3>
                 <p className="stat-label">Total Time</p>
               </div>
@@ -224,14 +233,17 @@ const Dashboard: React.FC = () => {
             {loading ? (
               <div className="loading-state">
                 <div className="loading-spinner"></div>
-                <p className="loading-text">Loading your musical creations...</p>
+                <p className="loading-text">
+                  Loading your musical creations...
+                </p>
               </div>
             ) : projects.length === 0 ? (
               <div className="empty-state">
                 <div className="empty-state-icon">🎧</div>
                 <h3 className="empty-state-title">No projects yet</h3>
                 <p className="empty-state-description">
-                  Your first transcription awaits. Upload an audio file to begin your journey.
+                  Your first transcription awaits. Upload an audio file to begin
+                  your journey.
                 </p>
                 <button
                   onClick={handleNewTranscription}
@@ -242,17 +254,21 @@ const Dashboard: React.FC = () => {
               </div>
             ) : (
               <div className={`projects-container ${viewMode}`}>
-                {viewMode === 'grid' ? (
+                {viewMode === "grid" ? (
                   <div className="projects-grid">
-                    {projects.map(project => (
+                    {projects.map((project) => (
                       <div
                         key={project.id}
                         className={`project-card project-card-${project.status}`}
                         onDoubleClick={() => navigate(`/project/${project.id}`)}
                       >
                         <div className="project-card-header">
-                          <div className="project-status-badge"
-                               style={{ background: getStatusGradient(project.status) }}>
+                          <div
+                            className="project-status-badge"
+                            style={{
+                              background: getStatusGradient(project.status),
+                            }}
+                          >
                             {project.status.toUpperCase()}
                           </div>
                           <h3 className="project-title">{project.title}</h3>
@@ -270,14 +286,17 @@ const Dashboard: React.FC = () => {
                             </div>
                             <div className="meta-item">
                               <span className="meta-icon">⏱️</span>
-                  <span>
-                    {Math.floor(project.duration / 60)}:{String(project.duration % 60).padStart(2, '0')}
-                  </span>
+                              <span>
+                                {Math.floor(project.duration / 60)}:
+                                {String(project.duration % 60).padStart(2, "0")}
+                              </span>
                             </div>
                             <div className="meta-item">
                               <span className="meta-icon">📅</span>
                               <span>
-                                {new Date(project.createdAt).toLocaleDateString()}
+                                {new Date(
+                                  project.createdAt,
+                                ).toLocaleDateString()}
                               </span>
                             </div>
                           </div>
@@ -286,13 +305,14 @@ const Dashboard: React.FC = () => {
                             <span
                               className="difficulty-tag"
                               style={{
-                                backgroundColor: getDifficultyColor(project.difficulty) + '20',
-                                color: getDifficultyColor(project.difficulty)
+                                backgroundColor:
+                                  getDifficultyColor(project.difficulty) + "20",
+                                color: getDifficultyColor(project.difficulty),
                               }}
                             >
                               {project.difficulty.toUpperCase()}
                             </span>
-                            {project.status === 'completed' && (
+                            {project.status === "completed" && (
                               <span className="quality-badge">HD Quality</span>
                             )}
                           </div>
@@ -306,43 +326,51 @@ const Dashboard: React.FC = () => {
                             <span className="button-icon">👁️</span>
                             <span>View Details</span>
                           </button>
-                          {project.status === 'completed' && (
+                          {project.status === "completed" && (
                             <>
                               <button
-                                onClick={() => alert('Export functionality coming soon!')}
+                                onClick={() =>
+                                  alert("Export functionality coming soon!")
+                                }
                                 className="action-button export-button"
                               >
                                 <span className="button-icon">📥</span>
                                 <span>Export</span>
                               </button>
                               <button
-                                onClick={() => alert('Share functionality coming soon!')}
+                                onClick={() =>
+                                  alert("Share functionality coming soon!")
+                                }
                                 className="action-button share-button"
                               >
                                 <span className="button-icon">🔗</span>
                                 <span>Share</span>
                               </button>
                             </>
-                          }
+                          )}
                         </div>
                       </div>
                     ))}
                   </div>
                 ) : (
                   <div className="projects-list">
-                    {projects.map(project => (
+                    {projects.map((project) => (
                       <div
                         key={project.id}
                         className={`project-list-item project-list-item-${project.status}`}
                       >
                         <div className="project-list-content">
                           <div className="project-list-header">
-                            <h3 className="project-list-title">{project.title}</h3>
-                            <div className="project-list-status"
-                                 style={{
-                                   background: getStatusGradient(project.status),
-                                   color: 'white'
-                                 }}>
+                            <h3 className="project-list-title">
+                              {project.title}
+                            </h3>
+                            <div
+                              className="project-list-status"
+                              style={{
+                                background: getStatusGradient(project.status),
+                                color: "white",
+                              }}
+                            >
                               {project.status.toUpperCase()}
                             </div>
                           </div>
@@ -355,21 +383,31 @@ const Dashboard: React.FC = () => {
                             <div className="project-list-info">
                               <div className="info-row">
                                 <span className="info-label">File:</span>
-                                <span className="info-value">{project.audioFileName}</span>
+                                <span className="info-value">
+                                  {project.audioFileName}
+                                </span>
                               </div>
                               <div className="info-row">
                                 <span className="info-label">Duration:</span>
                                 <span className="info-value">
-                                  {Math.floor(project.duration / 60)}:{String(project.duration % 60).padStart(2, '0')}
+                                  {Math.floor(project.duration / 60)}:
+                                  {String(project.duration % 60).padStart(
+                                    2,
+                                    "0",
+                                  )}
                                 </span>
                               </div>
                               <div className="info-row">
                                 <span className="info-label">Difficulty:</span>
-                                <span className="info-value"
-                                    style={{
-                                      color: getDifficultyColor(project.difficulty),
-                                      fontWeight: '600'
-                                    }}>
+                                <span
+                                  className="info-value"
+                                  style={{
+                                    color: getDifficultyColor(
+                                      project.difficulty,
+                                    ),
+                                    fontWeight: "600",
+                                  }}
+                                >
                                   {project.difficulty.toUpperCase()}
                                 </span>
                               </div>
@@ -390,9 +428,9 @@ const Dashboard: React.FC = () => {
                           >
                             View Details
                           </button>
-                          {project.status === 'completed' && (
+                          {project.status === "completed" && (
                             <button
-                              onClick={() => alert('Export coming soon!')}
+                              onClick={() => alert("Export coming soon!")}
                               className="action-button list-action-button export-button"
                             >
                               Export
@@ -426,7 +464,7 @@ const Dashboard: React.FC = () => {
               </button>
 
               <button
-                onClick={() => alert('Recording feature coming soon!')}
+                onClick={() => alert("Recording feature coming soon!")}
                 className="quick-action-button"
               >
                 <div className="quick-action-icon">🎤</div>
@@ -437,7 +475,7 @@ const Dashboard: React.FC = () => {
               </button>
 
               <button
-                onClick={() => alert('Batch processing coming soon!')}
+                onClick={() => alert("Batch processing coming soon!")}
                 className="quick-action-button"
               >
                 <div className="quick-action-icon">📦</div>
@@ -448,7 +486,7 @@ const Dashboard: React.FC = () => {
               </button>
 
               <button
-                onClick={() => alert('Template library coming soon!')}
+                onClick={() => alert("Template library coming soon!")}
                 className="quick-action-button"
               >
                 <div className="quick-action-icon">📋</div>

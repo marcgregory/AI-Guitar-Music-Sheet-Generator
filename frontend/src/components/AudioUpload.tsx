@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
-import audioService from '../services/audioService';
-import { useNavigate } from 'react-router-dom';
+import React, { useState } from "react";
+import audioService from "../services/audioService";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "./auth/AuthContext";
 
 const AudioUpload: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'file' | 'youtube'>('file');
+  const { token } = useAuth();
+  const [activeTab, setActiveTab] = useState<"file" | "youtube">("file");
   const [file, setFile] = useState<File | null>(null);
-  const [youtubeUrl, setYoutubeUrl] = useState<string>('');
+  const [youtubeUrl, setYoutubeUrl] = useState<string>("");
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
@@ -25,32 +27,32 @@ const AudioUpload: React.FC = () => {
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    e.currentTarget.classList.add('dragover');
+    e.currentTarget.classList.add("dragover");
   };
 
   // Handle drag leave
   const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    e.currentTarget.classList.remove('dragover');
+    e.currentTarget.classList.remove("dragover");
   };
 
   // Handle drop
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    e.currentTarget.classList.remove('dragover');
+    e.currentTarget.classList.remove("dragover");
 
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const droppedFile = e.dataTransfer.files[0];
       // Validate file type
-      const fileExtension = `.${droppedFile.name.split('.').pop().toLowerCase()}`;
-      if (['.mp3', '.wav'].includes(fileExtension)) {
+      const fileExtension = `.${droppedFile.name.split(".").pop().toLowerCase()}`;
+      if ([".mp3", ".wav"].includes(fileExtension)) {
         setFile(droppedFile);
         setError(null);
         setSuccess(null);
       } else {
-        setError('Only MP3 and WAV files are allowed');
+        setError("Only MP3 and WAV files are allowed");
         setFile(null);
       }
     }
@@ -59,7 +61,12 @@ const AudioUpload: React.FC = () => {
   // Handle file upload
   const handleFileUpload = async () => {
     if (!file) {
-      setError('Please select a file to upload');
+      setError("Please select a file to upload");
+      return;
+    }
+
+    if (!token) {
+      setError("Authentication error. Please log in again.");
       return;
     }
 
@@ -67,27 +74,33 @@ const AudioUpload: React.FC = () => {
     setError(null);
     setSuccess(null);
 
+    let progressInterval: NodeJS.Timeout | null = null;
+
     try {
       // Simulate upload progress (in a real app, you'd use axios progress events)
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => Math.min(prev + 10, 90));
+      progressInterval = setInterval(() => {
+        setUploadProgress((prev) => Math.min(prev + 10, 90));
       }, 100);
 
-      const response = await audioService.uploadAudioFile(file);
+      const response = await audioService.uploadAudioFile(file, token);
 
-      clearInterval(progressInterval);
+      if (progressInterval) clearInterval(progressInterval);
       setUploadProgress(100);
 
-      setSuccess(`File uploaded successfully! Transcription ID: ${response.id}`);
+      setSuccess(
+        `File uploaded successfully! Transcription ID: ${response.id}`,
+      );
 
       // Navigate to transcription result page after a short delay
       setTimeout(() => {
         navigate(`/transcription/${response.id}`);
       }, 1500);
     } catch (err: any) {
-      clearInterval(progressInterval);
+      if (progressInterval) clearInterval(progressInterval);
       setUploadProgress(0);
-      setError(err.response?.data?.detail || 'Upload failed. Please try again.');
+      setError(
+        err.response?.data?.detail || "Upload failed. Please try again.",
+      );
     } finally {
       setIsUploading(false);
     }
@@ -96,14 +109,19 @@ const AudioUpload: React.FC = () => {
   // Handle YouTube URL submission
   const handleYoutubeSubmit = async () => {
     if (!youtubeUrl.trim()) {
-      setError('Please enter a YouTube URL');
+      setError("Please enter a YouTube URL");
+      return;
+    }
+
+    if (!token) {
+      setError("Authentication error. Please log in again.");
       return;
     }
 
     // Basic YouTube URL validation
     const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
     if (!youtubeRegex.test(youtubeUrl)) {
-      setError('Please enter a valid YouTube URL');
+      setError("Please enter a valid YouTube URL");
       return;
     }
 
@@ -111,27 +129,37 @@ const AudioUpload: React.FC = () => {
     setError(null);
     setSuccess(null);
 
+    let progressInterval: NodeJS.Timeout | null = null;
+
     try {
       // Simulate upload progress
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => Math.min(prev + 10, 90));
+      progressInterval = setInterval(() => {
+        setUploadProgress((prev) => Math.min(prev + 10, 90));
       }, 100);
 
-      const response = await audioService.extractAudioFromYouTube(youtubeUrl);
+      const response = await audioService.extractAudioFromYouTube(
+        youtubeUrl,
+        token,
+      );
 
-      clearInterval(progressInterval);
+      if (progressInterval) clearInterval(progressInterval);
       setUploadProgress(100);
 
-      setSuccess(`YouTube audio extracted successfully! Transcription ID: ${response.id}`);
+      setSuccess(
+        `YouTube audio extracted successfully! Transcription ID: ${response.id}`,
+      );
 
       // Navigate to transcription result page after a short delay
       setTimeout(() => {
         navigate(`/transcription/${response.id}`);
       }, 1500);
     } catch (err: any) {
-      clearInterval(progressInterval);
+      if (progressInterval) clearInterval(progressInterval);
       setUploadProgress(0);
-      setError(err.response?.data?.detail || 'Failed to extract audio from YouTube. Please try again.');
+      setError(
+        err.response?.data?.detail ||
+          "Failed to extract audio from YouTube. Please try again.",
+      );
     } finally {
       setIsUploading(false);
     }
@@ -140,7 +168,7 @@ const AudioUpload: React.FC = () => {
   // Reset form
   const resetForm = () => {
     setFile(null);
-    setYoutubeUrl('');
+    setYoutubeUrl("");
     setUploadProgress(0);
     setError(null);
     setSuccess(null);
@@ -155,22 +183,23 @@ const AudioUpload: React.FC = () => {
 
       <div className="audio-upload-tabs">
         <button
-          className={`tab-button ${activeTab === 'file' ? 'active' : ''}`}
-          onClick={() => setActiveTab('file')}
+          className={`tab-button ${activeTab === "file" ? "active" : ""}`}
+          onClick={() => setActiveTab("file")}
         >
           File Upload
         </button>
         <button
-          className={`tab-button ${activeTab === 'youtube' ? 'active' : ''}`}
-          onClick={() => setActiveTab('youtube')}
+          className={`tab-button ${activeTab === "youtube" ? "active" : ""}`}
+          onClick={() => setActiveTab("youtube")}
         >
           YouTube URL
         </button>
       </div>
 
-      {activeTab === 'file' ? (
+      {activeTab === "file" ? (
         <div className="file-upload-section">
-          <div className="file-upload-area"
+          <div
+            className="file-upload-area"
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
@@ -180,7 +209,7 @@ const AudioUpload: React.FC = () => {
             <p className="file-upload-text">or</p>
             <button
               className="browse-button"
-              onClick={() => document.getElementById('file-input')?.click()}
+              onClick={() => document.getElementById("file-input")?.click()}
             >
               Browse Files
             </button>
@@ -188,7 +217,7 @@ const AudioUpload: React.FC = () => {
               type="file"
               id="file-input"
               accept=".mp3,.wav"
-              style={{ display: 'none' }}
+              style={{ display: "none" }}
               onChange={handleFileChange}
             />
             <p className="file-limits">
@@ -263,11 +292,7 @@ const AudioUpload: React.FC = () => {
         </div>
       )}
 
-      {error && (
-        <div className="alert alert-error">
-          {error}
-        </div>
-      )}
+      {error && <div className="alert alert-error">{error}</div>}
 
       {success && (
         <div className="alert alert-success">
@@ -287,7 +312,10 @@ const AudioUpload: React.FC = () => {
       {isUploading && uploadProgress > 0 && uploadProgress < 100 && (
         <div className="upload-progress">
           <div className="progress-bar">
-            <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
+            <div
+              className="progress-fill"
+              style={{ width: `${uploadProgress}%` }}
+            ></div>
           </div>
           <p className="progress-text">{uploadProgress}%</p>
         </div>

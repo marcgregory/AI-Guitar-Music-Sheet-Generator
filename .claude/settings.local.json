@@ -58,7 +58,11 @@
       "PowerShell(python -c \"import sys; print\\(sys.path\\); import psycopg_binary; print\\('psycopg_binary imported'\\)\")",
       "PowerShell(python -c \"import psycopg; print\\('psycopg imported successfully'\\); print\\(psycopg.__version__\\)\")",
       "PowerShell(python -c \"import psycopg; print\\('psycopg version:', psycopg.__version__\\)\")",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(docker version *)",
+      "PowerShell(Start-Service *)",
+      "PowerShell(Start-Process \"C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe\")",
+      "PowerShell(Start-Sleep -s 10)"
     ]
   }
 }

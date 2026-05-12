@@ -28,7 +28,10 @@ def create_user(db: Session, user: schemas.UserCreate):
     return db_user
 
 def authenticate_user(db: Session, username: str, password: str):
+    # Try to find user by username first, then by email
     user = get_user_by_username(db, username)
+    if not user:
+        user = get_user_by_email(db, username)
     if not user:
         return False
     if not security.verify_password(password, user.hashed_password):

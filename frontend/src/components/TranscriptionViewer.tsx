@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import audioService from '../services/audioService';
-import { useNavigate, useParams } from 'react-router-dom';
-import AudioPlayer from './AudioPlayer';
+import React, { useState, useEffect } from "react";
+import audioService from "../services/audioService";
+import { useNavigate, useParams } from "react-router-dom";
+import AudioPlayer from "./AudioPlayer";
 
 const TranscriptionViewer: React.FC = () => {
   const { transcriptionId } = useParams<{ transcriptionId: string }>();
@@ -19,11 +19,11 @@ const TranscriptionViewer: React.FC = () => {
       if (!isNaN(idNum)) {
         fetchTranscription(idNum);
       } else {
-        setError('Invalid transcription ID');
+        setError("Invalid transcription ID");
         setLoading(false);
       }
     } else {
-      setError('No transcription ID provided');
+      setError("No transcription ID provided");
       setLoading(false);
     }
   }, [transcriptionId]);
@@ -36,7 +36,7 @@ const TranscriptionViewer: React.FC = () => {
       setTranscription(response);
       setLoading(false);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to load transcription');
+      setError(err.response?.data?.detail || "Failed to load transcription");
       setLoading(false);
     }
   };
@@ -62,13 +62,11 @@ const TranscriptionViewer: React.FC = () => {
           <h2>Error Loading Transcription</h2>
         </div>
         <div className="transcription-viewer-content">
-          <div className="alert alert-error">
-            {error}
-          </div>
+          <div className="alert alert-error">{error}</div>
           <div className="transcription-actions">
             <button
               className="button-secondary"
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate("/dashboard")}
             >
               Return to Dashboard
             </button>
@@ -91,7 +89,7 @@ const TranscriptionViewer: React.FC = () => {
           <div className="transcription-actions">
             <button
               className="button-secondary"
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate("/dashboard")}
             >
               Return to Dashboard
             </button>
@@ -108,8 +106,10 @@ const TranscriptionViewer: React.FC = () => {
         <p className="transcription-subtitle">
           {transcription.audio_file_path
             ? `Audio file: ${transcription.audio_file_path.split(/[\\/]/).pop()}`
-            : 'No audio file'}
-          {transcription.youtube_url ? ` | YouTube: ${transcription.youtube_url}` : ''}
+            : "No audio file"}
+          {transcription.youtube_url
+            ? ` | YouTube: ${transcription.youtube_url}`
+            : ""}
         </p>
       </div>
 
@@ -139,17 +139,23 @@ const TranscriptionViewer: React.FC = () => {
                 {/* Simplified highlighting - in real app, this would be based on actual note timing */}
                 <div className="tablature-code-container">
                   <pre className="tablature-code">
-                    {transcription.tablature_data.split('\n').map((line, index) => {
-                      // Simple heuristic: highlight lines based on playback position
-                      const lineProgress = index / 10; // Assuming ~10 lines for demo
-                      const isHighlighted = currentPlaybackTime > (lineProgress * 10) &&
-                                          currentPlaybackTime < ((lineProgress + 1) * 10);
-                      return (
-                        <span key={index} className={isHighlighted ? 'highlighted-line' : ''}>
-                          {line}\n
-                        </span>
-                      );
-                    })}
+                    {transcription.tablature_data
+                      .split("\n")
+                      .map((line, index) => {
+                        // Simple heuristic: highlight lines based on playback position
+                        const lineProgress = index / 10; // Assuming ~10 lines for demo
+                        const isHighlighted =
+                          currentPlaybackTime > lineProgress * 10 &&
+                          currentPlaybackTime < (lineProgress + 1) * 10;
+                        return (
+                          <span
+                            key={index}
+                            className={isHighlighted ? "highlighted-line" : ""}
+                          >
+                            {line}\n
+                          </span>
+                        );
+                      })}
                   </pre>
                 </div>
               </div>
@@ -170,8 +176,10 @@ const TranscriptionViewer: React.FC = () => {
                     className="button-sm"
                     onClick={() => {
                       // In a real app, this would download the MusicXML file
-                      navigator.clipboard.writeText(transcription.notation_data || '');
-                      alert('MusicXML copied to clipboard!');
+                      navigator.clipboard.writeText(
+                        transcription.notation_data || "",
+                      );
+                      alert("MusicXML copied to clipboard!");
                     }}
                   >
                     Copy MusicXML
@@ -180,26 +188,31 @@ const TranscriptionViewer: React.FC = () => {
                 <div className="notation-placeholder">
                   <p>MusicXML notation data available</p>
                   <p className="notation-info">
-                    In a full implementation, this would render as standard musical notation.
-                    For now, the raw MusicXML data is available below.
+                    In a full implementation, this would render as standard
+                    musical notation. For now, the raw MusicXML data is
+                    available below.
                   </p>
-                  <div className="notation-code-container"
-     style={{
-       transform: `scale(${notationZoomLevel})`,
-       transformOrigin: 'top left',
-       width: `${100 / notationZoomLevel}%`,
-       marginBottom: `${(notationZoomLevel - 1) * 20}px`
-     }}
->
+                  <div
+                    className="notation-code-container"
+                    style={{
+                      transform: `scale(${notationZoomLevel})`,
+                      transformOrigin: "top left",
+                      width: `${100 / notationZoomLevel}%`,
+                      marginBottom: `${(notationZoomLevel - 1) * 20}px`,
+                    }}
+                  >
                     {/* Simplified highlighting for notation */}
-                    <div className="notation-highlight-overlay"
-                         style={{
-                           height: `${Math.min(currentPlaybackTime / 10, 100)}%`,
-                           backgroundColor: 'rgba(170, 59, 255, 0.2)',
-                           pointerEvents: 'none'
-                         }}
+                    <div
+                      className="notation-highlight-overlay"
+                      style={{
+                        height: `${Math.min(currentPlaybackTime / 10, 100)}%`,
+                        backgroundColor: "rgba(170, 59, 255, 0.2)",
+                        pointerEvents: "none",
+                      }}
                     />
-                    <pre className="notation-code"><code>{transcription.notation_data}</code></pre>
+                    <pre className="notation-code">
+                      <code>{transcription.notation_data}</code>
+                    </pre>
                   </div>
                 </div>
               </div>
@@ -218,8 +231,8 @@ const TranscriptionViewer: React.FC = () => {
             <span className="meta-label">Duration:</span>
             <span className="meta-value">
               {transcription.duration
-                ? `${Math.floor(transcription.duration / 60)}:${String(transcription.duration % 60).padStart(2, '0')}`
-                : 'Unknown'}
+                ? `${Math.floor(transcription.duration / 60)}:${String(transcription.duration % 60).padStart(2, "0")}`
+                : "Unknown"}
             </span>
           </div>
           <div className="meta-item">
@@ -227,7 +240,7 @@ const TranscriptionViewer: React.FC = () => {
             <span className="meta-value">
               {transcription.detected_tempo
                 ? `${transcription.detected_tempo} BPM`
-                : 'Not detected'}
+                : "Not detected"}
             </span>
           </div>
           <div className="meta-item">
@@ -235,7 +248,7 @@ const TranscriptionViewer: React.FC = () => {
             <span className="meta-value">
               {transcription.detected_key
                 ? transcription.detected_key
-                : 'Not detected'}
+                : "Not detected"}
             </span>
           </div>
         </div>
@@ -243,22 +256,28 @@ const TranscriptionViewer: React.FC = () => {
         <div className="transcription-actions">
           <button
             className="button-secondary"
-            onClick={() => navigate('/dashboard')}
+            onClick={() => navigate("/dashboard")}
           >
             Return to Dashboard
           </button>
           <div className="notation-zoom-controls">
             <button
-              className={`zoom-button ${notationZoomLevel < 1.0 ? 'active' : ''}`}
-              onClick={() => setNotationZoomLevel(Math.max(notationZoomLevel - 0.25, 0.5)))
+              className={`zoom-button ${notationZoomLevel < 1.0 ? "active" : ""}`}
+              onClick={() =>
+                setNotationZoomLevel(Math.max(notationZoomLevel - 0.25, 0.5))
+              }
               title="Zoom Out"
             >
               🔍−
             </button>
-            <span className="zoom-level">{Math.round(notationZoomLevel * 100)}%</span>
+            <span className="zoom-level">
+              {Math.round(notationZoomLevel * 100)}%
+            </span>
             <button
-              className={`zoom-button ${notationZoomLevel > 2.0 ? 'active' : ''}`}
-              onClick={() => setNotationZoomLevel(Math.min(notationZoomLevel + 0.25, 3.0))}
+              className={`zoom-button ${notationZoomLevel > 2.0 ? "active" : ""}`}
+              onClick={() =>
+                setNotationZoomLevel(Math.min(notationZoomLevel + 0.25, 3.0))
+              }
               title="Zoom In"
             >
               🔍+

@@ -1,6 +1,7 @@
 # Implementation Plan for AI Guitar Music Sheet Generator
 
 ## Phase 0: Project Setup & Infrastructure
+
 - [x] Initialize git repository and set up project structure
 - [x] Configure development environment (Python, Node.js, Docker)
 - [x] Set up backend repository with FastAPI template
@@ -12,6 +13,7 @@
 - [x] Create basic API health check endpoint
 
 ## Phase 1: Core Audio Processing Pipeline
+
 - [x] Implement file upload endpoint (MP3/WAV) with size validation
 - [x] Integrate yt-dlp for YouTube audio extraction (temporary storage)
 - [x] Add audio preprocessing (normalization, resampling) using librosa
@@ -27,6 +29,7 @@
 - [x] Implement error handling and fallback for low-confidence sections
 
 ## Phase 2: Basic Transcription Output & Storage
+
 - [x] Convert pitch detection output to MIDI notes (using music21 or mido)
 - [x] Generate guitar tablature from MIDI notes (fret position mapping)
 - [x] Create standard music notation from MIDI (using music21 or VexFlow backend)
@@ -39,9 +42,10 @@
 - [x] Implement automatic cleanup of temporary audio files after processing
 
 ## Phase 3: Frontend - Basic Interface
+
 - [x] Create login/logout/register pages
 - [ ] Design dashboard layout (projects list, new transcription button)
-- [ ] Build audio upload component (file drag&drop, YouTube URL input)
+- [x] Build audio upload component (file drag&drop, YouTube URL input)
 - [ ] Create processing status page (progress bar, estimated time)
 - [ ] Design basic transcription viewer (tabs + notation side-by-side)
 - [x] Implement audio playback controls (play/pause, seek, volume)
@@ -52,6 +56,7 @@
 - [ ] Add download buttons for each export format (MIDI, MusicXML, TXT, PDF later)
 
 ## Phase 4: Enhanced Transcription Features
+
 - [ ] Implement capo support (transpose detection and display)
 - [ ] Add alternate tuning support (standard, drop D, open G, DADGAD, etc.)
 - [ ] Improve fret positioning algorithm for playability (avoid stretches)
@@ -63,6 +68,7 @@
 - [ ] Implement error indicators (highlight uncertain notes/chords)
 
 ## Phase 5: Advanced Features & Polish
+
 - [ ] Implement beginner-friendly tab simplification (reduce complexity)
 - [ ] Add fingerstyle mode detection and notation
 - [ ] Implement solo extraction (melody line separation)
@@ -77,6 +83,7 @@
 - [ ] Implement colorblind-friendly palettes for notation
 
 ## Phase 6: Export & Sharing
+
 - [ ] Implement PDF export using WeasyPrint or ReportLab (styled sheet music)
 - [ ] Add option to download sheet as image (PNG/SVG)
 - [ ] Add sharing options (generate shareable link for view-only access)
@@ -85,6 +92,7 @@
 - [ ] Create print-friendly view with appropriate margins
 
 ## Phase 7: Testing, Performance & Optimization
+
 - [ ] Create unit tests for audio processing components
 - [ ] Implement integration tests for API endpoints
 - [ ] Add frontend component testing (Jest + React Testing Library)
@@ -97,6 +105,7 @@
 - [ ] Implement service worker for PWA capabilities (offline viewing)
 
 ## Phase 8: Deployment & Production Readiness
+
 - [ ] Set up production Docker images (multi-stage builds)
 - [ ] Configure Kubernetes deployment manifests (or Docker Swarm)
 - [ ] Set up monitoring (Prometheus metrics, Grafana dashboards)
@@ -110,6 +119,7 @@
 - [ ] Conduct user acceptance testing with musician community
 
 ## Phase 9: Post-Launch & Iteration
+
 - [ ] Collect user feedback and accuracy reports
 - [ ] Prioritize bug fixes and usability improvements
 - [ ] Plan for premium features (subscription model)
