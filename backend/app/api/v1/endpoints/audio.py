@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Response
+import json
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import os
@@ -10,6 +11,7 @@ from .... import db, core
 from ....core.security import get_current_user
 from .. import schemas, models
 from ....services import audio
+from ....services.tablature import tablature_to_ascii_tab
 from ....app import celery_app
 
 router = APIRouter()
@@ -471,5 +473,84 @@ async def get_transcription_musicxml(
         media_type='application/xml',
         headers={
             "Content-Disposition": f"attachment; filename=transcription_{transcription_id}.musicxml"
+        }
+    )
+
+
+@router.get("/{transcription_id}/tab")
+async def get_transcription_tab(
+    transcription_id: int,
+    db_session: Session = Depends(db.get_db),
+    current_user: schemas.User = Depends(get_current_user)
+):
+    """
+    Get the ASCII tab file for a completed transcription.
+    """
+    # Get the transcription record
+    transcription = db_session.query(models.Transcription).filter(
+        models.Transcription.id == transcription_id
+    ).first()
+
+    if not transcription:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transcription not found"
+        )
+
+    # Check if the user owns this transcription (or has access via project)
+    if transcription.user_id != current_user.id:
+        # Check if it's in a project the user owns
+        if transcription.project_id:
+            project = db_session.query(models.Project).filter(
+                models.Project.id == transcription.project_id
+            ).first()
+            if not project or project.owner_id != current_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to access this transcription"
+                )
+        else:
+            # Not in a project and not owned by user
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this transcription"
+            )
+
+    # Check if processing is complete
+    if not transcription.is_processed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transcription is still processing"
+        )
+
+    if transcription.processing_error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Transcription failed: {transcription.processing_error}"
+        )
+
+    # Check if tablature data exists
+    if not transcription.tablature_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tablature data not available"
+        )
+
+    # Parse tablature data and generate ASCII tab
+    try:
+        tablature_dict = json.loads(transcription.tablature_data)
+        ascii_tab = tablature_to_ascii_tab(tablature_dict)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating ASCII tab: {str(e)}"
+        )
+
+    # Return as plain text file
+    return Response(
+        content=ascii_tab,
+        media_type='text/plain',
+        headers={
+            "Content-Disposition": f"attachment; filename=transcription_{transcription_id}.tab"
         }
     )

@@ -2,7 +2,8 @@
 Tablature generation utilities for converting MIDI notes to guitar tablature.
 """
 import json
-from typing import Dict, Any, List, Optional, Tuple
+import math
+from typing import Dict, Any, List, Optional, Tuple, Union
 
 
 def notes_to_tablature(notes_data: Dict[str, Any],
@@ -168,3 +169,86 @@ def save_tablature_from_transcription(notes_data: str, transcription_id: int,
     # But we are storing the actual data in the tablature_data field, so we don't need this.
     # We'll return the path anyway in case we change our mind.
     return str(tab_file_path)
+
+
+def tablature_to_ascii_tab(tablature_data: Union[str, dict]) -> str:
+    """
+    Convert tablature data (JSON string or dict) to ASCII tab format.
+
+    Args:
+        tablature_data: JSON string or dict containing tablature data from notes_to_tablature()
+
+    Returns:
+        ASCII tab string ready for display/download
+    """
+    # Parse JSON if string
+    if isinstance(tablature_data, str):
+        try:
+            tablature_dict = json.loads(tablature_data)
+        except json.JSONDecodeError:
+            raise ValueError("Invalid tablature data format")
+    else:
+        tablature_dict = tablature_data
+
+    # Extract tablature notes
+    tablature_notes = tablature_dict.get("tablature", [])
+    if not tablature_notes:
+        return ""  # Return empty string if no notes
+
+    # Calculate total duration (max offset)
+    max_offset = max(note.get("offset", 0) for note in tablature_notes)
+    if max_offset <= 0:
+        max_offset = 0.1  # Avoid division by zero
+
+    # Configuration for ASCII tab generation
+    block_time = 0.1        # seconds per note block
+    columns_per_block = 2   # columns per note block (for 2-digit frets)
+
+    # Calculate total columns needed
+    num_blocks = math.ceil(max_offset / block_time)
+    total_columns = num_blocks * columns_per_block
+
+    # Initialize tab array (6 strings x total_columns) with '-'
+    # String order: e(1), B(2), G(3), D(4), A(5), E(6) [high to low]
+    tab_array = [['-' for _ in range(total_columns)] for _ in range(6)]
+    string_labels = ['e', 'B', 'G', 'D', 'A', 'E']
+
+    # Process each note
+    for note in tablature_notes:
+        string_num = note.get("string", 1)  # 1=high E, 6=low E
+        fret = note.get("fret", 0)
+        onset = note.get("onset", 0.0)
+
+        # Validate string number
+        if string_num < 1 or string_num > 6:
+            continue
+
+        # Calculate column position
+        row_index = string_num - 1  # Convert to 0-based index (0=high E)
+        block_index = round(onset / block_time)
+
+        # Clamp block index to valid range
+        max_block_index = num_blocks - 1
+        if block_index < 0:
+            block_index = 0
+        elif block_index > max_block_index:
+            block_index = max_block_index
+
+        column_start = block_index * columns_per_block
+
+        # Format fret as right-aligned 2-character string
+        fret_str = str(fret).rjust(2)
+
+        # Place fret characters in tab array
+        for i, ch in enumerate(fret_str):
+            col = column_start + i
+            if col < total_columns:
+                tab_array[row_index][col] = ch
+
+    # Build output lines
+    lines = []
+    for i in range(6):
+        line_content = ''.join(tab_array[i])
+        lines.append(f"{string_labels[i]}|{line_content}")
+
+    return "\n".join(lines)
