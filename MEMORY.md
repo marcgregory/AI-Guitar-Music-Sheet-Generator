@@ -1,0 +1,1 @@
+- [SQLAlchemy/Python 3.13 Compatibility Resolution](memory/project_sqlalchemy_resolution.md) - Resolution of SQLAlchemy/Python 3.13 TypingOnly inheritance conflict that was blocking database initialization

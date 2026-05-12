@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init *)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs",
+      "Bash(python *)",
+      "Bash(pip install *)",
+      "Bash(sqlite3 *)",
+      "Bash(docker-compose ps *)",
+      "Bash(docker-compose up *)",
+      "Bash(docker-compose logs *)",
+      "Bash(docker-compose exec *)",
+      "Bash(apt-get install *)",
+      "Bash(curl *)",
+      "Bash(docker-compose restart *)",
+      "Bash(docker-compose run *)",
+      "Bash(docker-compose build *)"
+    ]
+  }
+}

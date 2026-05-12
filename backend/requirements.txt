@@ -1,0 +1,24 @@
+fastapi==0.110.0
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-dotenv==1.0.0
+sqlalchemy>=2.1.0b2,<3.0.0
+alembic==1.10.0
+redis==5.0.1
+celery==5.3.4
+# Audio processing libraries will be added in Phase 1
+librosa==0.10.1
+# essentia==2.1b6
+demucs==4.0.3
+# spotipy==2.22.1
+# crepe==0.0.9
+basic-pitch==1.0.7
+# music21==8.0.0
+# weasyprint==61.2
+yt-dlp==2024.5.1
+pytest==7.4.3
+httpx==0.25.2
+email-validator==2.3.0
+psycopg[binary]==3.3.4
