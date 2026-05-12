@@ -44,7 +44,7 @@ def login_access_token(
         )
     access_token_expires = timedelta(minutes=core.config.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = core.security.create_access_token(
-        subject=user.username, expires_delta=access_token_expires
+        data={"sub": user.username}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
 

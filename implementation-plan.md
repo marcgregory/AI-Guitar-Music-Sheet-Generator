@@ -39,16 +39,16 @@
 - [x] Implement automatic cleanup of temporary audio files after processing
 
 ## Phase 3: Frontend - Basic Interface
-- [ ] Create login/logout/register pages
+- [x] Create login/logout/register pages
 - [ ] Design dashboard layout (projects list, new transcription button)
 - [ ] Build audio upload component (file drag&drop, YouTube URL input)
 - [ ] Create processing status page (progress bar, estimated time)
 - [ ] Design basic transcription viewer (tabs + notation side-by-side)
-- [ ] Implement audio playback controls (play/pause, seek, volume)
-- [ ] Add synchronized playback highlighting (current position in tab/notation)
-- [ ] Implement playback speed control (0.5x to 2.0x)
-- [ ] Add zoom controls for notation viewer
-- [ ] Implement dark/light mode toggle
+- [x] Implement audio playback controls (play/pause, seek, volume)
+- [x] Add synchronized playback highlighting (current position in tab/notation)
+- [x] Implement playback speed control (0.5x to 2.0x)
+- [x] Add zoom controls for notation viewer
+- [x] Implement dark/light mode toggle
 - [ ] Add download buttons for each export format (MIDI, MusicXML, TXT, PDF later)
 
 ## Phase 4: Enhanced Transcription Features
@@ -79,7 +79,6 @@
 ## Phase 6: Export & Sharing
 - [ ] Implement PDF export using WeasyPrint or ReportLab (styled sheet music)
 - [ ] Add option to download sheet as image (PNG/SVG)
-- [ ] Implement project favoriting and tagging system
 - [ ] Add sharing options (generate shareable link for view-only access)
 - [ ] Implement version history for edited transcriptions
 - [ ] Add collaborative commenting on transcriptions (future)

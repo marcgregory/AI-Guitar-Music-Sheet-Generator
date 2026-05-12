@@ -1,1 +1,2 @@
 - [SQLAlchemy/Python 3.13 Compatibility Resolution](memory/project_sqlalchemy_resolution.md) - Resolution of SQLAlchemy/Python 3.13 TypingOnly inheritance conflict that was blocking database initialization
+- [Auth backend fix](memory/feedback_auth_fix.md) - Fixed bcrypt version detection and token creation issues in authentication endpoints
