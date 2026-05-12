@@ -12,26 +12,26 @@
 - [x] Create basic API health check endpoint
 
 ## Phase 1: Core Audio Processing Pipeline
-- [ ] Implement file upload endpoint (MP3/WAV) with size validation
-- [ ] Integrate yt-dlp for YouTube audio extraction (temporary storage)
-- [ ] Add audio preprocessing (normalization, resampling) using librosa
-- [ ] Implement source separation using Demucs or Spleeter (guitar isolation)
-- [ ] Implement pitch detection using Spotify Basic Pitch (or CREPE as fallback)
-- [ ] Implement beat/tempo detection using librosa.beat
-- [ ] Implement key detection using Essentia or librosa chroma features
-- [ ] Implement rhythm analysis (onset detection, duration estimation)
-- [ ] Create basic chord recognition using librosa chroma + template matching
-- [ ] Design data structure for transcription results (notes, chords, timing)
-- [ ] Create async processing pipeline with Celery (handle long-running tasks)
-- [ ] Add confidence scoring for detected elements
-- [ ] Implement error handling and fallback for low-confidence sections
+- [x] Implement file upload endpoint (MP3/WAV) with size validation
+- [x] Integrate yt-dlp for YouTube audio extraction (temporary storage)
+- [x] Add audio preprocessing (normalization, resampling) using librosa
+- [x] Implement source separation using Demucs or Spleeter (guitar isolation)
+- [x] Implement pitch detection using Spotify Basic Pitch (or CREPE as fallback)
+- [x] Implement beat/tempo detection using librosa.beat
+- [x] Implement key detection using Essentia or librosa chroma features
+- [x] Implement rhythm analysis (onset detection, duration estimation)
+- [x] Create basic chord recognition using librosa chroma + template matching
+- [x] Design data structure for transcription results (notes, chords, timing)
+- [x] Create async processing pipeline with Celery (handle long-running tasks)
+- [x] Add confidence scoring for detected elements
+- [x] Implement error handling and fallback for low-confidence sections
 
 ## Phase 2: Basic Transcription Output & Storage
-- [ ] Convert pitch detection output to MIDI notes (using music21 or mido)
-- [ ] Generate guitar tablature from MIDI notes (fret position mapping)
+- [x] Convert pitch detection output to MIDI notes (using music21 or mido)
+- [x] Generate guitar tablature from MIDI notes (fret position mapping)
 - [ ] Create standard music notation from MIDI (using music21 or VexFlow backend)
 - [ ] Generate chord charts from detected chords
-- [ ] Implement export as MIDI file
+- [x] Implement export as MIDI file
 - [ ] Implement export as MusicXML file (using music21)
 - [ ] Implement export as plain text guitar tabs
 - [ ] Store transcription results in database linked to user/project
