@@ -82,7 +82,7 @@ class TranscriptionBase(BaseModel):
     key_confidence: Optional[int] = None
 
 class TranscriptionCreate(TranscriptionBase):
-    project_id: int
+    project_id: Optional[int] = None
 
 class TranscriptionUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
@@ -97,7 +97,7 @@ class TranscriptionUpdate(BaseModel):
 class TranscriptionInDBBase(TranscriptionBase):
     id: int
     user_id: int
-    project_id: int
+    project_id: Optional[int] = None
     is_processed: bool
     processing_error: Optional[str] = None
     created_at: datetime

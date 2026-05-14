@@ -98,11 +98,8 @@ def note_name_to_midi(note_name: str) -> int:
     octave_part = ''.join([c for c in note_name if c.isdigit()])
     octave = int(octave_part) if octave_part else 4  # Default to octave 4
 
-    # MIDI note = 12 * (octave + 1) + note_offset
-    # Actually, MIDI note 0 is C-1, so MIDI note = 12 * (octave + 1) + note_offset
-    # But let's use a simpler approach: A4 = 69
-    # A4 is note_name "A4" -> note_offset=9, octave=4 -> 12*4 + 9 = 57 + 12 = 69 ✓
-    midi_note = 12 * octave + note_map[base_name]
+    # MIDI note 0 is C-1, so C4 is 60 and A4 is 69.
+    midi_note = 12 * (octave + 1) + note_map[base_name]
 
     return midi_note
 
@@ -166,20 +163,22 @@ def find_chord_positions(root_note: str, chord_type: str,
     # Get chord intervals
     intervals = get_chord_intervals(chord_type)
 
-    # Calculate target notes for the chord
-    target_notes = [root_midi + interval for interval in intervals]
+    # Match chord tones by pitch class so open-position guitar chords are included.
+    root_pitch_class = root_midi % 12
+    target_pitch_classes = {(root_pitch_class + interval) % 12 for interval in intervals}
 
     # For each string, find frets that produce notes in the chord
     string_options = []  # List of lists of possible frets for each string
     for string_index, open_note in enumerate(tuning):
         frets = []
-        for target_note in target_notes:
-            fret = target_note - open_note
-            if 0 <= fret <= max_fret:
+        for fret in range(max_fret + 1):
+            if (open_note + fret) % 12 in target_pitch_classes:
                 frets.append(fret)
         # Also consider muting the string (fret = None)
         frets.append(None)
-        string_options.append(sorted(list(set(frets))))  # Remove duplicates and sort
+        string_options.append(
+            sorted(set(frets), key=lambda fret: (fret is None, fret if fret is not None else max_fret + 1))
+        )
 
     # Generate all possible combinations (this could be huge, so we'll use a smarter approach)
     # For now, let's implement a basic backtracking algorithm with pruning

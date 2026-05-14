@@ -35,13 +35,7 @@ def notes_to_tablature(notes_data: Dict[str, Any],
         except json.JSONDecodeError:
             raise ValueError("Invalid notes_data format")
 
-    # Extract notes array
-    if "notes" in notes_data:
-        notes = notes_data["notes"]
-    elif isinstance(notes_data, list):
-        notes = notes_data
-    else:
-        raise ValueError("Invalid notes_data structure")
+    notes = _extract_notes(notes_data)
 
     # Set default tuning (standard guitar: E2, A2, D3, G3, B3, E4)
     if tuning is None:
@@ -62,6 +56,9 @@ def notes_to_tablature(notes_data: Dict[str, Any],
             continue
 
         midi_note = note["pitch"]
+        if midi_note is None:
+            note_options.append([])
+            continue
         options = []
         for string_index, open_note in enumerate(tuning):
             fret = midi_note - open_note
@@ -110,10 +107,10 @@ def notes_to_tablature(notes_data: Dict[str, Any],
         tablature_note = {
             "string": string_number,
             "fret": fret,
-            "onset": round(note.get("onset", 0), 3),
-            "offset": round(note.get("offset", 0), 3),
-            "velocity": note.get("velocity", 64),
-            "confidence": round(note.get("confidence", 0.8), 3)
+            "onset": round(note.get("onset") or 0, 3),
+            "offset": round(note.get("offset") or 0, 3),
+            "velocity": note.get("velocity") or 64,
+            "confidence": round(note.get("confidence") or 0.8, 3)
         }
         tablature_notes.append(tablature_note)
 
@@ -121,6 +118,26 @@ def notes_to_tablature(notes_data: Dict[str, Any],
         "tuning": tuning,
         "tablature": tablature_notes
     }
+
+
+def _extract_notes(notes_data: Any) -> List[Dict[str, Any]]:
+    """Extract note events from supported pitch-analysis shapes."""
+    if isinstance(notes_data, str):
+        try:
+            notes_data = json.loads(notes_data)
+        except json.JSONDecodeError:
+            raise ValueError("Invalid notes_data format")
+
+    if isinstance(notes_data, list):
+        return notes_data
+
+    if isinstance(notes_data, dict):
+        if isinstance(notes_data.get("notes"), list):
+            return notes_data["notes"]
+        if isinstance(notes_data.get("pitch_info"), list):
+            return notes_data["pitch_info"]
+
+    raise ValueError("Invalid notes_data structure")
 
 
 def save_tablature_from_transcription(notes_data: str, transcription_id: int,
@@ -196,7 +213,7 @@ def tablature_to_ascii_tab(tablature_data: Union[str, dict]) -> str:
         return ""  # Return empty string if no notes
 
     # Calculate total duration (max offset)
-    max_offset = max(note.get("offset", 0) for note in tablature_notes)
+    max_offset = max((note.get("offset") or 0) for note in tablature_notes)
     if max_offset <= 0:
         max_offset = 0.1  # Avoid division by zero
 
@@ -215,9 +232,9 @@ def tablature_to_ascii_tab(tablature_data: Union[str, dict]) -> str:
 
     # Process each note
     for note in tablature_notes:
-        string_num = note.get("string", 1)  # 1=high E, 6=low E
-        fret = note.get("fret", 0)
-        onset = note.get("onset", 0.0)
+        string_num = note.get("string") or 1  # 1=high E, 6=low E
+        fret = note.get("fret") or 0
+        onset = note.get("onset") or 0.0
 
         # Validate string number
         if string_num < 1 or string_num > 6:

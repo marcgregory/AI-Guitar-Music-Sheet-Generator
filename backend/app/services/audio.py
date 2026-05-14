@@ -2,10 +2,60 @@ import librosa
 import numpy as np
 import soundfile as sf
 from pathlib import Path
+import importlib.util
 import subprocess
 import tempfile
-import os
+import sys
 import json
+import csv
+import shutil
+
+
+DEMUCS_GUITAR_MODEL = "htdemucs_6s"
+DEMUCS_FALLBACK_MODEL = "htdemucs"
+
+
+def _ensure_demucs_available() -> None:
+    if importlib.util.find_spec("demucs") is None:
+        raise RuntimeError(
+            "Demucs is not installed. Install backend requirements to enable source separation."
+        )
+
+
+def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems: str = None) -> None:
+    cmd = [
+        sys.executable,
+        "-m",
+        "demucs.separate",
+        "-n",
+        model_name,
+        "-o",
+        str(output_path),
+    ]
+    if two_stems:
+        cmd.extend(["--two-stems", two_stems])
+    cmd.append(str(input_path))
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        error_text = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(f"Demucs separation failed with {model_name}: {error_text}")
+
+
+def _find_demucs_stem(output_path: Path, model_name: str, input_stem: str, stem_name: str) -> Path:
+    expected_path = output_path / model_name / input_stem / f"{stem_name}.wav"
+    if expected_path.exists():
+        return expected_path
+
+    matches = list((output_path / model_name).rglob(f"{stem_name}.wav"))
+    if matches:
+        return matches[0]
+
+    all_matches = list(output_path.rglob(f"{stem_name}.wav"))
+    if all_matches:
+        return all_matches[0]
+
+    raise FileNotFoundError(f"Could not find {stem_name} stem after Demucs separation")
 
 def preprocess_audio(input_file_path: str, output_file_path: str = None, target_sr: int = 22050) -> str:
     """
@@ -59,6 +109,11 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
     """
     Separate audio sources using Demucs and return the path to the guitar stem.
 
+    The primary path uses Demucs' 6-stem model, which produces a dedicated
+    guitar stem. If that model is unavailable at runtime, the fallback uses the
+    standard vocals/accompaniment split and returns accompaniment so downstream
+    analysis can still operate on a guitar-containing track.
+
     Args:
         input_file_path: Path to the input audio file.
         output_dir: Directory to save the separated stems. If None,
@@ -77,45 +132,27 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    _ensure_demucs_available()
+
+    primary_error = None
     try:
-        # Run Demucs to separate sources
-        # Using the pretrained model 'htdemucs' which is good for music separation
-        cmd = [
-            "python", "-m", "demucs.separate",
-            "-n", "htdemucs",  # Model name
-            "--two-stems", "vocals",  # Separate vocals and accompaniment (we'll extract guitar from accompaniment)
-            "-o", str(output_path),
-            str(input_path)
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            raise RuntimeError(f"Demucs separation failed: {result.stderr}")
-
-        # Demucs creates output in: output_dir/model_name/input_filename_without_extension/
-        # For htdemucs model with two-stems vocals, we get:
-        # {output_dir}/htdemucs/{input_filename_without_extension}/
-        # containing vocals.wav and accompaniment.wav
-
         input_stem = input_path.stem
-        accompaniment_path = output_path / "htdemucs" / input_stem / "accompaniment.wav"
+        try:
+            _run_demucs(input_path, output_path, DEMUCS_GUITAR_MODEL)
+            return str(_find_demucs_stem(output_path, DEMUCS_GUITAR_MODEL, input_stem, "guitar"))
+        except Exception as e:
+            primary_error = e
 
-        if not accompaniment_path.exists():
-            # Fallback: try to find any accompaniment file
-            accompaniment_files = list(output_path.rglob("*accompaniment*.wav"))
-            if not accompaniment_files:
-                raise FileNotFoundError("Could not find accompaniment stem after Demucs separation")
-            accompaniment_path = accompaniment_files[0]
-
-        # For better guitar isolation, we could further process the accompaniment,
-        # but for now we'll return the accompaniment as our guitar-containing stem
-        # In a more advanced implementation, we could use additional techniques
-        # to isolate guitar from other accompaniment instruments
-
-        return str(accompaniment_path)
+        _run_demucs(input_path, output_path, DEMUCS_FALLBACK_MODEL, two_stems="vocals")
+        return str(_find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, "accompaniment"))
 
     except Exception as e:
+        if primary_error:
+            raise RuntimeError(
+                "Failed to separate audio sources. "
+                f"Primary guitar model error: {str(primary_error)}. "
+                f"Fallback error: {str(e)}"
+            )
         raise RuntimeError(f"Failed to separate audio sources: {str(e)}")
 
 
@@ -143,63 +180,52 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
 
     # First, try Basic Pitch
     try:
+        basic_pitch_api_error = None
+        try:
+            from basic_pitch.inference import predict
+
+            model_output, _midi_data, note_events = predict(str(input_path))
+            formatted_notes = _format_basic_pitch_note_events(note_events)
+            return {
+                "notes": formatted_notes,
+                "model_outputs": {},
+                "total_notes_detected": len(formatted_notes)
+            }
+        except Exception as api_e:
+            # Fall back to the CLI before trying CREPE. Some local installs expose
+            # only the executable, while others expose the Python API.
+            basic_pitch_api_error = api_e
+
+        basic_pitch_executable = shutil.which("basic-pitch")
+        if not basic_pitch_executable:
+            raise RuntimeError(
+                "Basic Pitch Python API failed and the basic-pitch CLI was not found on PATH. "
+                f"Python API error: {basic_pitch_api_error}"
+            )
+
         # Run Basic Pitch to detect pitches
         # Using basic-pitch command line interface
         cmd = [
-            "basic-pitch",
+            basic_pitch_executable,
+            str(output_path),
             input_file_path,
-            str(output_path)
+            "--save-note-events"
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode == 0:
-            # Basic Pitch outputs a MIDI file and a JSON file
-            # Look for the JSON output which contains the note data
-            input_stem = input_path.stem
-            json_path = output_path / f"{input_stem}_basic_pitch_output.json"
+            note_event_files = list(output_path.glob("*_basic_pitch.csv"))
+            if not note_event_files:
+                note_event_files = list(output_path.glob("*.csv"))
+            if not note_event_files:
+                raise FileNotFoundError("Could not find Basic Pitch note-event CSV output")
 
-            # If the exact filename pattern doesn't match, look for any JSON file
-            if not json_path.exists():
-                json_files = list(output_path.glob("*.json"))
-                if not json_files:
-                    raise FileNotFoundError("Could not find Basic Pitch JSON output")
-                json_path = json_files[0]
-
-            # Load the JSON data
-            with open(json_path, 'r') as f:
-                pitch_data = json.load(f)
-
-            # Basic Pitch output format typically includes:
-            # {
-            #   "notes": [
-            #     {
-            #       "onset": float,  # onset time in seconds
-            #       "offset": float, # offset time in seconds
-            #       "pitch": int,    # MIDI pitch number (0-127)
-            #       "velocity": int  # MIDI velocity (0-127)
-            #       # Confidence might be in a separate field or derived
-            #     }
-            #   ],
-            #   "model_outputs": {...}  # Additional model outputs
-            # }
-
-            # Extract and format note data for storage
-            formatted_notes = []
-            if "notes" in pitch_data:
-                for note in pitch_data["notes"]:
-                    formatted_note = {
-                        "onset": round(note.get("onset", 0), 3),
-                        "offset": round(note.get("offset", 0), 3),
-                        "pitch": note.get("pitch", 0),
-                        "velocity": note.get("velocity", 64),
-                        "confidence": round(note.get("confidence", 0.8), 3)  # Default confidence if not provided
-                    }
-                    formatted_notes.append(formatted_note)
+            formatted_notes = _load_basic_pitch_note_events_csv(note_event_files[0])
 
             return {
                 "notes": formatted_notes,
-                "model_outputs": pitch_data.get("model_outputs", {}),
+                "model_outputs": {},
                 "total_notes_detected": len(formatted_notes)
             }
         else:
@@ -210,8 +236,49 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
         try:
             return _detect_pitch_crepe(input_file_path, output_dir)
         except Exception as crepe_e:
-            # If both fail, raise an error
-            raise RuntimeError(f"Failed to detect pitch with both Basic Pitch and CREPE. Basic Pitch error: {str(e)}. CREPE error: {str(crepe_e)}")
+            try:
+                return _detect_pitch_librosa(input_file_path)
+            except Exception as librosa_e:
+                # If all pitch backends fail, raise an error
+                raise RuntimeError(
+                    "Failed to detect pitch with Basic Pitch, CREPE, and librosa pYIN. "
+                    f"Basic Pitch error: {str(e)}. "
+                    f"CREPE error: {str(crepe_e)}. "
+                    f"librosa error: {str(librosa_e)}"
+                )
+
+
+def _format_basic_pitch_note_events(note_events) -> list:
+    formatted_notes = []
+    for event in note_events:
+        if len(event) < 4:
+            continue
+        onset, offset, pitch, amplitude = event[:4]
+        confidence = float(amplitude or 0)
+        formatted_notes.append({
+            "onset": round(float(onset), 3),
+            "offset": round(float(offset), 3),
+            "pitch": int(pitch),
+            "velocity": max(1, min(127, int(round(confidence * 127)))),
+            "confidence": round(confidence, 3)
+        })
+    return formatted_notes
+
+
+def _load_basic_pitch_note_events_csv(csv_path: Path) -> list:
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        events = []
+        for row in reader:
+            onset = row.get("start_time_s") or row.get("onset") or row.get("start_time")
+            offset = row.get("end_time_s") or row.get("offset") or row.get("end_time")
+            pitch = row.get("pitch_midi") or row.get("pitch")
+            amplitude = row.get("amplitude") or row.get("confidence") or 0.8
+            if onset is None or offset is None or pitch is None:
+                continue
+            events.append((float(onset), float(offset), int(float(pitch)), float(amplitude)))
+
+    return _format_basic_pitch_note_events(events)
 
 
 def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
@@ -325,6 +392,92 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
 
     except Exception as e:
         raise RuntimeError(f"CREPE pitch detection failed: {str(e)}")
+
+
+def _detect_pitch_librosa(input_file_path: str) -> dict:
+    """
+    Detect monophonic pitch using librosa pYIN as a dependency-light fallback.
+
+    This is less accurate than Basic Pitch for polyphonic guitar, but it keeps
+    local development usable on Python versions where TensorFlow-backed pitch
+    detectors are unavailable.
+    """
+    y, sr = librosa.load(input_file_path, sr=22050, mono=True)
+    if y.size == 0:
+        raise RuntimeError("Audio file is empty")
+
+    fmin = librosa.note_to_hz("E2")
+    fmax = librosa.note_to_hz("E6")
+    f0, voiced_flag, voiced_prob = librosa.pyin(
+        y,
+        fmin=fmin,
+        fmax=fmax,
+        sr=sr,
+        frame_length=2048,
+        hop_length=256,
+    )
+
+    times = librosa.frames_to_time(np.arange(len(f0)), sr=sr, hop_length=256)
+    valid = voiced_flag & ~np.isnan(f0)
+    if not np.any(valid):
+        return {"notes": [], "model_outputs": {}, "total_notes_detected": 0}
+
+    midi_notes = np.full(len(f0), -1, dtype=int)
+    midi_notes[valid] = np.rint(librosa.hz_to_midi(f0[valid])).astype(int)
+    midi_notes = np.clip(midi_notes, -1, 127)
+
+    notes = []
+    current_pitch = None
+    start_index = None
+    confidences = []
+
+    def append_note(end_index: int) -> None:
+        if current_pitch is None or start_index is None:
+            return
+        onset = float(times[start_index])
+        offset = float(times[min(end_index, len(times) - 1)])
+        if offset <= onset:
+            offset = onset + 0.05
+        confidence = float(np.mean(confidences)) if confidences else 0.5
+        notes.append({
+            "onset": round(onset, 3),
+            "offset": round(offset, 3),
+            "pitch": int(current_pitch),
+            "velocity": max(1, min(127, int(round(confidence * 127)))),
+            "confidence": round(confidence, 3),
+        })
+
+    for i, pitch in enumerate(midi_notes):
+        if pitch < 0:
+            append_note(i)
+            current_pitch = None
+            start_index = None
+            confidences = []
+            continue
+
+        confidence = float(voiced_prob[i]) if not np.isnan(voiced_prob[i]) else 0.5
+        if current_pitch is None:
+            current_pitch = pitch
+            start_index = i
+            confidences = [confidence]
+        elif pitch == current_pitch:
+            confidences.append(confidence)
+        else:
+            append_note(i)
+            current_pitch = pitch
+            start_index = i
+            confidences = [confidence]
+
+    append_note(len(times) - 1)
+
+    # Drop tiny fragments that are usually frame-level pitch noise.
+    notes = [note for note in notes if note["offset"] - note["onset"] >= 0.04]
+
+    return {
+        "notes": notes,
+        "model_outputs": {"backend": "librosa.pyin"},
+        "total_notes_detected": len(notes),
+    }
 
 
 def detect_beat_and_tempo(input_file_path: str) -> dict:

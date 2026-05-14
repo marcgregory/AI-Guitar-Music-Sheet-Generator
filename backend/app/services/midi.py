@@ -7,11 +7,11 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 # Optional: music21 for MusicXML conversion
 try:
-    from music21 import converter, midi, xml
+    from music21 import converter
     MUSIC21_AVAILABLE = True
 except ImportError:
     MUSIC21_AVAILABLE = False
@@ -38,13 +38,7 @@ def notes_to_midi(notes_data: Dict[str, Any], output_path: Optional[str] = None,
         except json.JSONDecodeError:
             raise ValueError("Invalid notes_data format")
 
-    # Extract notes array
-    if "notes" in notes_data:
-        notes = notes_data["notes"]
-    elif isinstance(notes_data, list):
-        notes = notes_data
-    else:
-        raise ValueError("Invalid notes_data structure")
+    notes = _extract_notes(notes_data)
 
     # Create MIDI file and track
     mid = MidiFile(ticks_per_beat=ticks_per_beat)
@@ -65,8 +59,9 @@ def notes_to_midi(notes_data: Dict[str, Any], output_path: Optional[str] = None,
 
     # Convert notes to MIDI messages
     # We need to convert time in seconds to MIDI ticks
-    seconds_per_tick = 60.0 / (tempo_microseconds_per_beat / 1000000) / ticks_per_beat  # seconds per tick
+    seconds_per_tick = tempo_microseconds_per_beat / 1000000.0 / ticks_per_beat
 
+    events = []
     for note in notes:
         # Validate note structure
         if not all(key in note for key in ["onset", "offset", "pitch", "velocity"]):
@@ -74,19 +69,17 @@ def notes_to_midi(notes_data: Dict[str, Any], output_path: Optional[str] = None,
 
         onset_tick = int(note["onset"] / seconds_per_tick)
         offset_tick = int(note["offset"] / seconds_per_tick)
-        duration_tick = max(0, offset_tick - onset_tick)  # Ensure non-negative duration
+        pitch = int(note["pitch"])
+        velocity = int(note["velocity"])
+        if 0 <= pitch <= 127:
+            events.append((max(0, onset_tick), 1, Message('note_on', note=pitch, velocity=velocity, time=0)))
+            events.append((max(0, offset_tick), 0, Message('note_off', note=pitch, velocity=0, time=0)))
 
-        # Note on message
-        track.append(Message('note_on',
-                           note=note["pitch"],
-                           velocity=note["velocity"],
-                           time=onset_tick))
-
-        # Note off message
-        track.append(Message('note_off',
-                           note=note["pitch"],
-                           velocity=0,
-                           time=duration_tick))
+    previous_tick = 0
+    for tick, _, message in sorted(events, key=lambda event: (event[0], event[1])):
+        message.time = max(0, tick - previous_tick)
+        track.append(message)
+        previous_tick = tick
 
     # Save the MIDI file
     if output_path is None:
@@ -100,6 +93,26 @@ def notes_to_midi(notes_data: Dict[str, Any], output_path: Optional[str] = None,
 
     mid.save(output_path)
     return output_path
+
+
+def _extract_notes(notes_data: Any) -> List[Dict[str, Any]]:
+    """Extract note events from supported pitch-analysis shapes."""
+    if isinstance(notes_data, str):
+        try:
+            notes_data = json.loads(notes_data)
+        except json.JSONDecodeError:
+            raise ValueError("Invalid notes_data format")
+
+    if isinstance(notes_data, list):
+        return notes_data
+
+    if isinstance(notes_data, dict):
+        if isinstance(notes_data.get("notes"), list):
+            return notes_data["notes"]
+        if isinstance(notes_data.get("pitch_info"), list):
+            return notes_data["pitch_info"]
+
+    raise ValueError("Invalid notes_data structure")
 
 
 def save_midi_from_transcription(notes_data: str, transcription_id: int,
@@ -246,10 +259,16 @@ def midi_to_musicxml(midi_file_path: str) -> str:
         raise ImportError("music21 is not installed. Install it with 'pip install music21'")
 
     try:
-        # Parse the MIDI file
         midi_score = converter.parse(midi_file_path)
-        # Write MusicXML to a string
-        musicxml_string = midi_score.write('musicxml')
-        return musicxml_string
+        with tempfile.NamedTemporaryFile(suffix=".musicxml", delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            musicxml_path = midi_score.write('musicxml', fp=temp_path)
+            with open(musicxml_path, "r", encoding="utf-8") as f:
+                return f.read()
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
     except Exception as e:
         raise ValueError(f"Failed to convert MIDI to MusicXML: {e}")

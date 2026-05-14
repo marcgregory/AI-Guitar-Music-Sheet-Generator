@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 
 interface AuthContextType {
   token: string | null;
@@ -22,19 +22,33 @@ interface AuthProviderProps {
   children: React.ReactNode;
 }
 
+const readStoredAuth = (): {
+  token: string | null;
+  user: { username: string; email: string } | null;
+} => {
+  const storedToken = localStorage.getItem('token');
+  const storedUser = localStorage.getItem('user');
+
+  if (!storedToken || !storedUser) {
+    return { token: null, user: null };
+  }
+
+  try {
+    return {
+      token: storedToken,
+      user: JSON.parse(storedUser),
+    };
+  } catch {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    return { token: null, user: null };
+  }
+};
+
 export const AuthProvider = ({ children }: AuthProviderProps) => {
-  const [token, setToken] = useState<string | null>(null);
-  const [user, setUser] = useState<{ username: string; email: string } | null>(null);
-
-  useEffect(() => {
-    const storedToken = localStorage.getItem('token');
-    const storedUser = localStorage.getItem('user');
-
-    if (storedToken && storedUser) {
-      setToken(storedToken);
-      setUser(JSON.parse(storedUser));
-    }
-  }, []);
+  const [storedAuth] = useState(readStoredAuth);
+  const [token, setToken] = useState<string | null>(storedAuth.token);
+  const [user, setUser] = useState<{ username: string; email: string } | null>(storedAuth.user);
 
   const login = (token: string, user: { username: string; email: string }) => {
     setToken(token);

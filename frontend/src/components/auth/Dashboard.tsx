@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from "react";
-import { useAuth } from "./AuthContext";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useTheme } from "../ThemeProvider";
+import audioService, { type Transcription } from "../../services/audioService";
+import { Icon } from "../Icon";
+import { useAuth } from "./AuthContext";
 
 interface Project {
   id: number;
@@ -10,246 +11,254 @@ interface Project {
   createdAt: string;
   audioFileName: string;
   status: "processing" | "completed" | "failed";
-  duration: number; // in seconds
+  duration: number;
   difficulty: "beginner" | "intermediate" | "advanced";
 }
 
+const filenameFromPath = (path?: string | null): string =>
+  path?.split(/[\\/]/).pop() || "Audio source";
+
+const getTranscriptionStatus = (transcription: Transcription): Project["status"] => {
+  if (transcription.processing_error) return "failed";
+  return transcription.is_processed ? "completed" : "processing";
+};
+
+const getDifficulty = (duration?: number | null): Project["difficulty"] => {
+  if (!duration || duration < 180) return "beginner";
+  if (duration < 360) return "intermediate";
+  return "advanced";
+};
+
+const mapTranscriptionToProject = (transcription: Transcription): Project => {
+  const status = getTranscriptionStatus(transcription);
+  const audioFileName = transcription.youtube_url
+    ? "YouTube audio"
+    : filenameFromPath(transcription.audio_file_path);
+
+  return {
+    id: transcription.id,
+    title: transcription.title || `Transcription ${transcription.id}`,
+    description:
+      status === "failed"
+        ? transcription.processing_error || "Processing failed"
+        : status === "completed"
+          ? "Score, tab, and exports are ready"
+          : "Analysis is running in the background",
+    createdAt: transcription.created_at || new Date().toISOString(),
+    audioFileName,
+    status,
+    duration: transcription.duration || 0,
+    difficulty: getDifficulty(transcription.duration),
+  };
+};
+
+const formatDuration = (duration: number): string => {
+  const wholeSeconds = Math.max(0, Math.floor(duration));
+  const minutes = Math.floor(wholeSeconds / 60);
+  const seconds = wholeSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+};
+
+const parseApiDate = (value: string): Date => {
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+  return new Date(hasTimezone ? value : `${value}Z`);
+};
+
+const formatCreatedDate = (value: string): string =>
+  parseApiDate(value).toLocaleDateString();
+
+const formatCreatedDateTime = (value: string): string =>
+  parseApiDate(value).toLocaleString();
+
+const getStatusGradient = (status: Project["status"]) => {
+  switch (status) {
+    case "completed":
+      return "linear-gradient(135deg, #42755f, #244c69)";
+    case "processing":
+      return "linear-gradient(135deg, #bf8d31, #a8481d)";
+    case "failed":
+      return "linear-gradient(135deg, #aa3f34, #722f16)";
+    default:
+      return "linear-gradient(135deg, #4e4a44, #171513)";
+  }
+};
+
+const getDifficultyColor = (difficulty: Project["difficulty"]) => {
+  switch (difficulty) {
+    case "beginner":
+      return "#42755f";
+    case "intermediate":
+      return "#bf8d31";
+    case "advanced":
+      return "#aa3f34";
+    default:
+      return "#4e4a44";
+  }
+};
+
 const Dashboard: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, token } = useAuth();
   const navigate = useNavigate();
-  const { toggleDarkMode, isDarkMode } = useTheme();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
-
-  const handleLogout = () => {
-    logout();
-    navigate("/login");
-  };
 
   const handleNewTranscription = () => {
     navigate("/upload");
   };
 
-  const handleViewModeChange = (mode: "grid" | "list") => {
-    setViewMode(mode);
-  };
+  const getProjectRoute = (project: Project): string =>
+    project.status === "completed"
+      ? `/transcription/${project.id}`
+      : `/processing/${project.id}`;
 
-  // Mock data - in a real app, this would come from an API
   useEffect(() => {
-    const loadProjects = async () => {
-      try {
-        // Simulate API call
-        await new Promise((resolve) => setTimeout(resolve, 800));
+    let isMounted = true;
+    let refreshTimer: ReturnType<typeof window.setInterval> | undefined;
 
-        // Mock data with rich details
-        const mockProjects: Project[] = [
-          {
-            id: 1,
-            title: "Hotel California - Eagles",
-            description:
-              "Classic rock song with iconic guitar solo and complex chord progression",
-            createdAt: "2026-05-10T14:30:00Z",
-            audioFileName: "hotel_california.mp3",
-            status: "completed",
-            duration: 391,
-            difficulty: "advanced",
-          },
-          {
-            id: 2,
-            title: "Stairway to Heaven - Led Zeppelin",
-            description:
-              "Legendary progressive rock anthem with intricate fingerpicking",
-            createdAt: "2026-05-09T09:15:00Z",
-            audioFileName: "stairway_to_heaven.wav",
-            status: "completed",
-            duration: 482,
-            difficulty: "advanced",
-          },
-          {
-            id: 3,
-            title: "Wonderwall - Oasis",
-            description:
-              "Popular acoustic track with memorable strumming pattern",
-            createdAt: "2026-05-08T16:45:00Z",
-            audioFileName: "wonderwall.mp3",
-            status: "completed",
-            duration: 258,
-            difficulty: "intermediate",
-          },
-          {
-            id: 4,
-            title: "New Project",
-            description: "Recently uploaded audio file awaiting processing",
-            createdAt: new Date().toISOString(),
-            audioFileName: "unknown.mp3",
-            status: "processing",
-            duration: 0,
-            difficulty: "beginner",
-          },
-        ];
+    const hasProcessingProject = (projectList: Project[]) =>
+      projectList.some((project) => project.status === "processing");
 
-        setProjects(mockProjects);
-        setLoading(false);
-      } catch (error) {
-        console.error("Failed to load projects:", error);
-        setLoading(false);
+    const stopAutoRefresh = () => {
+      if (refreshTimer) {
+        window.clearInterval(refreshTimer);
+        refreshTimer = undefined;
       }
     };
 
-    loadProjects();
-  }, []);
+    const loadProjects = async (showLoading: boolean) => {
+      if (!token) {
+        if (isMounted) {
+          setProjects([]);
+          setLoading(false);
+        }
+        return [];
+      }
+
+      try {
+        if (showLoading && isMounted) setLoading(true);
+        if (isMounted) setLoadError(null);
+
+        const transcriptions = await audioService.listTranscriptions(token);
+        const nextProjects = transcriptions.map(mapTranscriptionToProject);
+
+        if (isMounted) {
+          setProjects(nextProjects);
+          setLoading(false);
+        }
+
+        return nextProjects;
+      } catch (error: any) {
+        if (isMounted) {
+          setLoadError(error.response?.data?.detail || "Failed to load transcriptions");
+          if (showLoading) setProjects([]);
+          setLoading(false);
+        }
+        return null;
+      }
+    };
+
+    const startAutoRefresh = async () => {
+      const initialProjects = await loadProjects(true);
+      if (!initialProjects || !hasProcessingProject(initialProjects)) return;
+
+      refreshTimer = window.setInterval(async () => {
+        const latestProjects = await loadProjects(false);
+        if (latestProjects && !hasProcessingProject(latestProjects)) {
+          stopAutoRefresh();
+        }
+      }, 5000);
+    };
+
+    startAutoRefresh();
+
+    return () => {
+      isMounted = false;
+      stopAutoRefresh();
+    };
+  }, [token]);
 
   if (!user) {
     navigate("/login");
     return null;
   }
 
-  // Generate a gradient based on project status
-  const getStatusGradient = (status: string) => {
-    switch (status) {
-      case "completed":
-        return "linear-gradient(135deg, #10b981, #059669)";
-      case "processing":
-        return "linear-gradient(135deg, #f59e0b, #d97706)";
-      case "failed":
-        return "linear-gradient(135deg, #ef4444, #dc2626)";
-      default:
-        return "linear-gradient(135deg, #6b7280, #4b5563)";
-    }
-  };
-
-  // Get difficulty color
-  const getDifficultyColor = (difficulty: string) => {
-    switch (difficulty) {
-      case "beginner":
-        return "#10b981";
-      case "intermediate":
-        return "#f59e0b";
-      case "advanced":
-        return "#ef4444";
-      default:
-        return "#6b7280";
-    }
-  };
+  const completedCount = projects.filter((project) => project.status === "completed").length;
+  const processingCount = projects.filter((project) => project.status === "processing").length;
+  const totalMinutes = Math.floor(projects.reduce((sum, project) => sum + project.duration, 0) / 60);
 
   return (
     <div className="dashboard-page">
-      {/* Animated background */}
-      <div className="dashboard-background">
-        <div className="dashboard-background-shapes"></div>
-      </div>
-
       <div className="dashboard-content">
         <header className="dashboard-header">
           <div className="dashboard-header-content">
-            <h1 className="dashboard-title">
-              <span className="title-icon">🎵</span>
-              MusicSheet Generator
-            </h1>
+            <h1 className="dashboard-title">MusicSheet Studio</h1>
             <p className="dashboard-subtitle">
-              Welcome back, {user.username}! Transform audio into guitar tabs
-              with AI
+              Welcome back, {user.username}. Turn rough audio into readable guitar scores, clean tabs, and exportable practice files.
             </p>
           </div>
           <div className="dashboard-header-actions">
             <button
-              onClick={handleViewModeChange}
-              className={`view-mode-button ${viewMode === "list" ? "active" : ""}`}
-              title={viewMode === "grid" ? "List View" : "Grid View"}
+              onClick={() => setViewMode(viewMode === "grid" ? "list" : "grid")}
+              className={`view-mode-button icon-button ${viewMode === "list" ? "active" : ""}`}
+              aria-label={viewMode === "grid" ? "Switch to list view" : "Switch to grid view"}
+              title={viewMode === "grid" ? "List view" : "Grid view"}
             >
-              {viewMode === "grid" ? "📊" : "🧱"}
+              <Icon name={viewMode === "grid" ? "list" : "grid"} />
             </button>
-            <button
-              onClick={handleNewTranscription}
-              className="new-transcription-button"
-            >
-              <span className="button-icon">✨</span>
-              <span>New Transcription</span>
-            </button>
-            <button onClick={handleLogout} className="logout-button">
-              <span className="button-icon">🚪</span>
-              <span>Logout</span>
-            </button>
-            <button
-              onClick={toggleDarkMode}
-              className="theme-toggle-button"
-              title="Toggle Dark/Light Mode"
-            >
-              <span className="button-icon">{isDarkMode ? "☀️" : "🌙"}</span>
+            <button onClick={handleNewTranscription} className="new-transcription-button">
+              <Icon name="plus" />
+              <span>New transcription</span>
             </button>
           </div>
         </header>
 
         <main className="dashboard-main">
-          {/* Stats Overview */}
           <div className="dashboard-stats">
             <div className="stat-card">
-              <div className="stat-icon">📊</div>
               <div className="stat-content">
                 <h3 className="stat-value">{projects.length}</h3>
-                <p className="stat-label">Total Projects</p>
+                <p className="stat-label">Total projects</p>
               </div>
             </div>
             <div className="stat-card">
-              <div className="stat-icon">✅</div>
               <div className="stat-content">
-                <h3 className="stat-value">
-                  {projects.filter((p) => p.status === "completed").length}
-                </h3>
+                <h3 className="stat-value">{completedCount}</h3>
                 <p className="stat-label">Completed</p>
               </div>
             </div>
             <div className="stat-card">
-              <div className="stat-icon">⏳</div>
               <div className="stat-content">
-                <h3 className="stat-value">
-                  {projects.filter((p) => p.status === "processing").length}
-                </h3>
+                <h3 className="stat-value">{processingCount}</h3>
                 <p className="stat-label">Processing</p>
               </div>
             </div>
             <div className="stat-card">
-              <div className="stat-icon">⏱️</div>
               <div className="stat-content">
-                <h3 className="stat-value">
-                  {Math.floor(
-                    projects.reduce((sum, p) => sum + p.duration, 0) / 60,
-                  )}
-                  h
-                </h3>
-                <p className="stat-label">Total Time</p>
+                <h3 className="stat-value">{totalMinutes}m</h3>
+                <p className="stat-label">Analyzed audio</p>
               </div>
             </div>
           </div>
 
-          {/* Projects Section */}
           <section className="projects-section">
-            <h2 className="section-title">
-              <span className="section-icon">📁</span>
-              Your Music Projects
-            </h2>
+            <h2 className="section-title">Your music projects</h2>
+            {loadError && <div className="alert alert-error">{loadError}</div>}
 
             {loading ? (
               <div className="loading-state">
                 <div className="loading-spinner"></div>
-                <p className="loading-text">
-                  Loading your musical creations...
-                </p>
+                <p className="loading-text">Loading your transcription library...</p>
               </div>
             ) : projects.length === 0 ? (
               <div className="empty-state">
-                <div className="empty-state-icon">🎧</div>
-                <h3 className="empty-state-title">No projects yet</h3>
+                <h3 className="empty-state-title">Your first score is waiting</h3>
                 <p className="empty-state-description">
-                  Your first transcription awaits. Upload an audio file to begin
-                  your journey.
+                  Upload an MP3, WAV, or YouTube link and let the studio generate guitar notation from it.
                 </p>
-                <button
-                  onClick={handleNewTranscription}
-                  className="primary-action-button"
-                >
-                  Start First Transcription
+                <button onClick={handleNewTranscription} className="primary-action-button">
+                  Start first transcription
                 </button>
               </div>
             ) : (
@@ -257,47 +266,33 @@ const Dashboard: React.FC = () => {
                 {viewMode === "grid" ? (
                   <div className="projects-grid">
                     {projects.map((project) => (
-                      <div
+                      <article
                         key={project.id}
                         className={`project-card project-card-${project.status}`}
-                        onDoubleClick={() => navigate(`/project/${project.id}`)}
+                        onDoubleClick={() => navigate(getProjectRoute(project))}
                       >
                         <div className="project-card-header">
-                          <div
-                            className="project-status-badge"
-                            style={{
-                              background: getStatusGradient(project.status),
-                            }}
-                          >
-                            {project.status.toUpperCase()}
-                          </div>
                           <h3 className="project-title">{project.title}</h3>
+                          <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
+                            {project.status}
+                          </div>
                         </div>
 
                         <div className="project-body">
-                          <p className="project-description">
-                            {project.description}
-                          </p>
+                          <p className="project-description">{project.description}</p>
 
                           <div className="project-meta">
                             <div className="meta-item">
-                              <span className="meta-icon">📄</span>
-                              <span>{project.audioFileName}</span>
+                              <span className="meta-label">Source</span>
+                              <span className="meta-value">{project.audioFileName}</span>
                             </div>
                             <div className="meta-item">
-                              <span className="meta-icon">⏱️</span>
-                              <span>
-                                {Math.floor(project.duration / 60)}:
-                                {String(project.duration % 60).padStart(2, "0")}
-                              </span>
+                              <span className="meta-label">Duration</span>
+                              <span className="meta-value">{formatDuration(project.duration)}</span>
                             </div>
                             <div className="meta-item">
-                              <span className="meta-icon">📅</span>
-                              <span>
-                                {new Date(
-                                  project.createdAt,
-                                ).toLocaleDateString()}
-                              </span>
+                              <span className="meta-label">Created</span>
+                              <span className="meta-value">{formatCreatedDate(project.createdAt)}</span>
                             </div>
                           </div>
 
@@ -305,139 +300,81 @@ const Dashboard: React.FC = () => {
                             <span
                               className="difficulty-tag"
                               style={{
-                                backgroundColor:
-                                  getDifficultyColor(project.difficulty) + "20",
                                 color: getDifficultyColor(project.difficulty),
                               }}
                             >
-                              {project.difficulty.toUpperCase()}
+                              <Icon name="gauge" />
+                              {project.difficulty}
                             </span>
                             {project.status === "completed" && (
-                              <span className="quality-badge">HD Quality</span>
+                              <span className="quality-badge">
+                                <Icon name="check" />
+                                export ready
+                              </span>
                             )}
                           </div>
                         </div>
 
                         <div className="project-actions">
-                          <button
-                            onClick={() => navigate(`/project/${project.id}`)}
-                            className="action-button view-button"
-                          >
-                            <span className="button-icon">👁️</span>
-                            <span>View Details</span>
+                          <button onClick={() => navigate(getProjectRoute(project))} className="action-button view-button">
+                            <Icon name="eye" />
+                            <span>View</span>
                           </button>
                           {project.status === "completed" && (
-                            <>
-                              <button
-                                onClick={() =>
-                                  alert("Export functionality coming soon!")
-                                }
-                                className="action-button export-button"
-                              >
-                                <span className="button-icon">📥</span>
-                                <span>Export</span>
-                              </button>
-                              <button
-                                onClick={() =>
-                                  alert("Share functionality coming soon!")
-                                }
-                                className="action-button share-button"
-                              >
-                                <span className="button-icon">🔗</span>
-                                <span>Share</span>
-                              </button>
-                            </>
+                            <button onClick={() => navigate(getProjectRoute(project))} className="action-button export-button">
+                              <Icon name="download" />
+                              <span>Exports</span>
+                            </button>
                           )}
                         </div>
-                      </div>
+                      </article>
                     ))}
                   </div>
                 ) : (
                   <div className="projects-list">
                     {projects.map((project) => (
-                      <div
-                        key={project.id}
-                        className={`project-list-item project-list-item-${project.status}`}
-                      >
+                      <article key={project.id} className={`project-list-item project-list-item-${project.status}`}>
                         <div className="project-list-content">
                           <div className="project-list-header">
-                            <h3 className="project-list-title">
-                              {project.title}
-                            </h3>
-                            <div
-                              className="project-list-status"
-                              style={{
-                                background: getStatusGradient(project.status),
-                                color: "white",
-                              }}
-                            >
-                              {project.status.toUpperCase()}
+                            <h3 className="project-list-title">{project.title}</h3>
+                            <div className="project-list-status" style={{ background: getStatusGradient(project.status) }}>
+                              {project.status}
                             </div>
                           </div>
 
                           <div className="project-list-body">
-                            <p className="project-list-description">
-                              {project.description}
-                            </p>
+                            <p className="project-list-description">{project.description}</p>
 
                             <div className="project-list-info">
                               <div className="info-row">
-                                <span className="info-label">File:</span>
-                                <span className="info-value">
-                                  {project.audioFileName}
+                                <span className="info-label">File</span>
+                                <span className="info-value">{project.audioFileName}</span>
+                              </div>
+                              <div className="info-row">
+                                <span className="info-label">Duration</span>
+                                <span className="info-value">{formatDuration(project.duration)}</span>
+                              </div>
+                              <div className="info-row">
+                                <span className="info-label">Difficulty</span>
+                                <span className="info-value" style={{ color: getDifficultyColor(project.difficulty) }}>
+                                  {project.difficulty}
                                 </span>
                               </div>
                               <div className="info-row">
-                                <span className="info-label">Duration:</span>
-                                <span className="info-value">
-                                  {Math.floor(project.duration / 60)}:
-                                  {String(project.duration % 60).padStart(
-                                    2,
-                                    "0",
-                                  )}
-                                </span>
-                              </div>
-                              <div className="info-row">
-                                <span className="info-label">Difficulty:</span>
-                                <span
-                                  className="info-value"
-                                  style={{
-                                    color: getDifficultyColor(
-                                      project.difficulty,
-                                    ),
-                                    fontWeight: "600",
-                                  }}
-                                >
-                                  {project.difficulty.toUpperCase()}
-                                </span>
-                              </div>
-                              <div className="info-row">
-                                <span className="info-label">Created:</span>
-                                <span className="info-value">
-                                  {new Date(project.createdAt).toLocaleString()}
-                                </span>
+                                <span className="info-label">Created</span>
+                                <span className="info-value">{formatCreatedDateTime(project.createdAt)}</span>
                               </div>
                             </div>
                           </div>
                         </div>
 
                         <div className="project-list-actions">
-                          <button
-                            onClick={() => navigate(`/project/${project.id}`)}
-                            className="action-button list-action-button"
-                          >
-                            View Details
+                          <button onClick={() => navigate(getProjectRoute(project))} className="action-button list-action-button">
+                            <Icon name="eye" />
+                            <span>View</span>
                           </button>
-                          {project.status === "completed" && (
-                            <button
-                              onClick={() => alert("Export coming soon!")}
-                              className="action-button list-action-button export-button"
-                            >
-                              Export
-                            </button>
-                          )}
                         </div>
-                      </div>
+                      </article>
                     ))}
                   </div>
                 )}
@@ -445,54 +382,34 @@ const Dashboard: React.FC = () => {
             )}
           </section>
 
-          {/* Quick Actions */}
           <section className="quick-actions-section">
-            <h2 className="section-title">
-              <span className="section-icon">⚡</span>
-              Quick Actions
-            </h2>
+            <h2 className="section-title">Quick actions</h2>
             <div className="quick-actions-grid">
-              <button
-                onClick={handleNewTranscription}
-                className="quick-action-button"
-              >
-                <div className="quick-action-icon">📤</div>
+              <button onClick={handleNewTranscription} className="quick-action-button">
                 <div className="quick-action-content">
-                  <h3>Upload Audio</h3>
+                  <h3>Upload audio</h3>
                   <p>MP3, WAV, or YouTube URL</p>
                 </div>
               </button>
 
-              <button
-                onClick={() => alert("Recording feature coming soon!")}
-                className="quick-action-button"
-              >
-                <div className="quick-action-icon">🎤</div>
-                <div class="quick-action-content">
-                  <h3>Record Audio</h3>
+              <button onClick={() => alert("Recording feature coming soon.")} className="quick-action-button">
+                <div className="quick-action-content">
+                  <h3>Record audio</h3>
                   <p>Capture directly from mic</p>
                 </div>
               </button>
 
-              <button
-                onClick={() => alert("Batch processing coming soon!")}
-                className="quick-action-button"
-              >
-                <div className="quick-action-icon">📦</div>
-                <div class="quick-action-content">
-                  <h3>Batch Process</h3>
+              <button onClick={() => alert("Batch processing coming soon.")} className="quick-action-button">
+                <div className="quick-action-content">
+                  <h3>Batch process</h3>
                   <p>Multiple files at once</p>
                 </div>
               </button>
 
-              <button
-                onClick={() => alert("Template library coming soon!")}
-                className="quick-action-button"
-              >
-                <div className="quick-action-icon">📋</div>
-                <div class="quick-action-content">
+              <button onClick={() => alert("Template library coming soon.")} className="quick-action-button">
+                <div className="quick-action-content">
                   <h3>Templates</h3>
-                  <p>Start with presets</p>
+                  <p>Start with arrangement presets</p>
                 </div>
               </button>
             </div>

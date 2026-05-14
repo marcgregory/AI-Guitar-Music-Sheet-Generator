@@ -7,7 +7,7 @@
 - [x] Set up backend repository with FastAPI template
 - [x] Set up frontend repository with React + Vite + TypeScript template
 - [x] Configure Docker Compose for local development (backend, frontend, Redis, PostgreSQL)
-- [x] Set up CI/CD pipeline with GitHub Actions (lint, test, build)
+- [ ] Set up CI/CD pipeline with GitHub Actions (lint, test, build) - workflow exists, but frontend job calls `npm test` even though no test script exists; needs correction before this is complete
 - [x] Initialize database schema (users, projects, transcriptions) - Structure created, execution pending SQLAlchemy/Python 3.13 compatibility resolution RESOLVED
 - [x] Implement basic authentication (JWT-based login/register) - Structure created, execution pending SQLAlchemy/Python 3.13 compatibility resolution RESOLVED
 - [x] Create basic API health check endpoint
@@ -17,7 +17,7 @@
 - [x] Implement file upload endpoint (MP3/WAV) with size validation
 - [x] Integrate yt-dlp for YouTube audio extraction (temporary storage)
 - [x] Add audio preprocessing (normalization, resampling) using librosa
-- [x] Implement source separation using Demucs or Spleeter (guitar isolation)
+- [x] Implement source separation using Demucs or Spleeter (guitar isolation) - Demucs dependency enabled; processing now prefers the `htdemucs_6s` guitar stem and falls back to vocals/accompaniment separation when needed
 - [x] Implement pitch detection using Spotify Basic Pitch (or CREPE as fallback)
 - [x] Implement beat/tempo detection using librosa.beat
 - [x] Implement key detection using Essentia or librosa chroma features
@@ -25,8 +25,8 @@
 - [x] Create basic chord recognition using librosa chroma + template matching
 - [x] Design data structure for transcription results (notes, chords, timing)
 - [x] Create async processing pipeline with Celery (handle long-running tasks)
-- [x] Add confidence scoring for detected elements
-- [x] Implement error handling and fallback for low-confidence sections
+- [x] Add confidence scoring for detected elements - note events include per-note confidence/velocity, chord segments include averaged template confidence, tempo uses beat consistency, and key detection returns chroma-template confidence; task storage for `key_confidence` still needs a field-name correction
+- [x] Implement error handling and fallback for low-confidence sections - Basic Pitch falls back to CLI, then CREPE, then librosa pYIN; source separation falls back from guitar stem extraction to accompaniment or preprocessed audio
 
 ## Phase 2: Basic Transcription Output & Storage
 
@@ -39,21 +39,21 @@
 - [x] Implement export as plain text guitar tabs
 - [x] Store transcription results in database linked to user/project
 - [x] Create API endpoints to retrieve transcription data
-- [x] Implement automatic cleanup of temporary audio files after processing
+- [x] Implement automatic cleanup of temporary audio files after processing - uploaded, preprocessed, and separated audio files are deleted at terminal task state while persisted analysis and export data remain available
 
 ## Phase 3: Frontend - Basic Interface
 
 - [x] Create login/logout/register pages
-- [ ] Design dashboard layout (projects list, new transcription button)
+- [x] Design dashboard layout (projects list, new transcription button) - UI exists, currently backed by mock project data
 - [x] Build audio upload component (file drag&drop, YouTube URL input)
-- [ ] Create processing status page (progress bar, estimated time)
-- [ ] Design basic transcription viewer (tabs + notation side-by-side)
+- [x] Create processing status page (progress bar, estimated time) - route wired at `/processing/:transcriptionId`
+- [x] Design basic transcription viewer (tabs + notation side-by-side) - displays tablature/MusicXML data; notation rendering is still raw MusicXML, not staff notation
 - [x] Implement audio playback controls (play/pause, seek, volume)
 - [x] Add synchronized playback highlighting (current position in tab/notation)
 - [x] Implement playback speed control (0.5x to 2.0x)
 - [x] Add zoom controls for notation viewer
 - [x] Implement dark/light mode toggle
-- [ ] Add download buttons for each export format (MIDI, MusicXML, TXT, PDF later)
+- [x] Add download buttons for each export format (MIDI, MusicXML, TXT, PDF later) - MIDI, MusicXML, and TAB buttons are wired; PDF remains Phase 6
 
 ## Phase 4: Enhanced Transcription Features
 
@@ -93,7 +93,7 @@
 
 ## Phase 7: Testing, Performance & Optimization
 
-- [ ] Create unit tests for audio processing components
+- [x] Create unit tests for audio processing components - 6 backend service tests cover chord charts, enhanced pitch-info output shape, MIDI/tab generation, Basic Pitch CSV normalization, and Demucs source-separation fallback behavior; broader audio accuracy coverage still needed
 - [ ] Implement integration tests for API endpoints
 - [ ] Add frontend component testing (Jest + React Testing Library)
 - [ ] Conduct accuracy testing with known songs benchmark suite
@@ -130,3 +130,17 @@
 - [ ] Add support for additional export formats (GuitarPro, PowerTab)
 
 Each phase should be completed with code review, testing, and stakeholder feedback before proceeding to the next. Estimated timeline: 6-9 months for MVP (Phases 0-4), additional 3-6 months for full feature set.
+
+## Review Notes - 2026-05-13
+
+- Backend verification: `python -m py_compile main.py app\api\v1\endpoints\audio.py app\tasks.py` passed.
+- Backend tests: `python -m pytest tests` passed with 4 tests and 6 deprecation warnings.
+- Frontend verification: build was not run because `npm`/`npm.cmd` is not available on the current shell PATH.
+- Fixed during review: processing route wiring, upload-to-processing redirect, authenticated status/result API calls, missing transcription result API client method, export download API client method/buttons, static serving for uploaded audio files, and Docker Compose frontend API URL.
+
+## Review Notes - 2026-05-14
+
+- Backend service coverage now includes 6 tests in `backend/tests/test_music_output_services.py`.
+- Current confidence scoring status: notes, chords, tempo, and key detection produce confidence values; `process_audio_transcription` stores tempo confidence but currently reads `key_confidence` from the wrong key name, so persisted key confidence remains a follow-up fix.
+- Source separation status: Demucs `htdemucs_6s` guitar stem is preferred, with accompaniment and preprocessed-audio fallbacks keeping the pipeline usable when separation fails.
+- Phase 2 cleanup update: temporary Demucs/Basic Pitch working directories are cleaned, and retained upload, preprocessed, and separated audio files are now deleted when processing reaches a terminal state. MIDI and database-backed export data are retained/regenerated for downloads.

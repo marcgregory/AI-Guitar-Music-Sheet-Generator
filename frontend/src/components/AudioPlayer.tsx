@@ -6,6 +6,40 @@ interface AudioPlayerProps {
   onEnded?: () => void;
 }
 
+type PlayerIconName = "play" | "pause" | "volume" | "mute";
+
+const PlayerIcon = ({ name }: { name: PlayerIconName }) => {
+  const paths: Record<PlayerIconName, React.ReactNode> = {
+    play: <path d="m8 5 11 7-11 7V5Z" />,
+    pause: (
+      <>
+        <path d="M8 5v14" />
+        <path d="M16 5v14" />
+      </>
+    ),
+    volume: (
+      <>
+        <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+        <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+        <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+      </>
+    ),
+    mute: (
+      <>
+        <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+        <path d="m16 9 5 5" />
+        <path d="m21 9-5 5" />
+      </>
+    ),
+  };
+
+  return (
+    <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+      {paths[name]}
+    </svg>
+  );
+};
+
 const AudioPlayer: React.FC<AudioPlayerProps> = ({
   audioUrl,
   onTimeUpdate,
@@ -15,9 +49,18 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
   const [volume, setVolume] = useState<number>(0.7);
-const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+  const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isSeeking, setIsSeeking] = useState<boolean>(false);
+
+  useEffect(() => {
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    setLoadError(null);
+    audioRef.current?.load();
+  }, [audioUrl]);
 
   useEffect(() => {
     if (!audioRef.current) return;
@@ -31,7 +74,8 @@ const [playbackRate, setPlaybackRate] = useState<number>(1.0);
 
     // Listen for duration change
     const handleLoadedMetadata = () => {
-      setDuration(audio.duration);
+      setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+      setLoadError(null);
     };
 
     // Listen for time updates
@@ -48,26 +92,41 @@ const [playbackRate, setPlaybackRate] = useState<number>(1.0);
       onEnded?.();
     };
 
+    const handleError = () => {
+      setIsPlaying(false);
+      setDuration(0);
+      setLoadError("Audio file could not be loaded.");
+    };
+
     audio.addEventListener('loadedmetadata', handleLoadedMetadata);
     audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('error', handleError);
 
     return () => {
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('error', handleError);
     };
   }, [volume, playbackRate, onTimeUpdate, onEnded]);
 
-  const handlePlayPause = () => {
+  const handlePlayPause = async () => {
     if (!audioRef.current) return;
 
     if (isPlaying) {
       audioRef.current.pause();
+      setIsPlaying(false);
     } else {
-      audioRef.current.play();
+      try {
+        await audioRef.current.play();
+        setIsPlaying(true);
+        setLoadError(null);
+      } catch {
+        setIsPlaying(false);
+        setLoadError("Audio playback could not start.");
+      }
     }
-    setIsPlaying(!isPlaying);
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -116,9 +175,10 @@ const [playbackRate, setPlaybackRate] = useState<number>(1.0);
           <button
             className={`play-pause-button ${isPlaying ? 'playing' : ''}`}
             onClick={handlePlayPause}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
             title={isPlaying ? 'Pause' : 'Play'}
           >
-            {isPlaying ? '⏸️' : '▶️'}
+            <PlayerIcon name={isPlaying ? 'pause' : 'play'} />
           </button>
 
           <div className="audio-player-time-display">
@@ -142,7 +202,8 @@ const [playbackRate, setPlaybackRate] = useState<number>(1.0);
 
         <div className="audio-player-volume-controls">
           <button
-            className="volume-button"
+            className="volume-button icon-button"
+            aria-label={volume === 0 ? 'Unmute' : 'Mute'}
             title="Mute/Unmute"
             onClick={() => {
               setVolume(volume > 0 ? 0 : 0.7);
@@ -151,7 +212,7 @@ const [playbackRate, setPlaybackRate] = useState<number>(1.0);
               }
             }}
           >
-            {volume === 0 ? '🔇' : '🔊'}
+            <PlayerIcon name={volume === 0 ? 'mute' : 'volume'} />
           </button>
           <input
             type="range"
@@ -187,6 +248,7 @@ const [playbackRate, setPlaybackRate] = useState<number>(1.0);
         src={audioUrl}
         preload="metadata"
       />
+      {loadError && <p className="audio-player-error">{loadError}</p>}
     </div>
   );
 };

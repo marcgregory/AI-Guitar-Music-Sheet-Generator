@@ -9,10 +9,34 @@ from app.services import chord_chart
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from sqlalchemy.orm import Session
 from typing import Dict, Any
 from datetime import datetime
+
+
+def has_note_events(notes_data) -> bool:
+    """Return True when pitch analysis contains usable note events."""
+    if isinstance(notes_data, str):
+        try:
+            notes_data = json.loads(notes_data)
+        except json.JSONDecodeError:
+            return False
+
+    if isinstance(notes_data, list):
+        return len(notes_data) > 0
+
+    if isinstance(notes_data, dict):
+        notes = notes_data.get("notes")
+        pitch_info = notes_data.get("pitch_info")
+        return (
+            isinstance(notes, list) and len(notes) > 0
+        ) or (
+            isinstance(pitch_info, list) and len(pitch_info) > 0
+        )
+
+    return False
 
 
 def get_db_session() -> Session:
@@ -22,6 +46,86 @@ def get_db_session() -> Session:
         return db_session
     finally:
         pass  # Caller must close the session
+
+
+def update_task_state(task, state: str, meta: Dict[str, Any]) -> None:
+    """Best-effort Celery progress update for local dev without Redis."""
+    try:
+        task.update_state(state=state, meta=meta)
+    except Exception as e:
+        print(f"Skipping task state update ({state}/{meta.get('step')}): {str(e)}")
+
+
+def generate_derived_outputs(transcription, db_session: Session) -> None:
+    """Regenerate MIDI, MusicXML, tablature, and chord charts from stored JSON."""
+    if transcription.notes_data:
+        try:
+            midi_file_path = midi.save_midi_from_transcription(
+                transcription.notes_data,
+                transcription.id,
+                settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
+            )
+            transcription.midi_file_path = midi_file_path
+            try:
+                transcription.notation_data = midi.midi_to_musicxml(midi_file_path)
+            except Exception as xml_e:
+                print(f"Failed to generate MusicXML for transcription {transcription.id}: {str(xml_e)}")
+        except Exception as midi_e:
+            print(f"Failed to generate MIDI for transcription {transcription.id}: {str(midi_e)}")
+
+        try:
+            tablature.save_tablature_from_transcription(
+                transcription.notes_data,
+                transcription.id,
+                settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
+            )
+            transcription.tablature_data = json.dumps(tablature.notes_to_tablature(transcription.notes_data))
+        except Exception as tab_e:
+            print(f"Failed to generate tablature for transcription {transcription.id}: {str(tab_e)}")
+
+    if transcription.chords_data:
+        try:
+            transcription.chord_chart_data = chord_chart.chord_data_to_chord_chart_json(
+                transcription.chords_data
+            )
+        except Exception as chart_e:
+            print(f"Failed to generate chord charts for transcription {transcription.id}: {str(chart_e)}")
+
+    db_session.add(transcription)
+    db_session.commit()
+
+
+def cleanup_transient_audio_files(transcription, db_session: Session) -> None:
+    """Delete stored audio artifacts once analysis data has been persisted."""
+    path_fields = [
+        "audio_file_path",
+        "preprocessed_audio_file_path",
+        "separated_audio_file_path",
+    ]
+    changed = False
+
+    for field_name in path_fields:
+        path_value = getattr(transcription, field_name, None)
+        if not path_value:
+            continue
+
+        try:
+            path = Path(path_value)
+            if path.exists() and path.is_file():
+                path.unlink()
+        except OSError as cleanup_error:
+            print(
+                f"Failed to delete {field_name} for transcription "
+                f"{transcription.id}: {cleanup_error}"
+            )
+            continue
+
+        setattr(transcription, field_name, None)
+        changed = True
+
+    if changed:
+        db_session.add(transcription)
+        db_session.commit()
 
 
 @celery_app.task(bind=True)
@@ -49,7 +153,7 @@ def process_audio_transcription(self, transcription_id: int):
     db_session = None
     try:
         # Update task state to show progress
-        self.update_state(state="PROGRESS", meta={"step": "loading_transcription"})
+        update_task_state(self, state="PROGRESS", meta={"step": "loading_transcription"})
 
         # Get database session
         db_session = get_db_session()
@@ -63,15 +167,33 @@ def process_audio_transcription(self, transcription_id: int):
             raise ValueError(f"Transcription with ID {transcription_id} not found")
 
         # Update task state
-        self.update_state(state="PROGRESS", meta={"step": "preprocessing_audio"})
+        update_task_state(self, state="PROGRESS", meta={"step": "preprocessing_audio"})
 
-        # Ensure we have a preprocessed audio file
+        # Ensure we have a preprocessed audio file. Existing processed records may
+        # no longer have the original upload, but can still be regenerated from
+        # the preprocessed WAV.
         audio_file_path = transcription.audio_file_path
-        if not audio_file_path or not os.path.exists(audio_file_path):
-            raise ValueError(f"Audio file not found: {audio_file_path}")
-
         preprocessed_path = transcription.preprocessed_audio_file_path
+        if (
+            (not preprocessed_path or not os.path.exists(preprocessed_path)) and
+            (not audio_file_path or not os.path.exists(audio_file_path)) and
+            (transcription.notes_data or transcription.chords_data)
+        ):
+            update_task_state(self, state="PROGRESS", meta={"step": "regenerating_derived_outputs"})
+            generate_derived_outputs(transcription, db_session)
+            transcription.is_processed = True
+            transcription.processing_error = None
+            db_session.add(transcription)
+            db_session.commit()
+            return {
+                "status": "completed",
+                "transcription_id": transcription_id,
+                "message": "Derived music outputs regenerated from stored analysis"
+            }
+
         if not preprocessed_path or not os.path.exists(preprocessed_path):
+            if not audio_file_path or not os.path.exists(audio_file_path):
+                raise ValueError(f"Audio file not found: {audio_file_path}")
             # Preprocess the audio
             preprocessed_path = audio.preprocess_audio(audio_file_path)
             # Update transcription record
@@ -80,7 +202,7 @@ def process_audio_transcription(self, transcription_id: int):
             db_session.commit()
 
         # Update task state
-        self.update_state(state="PROGRESS", meta={"step": "source_separation"})
+        update_task_state(self, state="PROGRESS", meta={"step": "source_separation"})
 
         # Separate audio sources to isolate guitar
         # Create a temporary directory for source separation
@@ -91,7 +213,7 @@ def process_audio_transcription(self, transcription_id: int):
             uploads_dir = Path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads")
             sep_upload_dir = uploads_dir / "separated"
             sep_upload_dir.mkdir(parents=True, exist_ok=True)
-            separated_filename = Path(separated_path).name
+            separated_filename = f"transcription_{transcription.id}_{Path(separated_path).name}"
             permanent_separated_path = sep_upload_dir / separated_filename
             shutil.copy2(separated_path, permanent_separated_path)
             # Update transcription record with the permanent file path
@@ -101,7 +223,7 @@ def process_audio_transcription(self, transcription_id: int):
         except Exception as e:
             # If source separation fails, continue with preprocessed audio
             # but log the error
-            self.update_state(state="PROGRESS", meta={"step": "source_separation_failed"})
+            update_task_state(self, state="PROGRESS", meta={"step": "source_separation_failed"})
             # We'll still continue processing with the preprocessed audio
             separated_path = preprocessed_path
         finally:
@@ -109,13 +231,16 @@ def process_audio_transcription(self, transcription_id: int):
             shutil.rmtree(sep_temp_dir)
 
         # Update task state
-        self.update_state(state="PROGRESS", meta={"step": "pitch_detection"})
+        update_task_state(self, state="PROGRESS", meta={"step": "pitch_detection"})
 
         # Detect pitch (notes) from the separated audio
         # Create a temporary directory for pitch detection output
         pitch_temp_dir = tempfile.mkdtemp()
         try:
             pitch_result = audio.detect_pitch(separated_path, pitch_temp_dir)
+            if not has_note_events(pitch_result):
+                raise RuntimeError("Pitch detection completed but found no usable note events")
+
             # Update transcription record with pitch data
             transcription.notes_data = json.dumps(pitch_result)
             # Generate MIDI file from the pitch data
@@ -157,10 +282,9 @@ def process_audio_transcription(self, transcription_id: int):
             db_session.add(transcription)
             db_session.commit()
         except Exception as e:
-            # If pitch detection fails, we'll store an error but continue processing
-            self.update_state(state="PROGRESS", meta={"step": "pitch_detection_failed"})
-            # Create empty notes data so the transcription can still be processed
+            update_task_state(self, state="PROGRESS", meta={"step": "pitch_detection_failed"})
             transcription.notes_data = json.dumps({"notes": [], "error": str(e)})
+            transcription.processing_error = f"Pitch detection failed: {str(e)}"
             db_session.add(transcription)
             db_session.commit()
         finally:
@@ -168,7 +292,7 @@ def process_audio_transcription(self, transcription_id: int):
             shutil.rmtree(pitch_temp_dir)
 
         # Update task state
-        self.update_state(state="PROGRESS", meta={"step": "beat_tempo_detection"})
+        update_task_state(self, state="PROGRESS", meta={"step": "beat_tempo_detection"})
 
         # Detect beat and tempo from the separated audio
         try:
@@ -180,11 +304,11 @@ def process_audio_transcription(self, transcription_id: int):
             db_session.commit()
         except Exception as e:
             # If beat/tempo detection fails, we'll continue without setting tempo
-            self.update_state(state="PROGRESS", meta={"step": "beat_tempo_detection_failed"})
+            update_task_state(self, state="PROGRESS", meta={"step": "beat_tempo_detection_failed"})
             # Leave detected_tempo as None (already initialized as such)
 
         # Update task state
-        self.update_state(state="PROGRESS", meta={"step": "key_detection"})
+        update_task_state(self, state="PROGRESS", meta={"step": "key_detection"})
 
         # Detect musical key from the separated audio
         try:
@@ -196,11 +320,11 @@ def process_audio_transcription(self, transcription_id: int):
             db_session.commit()
         except Exception as e:
             # If key detection fails, we'll continue without setting key
-            self.update_state(state="PROGRESS", meta={"step": "key_detection_failed"})
+            update_task_state(self, state="PROGRESS", meta={"step": "key_detection_failed"})
             # Leave detected_key as None (already initialized as such)
 
         # Update task state
-        self.update_state(state="PROGRESS", meta={"step": "rhythm_analysis"})
+        update_task_state(self, state="PROGRESS", meta={"step": "rhythm_analysis"})
 
         # Detect rhythm information (onsets, durations) from the separated audio
         try:
@@ -222,6 +346,8 @@ def process_audio_transcription(self, transcription_id: int):
                 "rhythm_analysis": rhythm_result,
                 "analysis_timestamp": datetime.now().isoformat() if 'datetime' in globals() else None
             }
+            if isinstance(existing_notes, dict) and existing_notes.get("error"):
+                enhanced_notes_data["error"] = existing_notes["error"]
 
             # If existing notes data had a different structure, preserve it
             if "notes" in existing_notes and isinstance(existing_notes["notes"], list):
@@ -240,11 +366,11 @@ def process_audio_transcription(self, transcription_id: int):
             db_session.commit()
         except Exception as e:
             # If rhythm detection fails, we'll continue with existing notes data
-            self.update_state(state="PROGRESS", meta={"step": "rhythm_analysis_failed"})
+            update_task_state(self, state="PROGRESS", meta={"step": "rhythm_analysis_failed"})
             # Continue processing without updating notes data for rhythm
 
         # Update task state
-        self.update_state(state="PROGRESS", meta={"step": "chord_recognition"})
+        update_task_state(self, state="PROGRESS", meta={"step": "chord_recognition"})
 
         # Detect chords from the separated audio
         try:
@@ -268,18 +394,19 @@ def process_audio_transcription(self, transcription_id: int):
                 # Leave chord_chart_data as None
         except Exception as e:
             # If chord detection fails, we'll continue without setting chord data
-            self.update_state(state="PROGRESS", meta={"step": "chord_recognition_failed"})
+            update_task_state(self, state="PROGRESS", meta={"step": "chord_recognition_failed"})
             # Set empty chords data to avoid None
             transcription.chords_data = json.dumps({})
             db_session.add(transcription)
             db_session.commit()
 
         # Update task state
-        self.update_state(state="PROGRESS", meta={"step": "completing_processing"})
+        update_task_state(self, state="PROGRESS", meta={"step": "completing_processing"})
 
         # Mark as processed (placeholder - actual implementation will come later)
         transcription.is_processed = True
-        transcription.processing_error = None
+        if has_note_events(transcription.notes_data):
+            transcription.processing_error = None
 
         # Placeholder results for other data types - will be replaced with actual processing in subsequent tasks
         # Note: We don't overwrite notes_data, detected_tempo, or detected_key as they have been set by implemented steps
@@ -288,6 +415,7 @@ def process_audio_transcription(self, transcription_id: int):
         db_session.add(transcription)
         db_session.commit()
         db_session.refresh(transcription)
+        cleanup_transient_audio_files(transcription, db_session)
 
         return {
             "status": "completed",
@@ -307,11 +435,13 @@ def process_audio_transcription(self, transcription_id: int):
                     transcription.processing_error = str(e)
                     db_session.add(transcription)
                     db_session.commit()
+                    cleanup_transient_audio_files(transcription, db_session)
             except Exception:
                 pass  # Don't let error handling obscure the original error
 
         # Update task state to show failure
-        self.update_state(
+        update_task_state(
+            self,
             state="FAILURE",
             meta={"exc_type": type(e).__name__, "exc_message": str(e)}
         )

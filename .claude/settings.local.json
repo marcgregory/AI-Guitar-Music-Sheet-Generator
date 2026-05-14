@@ -62,7 +62,10 @@
       "Bash(docker version *)",
       "PowerShell(Start-Service *)",
       "PowerShell(Start-Process \"C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe\")",
-      "PowerShell(Start-Sleep -s 10)"
+      "PowerShell(Start-Sleep -s 10)",
+      "Bash(findstr :800)",
+      "Bash(docker *)",
+      "Bash(uvicorn main:app --host 127.0.0.1 --port 8000)"
     ]
   }
 }
