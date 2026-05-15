@@ -16,6 +16,8 @@ init_db()
 
 # Configure CORS based on environment
 allowed_origins = settings.get_allowed_origins
+
+print("ALLOWED_ORIGINS:", allowed_origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
