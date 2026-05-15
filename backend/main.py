@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from app.api.v1 import api
 from app.database_init import init_db
+from app.core.config import settings
 
 app = FastAPI(
     title="AI Guitar Music Sheet Generator",
@@ -13,10 +14,11 @@ app = FastAPI(
 
 init_db()
 
-# Configure CORS
+# Configure CORS based on environment
+allowed_origins = settings.get_allowed_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
