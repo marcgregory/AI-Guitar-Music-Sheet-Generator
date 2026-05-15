@@ -3,6 +3,7 @@ import numpy as np
 import soundfile as sf
 from pathlib import Path
 import importlib.util
+import os
 import subprocess
 import tempfile
 import sys
@@ -13,9 +14,26 @@ import shutil
 
 DEMUCS_GUITAR_MODEL = "htdemucs_6s"
 DEMUCS_FALLBACK_MODEL = "htdemucs"
+DEMUCS_MULTI_STEMS = {
+    "guitar": "guitar",
+    "bass": "bass",
+    "drums": "drums",
+    "vocals": "vocals",
+    "piano": "piano",
+    "other": "other",
+}
+DEMUCS_VENDOR_PATH = Path(os.environ.get("DEMUCS_VENDOR_PATH", r"C:\tmp\demucs_py313"))
+
+
+def _configure_demucs_vendor_path() -> None:
+    if DEMUCS_VENDOR_PATH.exists():
+        vendor_path = str(DEMUCS_VENDOR_PATH)
+        if vendor_path not in sys.path:
+            sys.path.append(vendor_path)
 
 
 def _ensure_demucs_available() -> None:
+    _configure_demucs_vendor_path()
     if importlib.util.find_spec("demucs") is None:
         raise RuntimeError(
             "Demucs is not installed. Install backend requirements to enable source separation."
@@ -23,6 +41,7 @@ def _ensure_demucs_available() -> None:
 
 
 def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems: str = None) -> None:
+    _configure_demucs_vendor_path()
     cmd = [
         sys.executable,
         "-m",
@@ -36,7 +55,16 @@ def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems:
         cmd.extend(["--two-stems", two_stems])
     cmd.append(str(input_path))
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    env = os.environ.copy()
+    if DEMUCS_VENDOR_PATH.exists():
+        existing_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = (
+            f"{DEMUCS_VENDOR_PATH}{os.pathsep}{existing_pythonpath}"
+            if existing_pythonpath
+            else str(DEMUCS_VENDOR_PATH)
+        )
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if result.returncode != 0:
         error_text = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(f"Demucs separation failed with {model_name}: {error_text}")
@@ -56,6 +84,13 @@ def _find_demucs_stem(output_path: Path, model_name: str, input_stem: str, stem_
         return all_matches[0]
 
     raise FileNotFoundError(f"Could not find {stem_name} stem after Demucs separation")
+
+
+def _maybe_find_demucs_stem(output_path: Path, model_name: str, input_stem: str, stem_name: str) -> Path | None:
+    try:
+        return _find_demucs_stem(output_path, model_name, input_stem, stem_name)
+    except FileNotFoundError:
+        return None
 
 def preprocess_audio(input_file_path: str, output_file_path: str = None, target_sr: int = 22050) -> str:
     """
@@ -105,14 +140,13 @@ def preprocess_audio(input_file_path: str, output_file_path: str = None, target_
     return str(output_path)
 
 
-def separate_sources(input_file_path: str, output_dir: str = None) -> str:
+def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict[str, str]:
     """
-    Separate audio sources using Demucs and return the path to the guitar stem.
+    Separate audio sources using Demucs and return available instrument stems.
 
-    The primary path uses Demucs' 6-stem model, which produces a dedicated
-    guitar stem. If that model is unavailable at runtime, the fallback uses the
-    standard vocals/accompaniment split and returns accompaniment so downstream
-    analysis can still operate on a guitar-containing track.
+    The primary path uses Demucs' 6-stem model. If that model is unavailable at
+    runtime, the fallback uses the standard vocals/accompaniment split and maps
+    accompaniment to the app's broad "other" instrument track.
 
     Args:
         input_file_path: Path to the input audio file.
@@ -120,7 +154,7 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
                    we will create a temporary directory.
 
     Returns:
-        Path to the separated guitar stem file.
+        Dictionary mapping instrument type to separated stem path.
     """
     input_path = Path(input_file_path)
     if not input_path.exists():
@@ -139,12 +173,40 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
         input_stem = input_path.stem
         try:
             _run_demucs(input_path, output_path, DEMUCS_GUITAR_MODEL)
-            return str(_find_demucs_stem(output_path, DEMUCS_GUITAR_MODEL, input_stem, "guitar"))
+            stems = {}
+            for instrument_type, stem_name in DEMUCS_MULTI_STEMS.items():
+                stem_path = _maybe_find_demucs_stem(
+                    output_path,
+                    DEMUCS_GUITAR_MODEL,
+                    input_stem,
+                    stem_name,
+                )
+                if stem_path:
+                    stems[instrument_type] = str(stem_path)
+
+            if stems:
+                return stems
+
+            raise FileNotFoundError("No stems found after Demucs 6-stem separation")
         except Exception as e:
             primary_error = e
 
         _run_demucs(input_path, output_path, DEMUCS_FALLBACK_MODEL, two_stems="vocals")
-        return str(_find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, "accompaniment"))
+        fallback_stems = {}
+        vocals_path = _maybe_find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, "vocals")
+        accompaniment_path = _maybe_find_demucs_stem(
+            output_path,
+            DEMUCS_FALLBACK_MODEL,
+            input_stem,
+            "accompaniment",
+        )
+        if vocals_path:
+            fallback_stems["vocals"] = str(vocals_path)
+        if accompaniment_path:
+            fallback_stems["other"] = str(accompaniment_path)
+        if fallback_stems:
+            return fallback_stems
+        raise FileNotFoundError("No stems found after Demucs fallback separation")
 
     except Exception as e:
         if primary_error:
@@ -154,6 +216,20 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
                 f"Fallback error: {str(e)}"
             )
         raise RuntimeError(f"Failed to separate audio sources: {str(e)}")
+
+
+def separate_sources(input_file_path: str, output_dir: str = None) -> str:
+    """
+    Separate audio sources using Demucs and return the preferred analysis stem.
+
+    Compatibility wrapper for the original single-stem pipeline. Guitar is
+    preferred, then other/accompaniment, then any available separated stem.
+    """
+    stems = separate_sources_multi(input_file_path, output_dir)
+    for preferred_stem in ("guitar", "other", "bass", "piano", "vocals", "drums"):
+        if preferred_stem in stems:
+            return stems[preferred_stem]
+    raise RuntimeError("Source separation completed without usable stems")
 
 
 def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
@@ -691,6 +767,83 @@ def detect_rhythm(input_file_path: str) -> dict:
 
     except Exception as e:
         raise RuntimeError(f"Failed to detect rhythm: {str(e)}")
+
+
+def analyze_drum_rhythm(input_file_path: str, grid_size: float = 0.125) -> dict:
+    """
+    Detect drum hit timing and intensity from a separated drum stem.
+
+    This intentionally avoids kit-piece classification. The output is a compact
+    rhythm-lane representation for playback-synced UI rendering.
+    """
+    input_path = Path(input_file_path)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
+
+    try:
+        y, sr = librosa.load(input_path, sr=None, mono=True)
+        total_duration = float(librosa.get_duration(y=y, sr=sr))
+
+        if y.size == 0 or total_duration <= 0 or float(np.max(np.abs(y))) <= 0:
+            raise RuntimeError("Drum stem is empty or silent")
+
+        hop_length = 512
+        onset_envelope = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+        onset_frames = librosa.onset.onset_detect(
+            onset_envelope=onset_envelope,
+            sr=sr,
+            hop_length=hop_length,
+            units="frames",
+            backtrack=False,
+        )
+        onset_times = librosa.frames_to_time(onset_frames, sr=sr, hop_length=hop_length)
+
+        if len(onset_times) == 0:
+            raise RuntimeError("No usable drum hits were detected")
+
+        max_strength = float(np.max(onset_envelope)) if len(onset_envelope) > 0 else 0.0
+        if max_strength <= 0:
+            raise RuntimeError("No usable drum hits were detected")
+
+        hits = []
+        for index, onset_time in enumerate(onset_times):
+            onset = float(onset_time)
+            next_onset = (
+                float(onset_times[index + 1])
+                if index < len(onset_times) - 1
+                else total_duration
+            )
+            frame = int(onset_frames[index])
+            raw_strength = (
+                float(onset_envelope[frame])
+                if 0 <= frame < len(onset_envelope)
+                else max_strength
+            )
+            intensity = max(0.0, min(1.0, raw_strength / max_strength))
+            confidence = max(0.05, min(1.0, intensity))
+            offset = min(total_duration, max(onset + 0.06, next_onset))
+
+            hits.append({
+                "onset": round(onset, 4),
+                "offset": round(offset, 4),
+                "intensity": round(intensity, 4),
+                "confidence": round(confidence, 4),
+            })
+
+        return {
+            "drum_hits": hits,
+            "total_hits_detected": len(hits),
+            "rhythm_analysis": {
+                "total_duration": round(total_duration, 4),
+                "grid_size": grid_size,
+                "source": "drum_stem_onset_detection",
+            },
+        }
+
+    except Exception as e:
+        if isinstance(e, (FileNotFoundError, RuntimeError)):
+            raise
+        raise RuntimeError(f"Failed to analyze drum rhythm: {str(e)}")
 
 
 def detect_chords(input_file_path: str) -> dict:

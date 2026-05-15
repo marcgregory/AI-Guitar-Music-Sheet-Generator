@@ -22,9 +22,41 @@ export interface Transcription {
   project_id?: number | null;
   is_processed: boolean;
   processing_error?: string | null;
+  notes_data?: string | null;
+  chords_data?: string | null;
+  tablature_data?: string | null;
+  notation_data?: string | null;
+  chord_chart_data?: string | null;
   created_at: string;
   updated_at?: string | null;
 }
+
+export interface InstrumentTrack {
+  id: number;
+  transcription_id: number;
+  instrument_type: string;
+  display_name: string;
+  stem_audio_path?: string | null;
+  notes_json?: string | null;
+  chords_json?: string | null;
+  tab_json?: string | null;
+  notation_json?: string | null;
+  confidence_score?: number | null;
+  processing_status: string;
+  confidence_notes?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+}
+
+export interface TranscriptionStatus {
+  status: "processing" | "completed" | "failed";
+  transcription_id: number;
+  progress?: number;
+  error?: string;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const getAuthHeader = (token: string | null) => {
   if (!token) throw new Error("User not authenticated");
@@ -33,11 +65,37 @@ const getAuthHeader = (token: string | null) => {
   };
 };
 
+const transcriptionListCache = new Map<string, Transcription[]>();
+
+const cloneTranscriptions = (transcriptions: Transcription[]): Transcription[] =>
+  transcriptions.map((transcription) => ({ ...transcription }));
+
+const rememberTranscriptions = (
+  token: string,
+  transcriptions: Transcription[],
+): Transcription[] => {
+  const snapshot = cloneTranscriptions(transcriptions);
+  transcriptionListCache.set(token, snapshot);
+  return cloneTranscriptions(snapshot);
+};
+
+const rememberTranscription = (token: string, transcription: Transcription): void => {
+  const cached = transcriptionListCache.get(token) ?? [];
+  const withoutDuplicate = cached.filter((item) => item.id !== transcription.id);
+  transcriptionListCache.set(token, [{ ...transcription }, ...withoutDuplicate]);
+};
+
 const audioService = {
   getAudioFileUrl: (audioFilePath: string | null | undefined): string | null => {
     if (!audioFilePath) return null;
     const filename = audioFilePath.split(/[\\/]/).pop();
     return filename ? `${API_ORIGIN}/audio-files/${encodeURIComponent(filename)}` : null;
+  },
+
+  getCachedTranscriptions: (token: string | null): Transcription[] | null => {
+    if (!token) return null;
+    const cached = transcriptionListCache.get(token);
+    return cached ? cloneTranscriptions(cached) : null;
   },
 
   /**
@@ -48,7 +106,7 @@ const audioService = {
       headers: getAuthHeader(token),
     });
 
-    return response.data;
+    return rememberTranscriptions(token, response.data);
   },
 
   /**
@@ -59,7 +117,7 @@ const audioService = {
     token: string,
     projectId?: number,
     onUploadProgress?: (progress: number) => void,
-  ): Promise<any> => {
+  ): Promise<Transcription> => {
     const formData = new FormData();
     formData.append("file", file);
     if (projectId !== undefined) {
@@ -81,6 +139,7 @@ const audioService = {
       },
     );
 
+    rememberTranscription(token, response.data);
     return response.data;
   },
 
@@ -91,7 +150,7 @@ const audioService = {
     youtubeUrl: string,
     token: string,
     projectId?: number,
-  ): Promise<any> => {
+  ): Promise<Transcription> => {
     const response = await axios.post(
       `${API_BASE_URL}/audio/youtube`,
       {
@@ -106,6 +165,7 @@ const audioService = {
       },
     );
 
+    rememberTranscription(token, response.data);
     return response.data;
   },
 
@@ -115,7 +175,7 @@ const audioService = {
   getTranscriptionStatus: async (
     transcriptionId: number,
     token: string,
-  ): Promise<any> => {
+  ): Promise<TranscriptionStatus> => {
     const response = await axios.get(
       `${API_BASE_URL}/audio/${transcriptionId}/status`,
       {
@@ -132,7 +192,7 @@ const audioService = {
   getTranscriptionResult: async (
     transcriptionId: number,
     token: string,
-  ): Promise<any> => {
+  ): Promise<Transcription> => {
     const response = await axios.get(
       `${API_BASE_URL}/audio/${transcriptionId}/result`,
       {
@@ -158,6 +218,52 @@ const audioService = {
     return response.data;
   },
 
+  listInstrumentTracks: async (
+    transcriptionId: number,
+    token: string,
+  ): Promise<InstrumentTrack[]> => {
+    const response = await axios.get(
+      `${API_BASE_URL}/audio/${transcriptionId}/tracks`,
+      {
+        headers: getAuthHeader(token),
+      },
+    );
+
+    return response.data;
+  },
+
+  getInstrumentTrackStem: async (
+    transcriptionId: number,
+    trackId: number,
+    token: string,
+  ): Promise<Blob> => {
+    const response = await axios.get(
+      `${API_BASE_URL}/audio/${transcriptionId}/tracks/${trackId}/stem`,
+      {
+        headers: getAuthHeader(token),
+        responseType: "blob",
+      },
+    );
+
+    return response.data;
+  },
+
+  reprocessInstrumentTrack: async (
+    transcriptionId: number,
+    trackId: number,
+    token: string,
+  ): Promise<InstrumentTrack> => {
+    const response = await axios.post(
+      `${API_BASE_URL}/audio/${transcriptionId}/tracks/${trackId}/reprocess`,
+      {},
+      {
+        headers: getAuthHeader(token),
+      },
+    );
+
+    return response.data;
+  },
+
   /**
    * Download a generated transcription export.
    */
@@ -165,10 +271,14 @@ const audioService = {
     transcriptionId: number,
     format: "midi" | "musicxml" | "tab",
     token: string,
+    trackId?: number,
   ): Promise<Blob> => {
     try {
+      const exportUrl = trackId === undefined
+        ? `${API_BASE_URL}/audio/${transcriptionId}/${format}`
+        : `${API_BASE_URL}/audio/${transcriptionId}/tracks/${trackId}/${format}`;
       const response = await axios.get(
-        `${API_BASE_URL}/audio/${transcriptionId}/${format}`,
+        exportUrl,
         {
           headers: getAuthHeader(token),
           responseType: "blob",
@@ -176,11 +286,14 @@ const audioService = {
       );
 
       return response.data;
-    } catch (err: any) {
-      const data = err.response?.data;
+    } catch (err: unknown) {
+      const data = isRecord(err) && isRecord(err.response) ? err.response.data : null;
       if (data instanceof Blob && data.type.includes("application/json")) {
-        const errorJson = JSON.parse(await data.text());
-        throw new Error(errorJson.detail || `Failed to download ${format}`);
+        const errorJson = JSON.parse(await data.text()) as unknown;
+        const detail = isRecord(errorJson) && typeof errorJson.detail === "string"
+          ? errorJson.detail
+          : `Failed to download ${format}`;
+        throw new Error(detail, { cause: err });
       }
       throw err;
     }

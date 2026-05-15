@@ -16,6 +16,22 @@ from typing import Dict, Any
 from datetime import datetime
 
 
+INSTRUMENT_DISPLAY_NAMES = {
+    "guitar": "Guitar",
+    "bass": "Bass",
+    "drums": "Drums",
+    "vocals": "Vocals",
+    "piano": "Piano",
+    "other": "Other",
+}
+
+TAB_TRANSCRIPTION_INSTRUMENTS = ("guitar", "bass")
+STAFF_NOTATION_INSTRUMENTS = ("piano",)
+DRUM_RHYTHM_INSTRUMENTS = ("drums",)
+NOTE_TRANSCRIPTION_INSTRUMENTS = TAB_TRANSCRIPTION_INSTRUMENTS + STAFF_NOTATION_INSTRUMENTS
+TRACK_REPROCESS_INSTRUMENTS = NOTE_TRANSCRIPTION_INSTRUMENTS + DRUM_RHYTHM_INSTRUMENTS
+
+
 def has_note_events(notes_data) -> bool:
     """Return True when pitch analysis contains usable note events."""
     if isinstance(notes_data, str):
@@ -37,6 +53,145 @@ def has_note_events(notes_data) -> bool:
         )
 
     return False
+
+
+def has_drum_hits(notes_data) -> bool:
+    """Return True when drum rhythm analysis contains usable hit events."""
+    if isinstance(notes_data, str):
+        try:
+            notes_data = json.loads(notes_data)
+        except json.JSONDecodeError:
+            return False
+
+    if isinstance(notes_data, dict):
+        drum_hits = notes_data.get("drum_hits")
+        return isinstance(drum_hits, list) and len(drum_hits) > 0
+
+    return False
+
+
+def average_drum_hit_confidence(drum_result: Dict[str, Any]) -> int | None:
+    drum_hits = drum_result.get("drum_hits")
+    if not isinstance(drum_hits, list) or not drum_hits:
+        return None
+
+    confidences = [
+        float(hit.get("confidence", 0))
+        for hit in drum_hits
+        if isinstance(hit, dict)
+    ]
+    if not confidences:
+        return None
+
+    return int(round(max(0.0, min(1.0, sum(confidences) / len(confidences))) * 100))
+
+
+def generate_single_track_transcription_output(
+    track: models.InstrumentTrack,
+    db_session: Session,
+    *,
+    clear_existing: bool = False,
+) -> models.InstrumentTrack:
+    """Generate notes/rhythm, tab data, and notation for one supported instrument track."""
+    if track.instrument_type not in TRACK_REPROCESS_INSTRUMENTS:
+        track.processing_status = "failed"
+        track.confidence_notes = (
+            "Single-track reprocessing currently supports guitar, bass, piano, and drum tracks."
+        )
+        db_session.add(track)
+        db_session.commit()
+        return track
+
+    if clear_existing:
+        track.notes_json = None
+        track.chords_json = None
+        track.tab_json = None
+        track.notation_json = None
+        track.confidence_notes = None
+
+    if not track.stem_audio_path or not Path(track.stem_audio_path).exists():
+        track.processing_status = "failed"
+        track.confidence_notes = "Stem audio file is missing; track analysis skipped."
+        db_session.add(track)
+        db_session.commit()
+        return track
+
+    track.processing_status = "processing"
+    db_session.add(track)
+    db_session.commit()
+
+    pitch_temp_dir = tempfile.mkdtemp()
+    try:
+        if track.instrument_type in DRUM_RHYTHM_INSTRUMENTS:
+            drum_result = audio.analyze_drum_rhythm(track.stem_audio_path)
+            if not has_drum_hits(drum_result):
+                raise RuntimeError("Drum rhythm analysis completed but found no usable hits")
+
+            track.notes_json = json.dumps(drum_result)
+            track.tab_json = None
+            track.notation_json = None
+            track.confidence_score = average_drum_hit_confidence(drum_result)
+            track.confidence_notes = None
+            track.processing_status = "completed"
+        else:
+            pitch_result = audio.detect_pitch(track.stem_audio_path, pitch_temp_dir)
+            if not has_note_events(pitch_result):
+                raise RuntimeError("Pitch detection completed but found no usable note events")
+
+            track.notes_json = json.dumps(pitch_result)
+            if track.instrument_type in TAB_TRANSCRIPTION_INSTRUMENTS:
+                track.tab_json = json.dumps(
+                    tablature.notes_to_tablature(
+                        pitch_result,
+                        instrument_type=track.instrument_type,
+                    )
+                )
+            else:
+                track.tab_json = None
+            track.confidence_notes = None
+
+            try:
+                with tempfile.TemporaryDirectory() as midi_temp_dir:
+                    midi_path = Path(midi_temp_dir) / f"track_{track.id}.mid"
+                    midi.notes_to_midi(pitch_result, str(midi_path))
+                    track.notation_json = midi.midi_to_musicxml(str(midi_path))
+            except Exception as notation_error:
+                print(
+                    f"Failed to generate notation for {track.instrument_type} "
+                    f"track {track.id}: {str(notation_error)}"
+                )
+
+            track.processing_status = "completed"
+    except Exception as track_error:
+        track.processing_status = "failed"
+        track.confidence_notes = str(track_error)
+        track.notes_json = json.dumps({"notes": [], "error": str(track_error)})
+        track.tab_json = None
+        track.notation_json = None
+    finally:
+        shutil.rmtree(pitch_temp_dir, ignore_errors=True)
+
+    db_session.add(track)
+    db_session.commit()
+    return track
+
+
+def generate_track_transcription_outputs(
+    transcription_id: int,
+    db_session: Session,
+) -> None:
+    """Generate notes and tab data for supported separated instrument tracks."""
+    tracks = (
+            db_session.query(models.InstrumentTrack)
+        .filter(
+            models.InstrumentTrack.transcription_id == transcription_id,
+            models.InstrumentTrack.instrument_type.in_(TRACK_REPROCESS_INSTRUMENTS),
+        )
+        .all()
+    )
+
+    for track in tracks:
+        generate_single_track_transcription_output(track, db_session)
 
 
 def get_db_session() -> Session:
@@ -100,7 +255,6 @@ def cleanup_transient_audio_files(transcription, db_session: Session) -> None:
     path_fields = [
         "audio_file_path",
         "preprocessed_audio_file_path",
-        "separated_audio_file_path",
     ]
     changed = False
 
@@ -126,6 +280,73 @@ def cleanup_transient_audio_files(transcription, db_session: Session) -> None:
     if changed:
         db_session.add(transcription)
         db_session.commit()
+
+
+def estimate_stem_confidence(stem_path: str) -> int:
+    """Return a simple v1 confidence score for a persisted stem."""
+    path = Path(stem_path)
+    if not path.exists() or not path.is_file():
+        return 0
+
+    try:
+        duration = audio.librosa.get_duration(path=str(path))
+        if duration and duration > 0:
+            return 90
+    except Exception:
+        pass
+
+    return 60 if path.stat().st_size > 0 else 0
+
+
+def copy_and_persist_instrument_tracks(
+    transcription,
+    stem_paths: dict[str, str],
+    db_session: Session,
+) -> dict[str, str]:
+    """Copy separated stems into uploads and upsert InstrumentTrack rows."""
+    uploads_dir = Path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads")
+    stem_upload_dir = uploads_dir / "separated" / f"transcription_{transcription.id}"
+    stem_upload_dir.mkdir(parents=True, exist_ok=True)
+
+    persisted_paths = {}
+    for instrument_type, source_path_value in stem_paths.items():
+        source_path = Path(source_path_value)
+        if not source_path.exists() or not source_path.is_file():
+            continue
+
+        destination_path = stem_upload_dir / f"{instrument_type}{source_path.suffix or '.wav'}"
+        shutil.copy2(source_path, destination_path)
+
+        track = db_session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription.id,
+            models.InstrumentTrack.instrument_type == instrument_type,
+        ).first()
+        if not track:
+            track = models.InstrumentTrack(
+                transcription_id=transcription.id,
+                instrument_type=instrument_type,
+                display_name=INSTRUMENT_DISPLAY_NAMES.get(
+                    instrument_type,
+                    instrument_type.replace("_", " ").title(),
+                ),
+            )
+
+        track.stem_audio_path = str(destination_path)
+        track.confidence_score = estimate_stem_confidence(str(destination_path))
+        track.processing_status = "completed"
+        db_session.add(track)
+        persisted_paths[instrument_type] = str(destination_path)
+
+    db_session.commit()
+    return persisted_paths
+
+
+def select_analysis_source(stem_paths: dict[str, str], fallback_path: str) -> str:
+    """Choose the best source for the existing global transcription pipeline."""
+    for preferred_stem in ("guitar", "other", "bass", "piano", "vocals", "drums"):
+        if stem_paths.get(preferred_stem):
+            return stem_paths[preferred_stem]
+    return fallback_path
 
 
 @celery_app.task(bind=True)
@@ -204,28 +425,39 @@ def process_audio_transcription(self, transcription_id: int):
         # Update task state
         update_task_state(self, state="PROGRESS", meta={"step": "source_separation"})
 
-        # Separate audio sources to isolate guitar
-        # Create a temporary directory for source separation
+        # Separate audio sources and persist available broad instrument stems.
+        # If separation is unavailable in local dev, continue with the full mix.
         sep_temp_dir = tempfile.mkdtemp()
         try:
-            separated_path = audio.separate_sources(preprocessed_path, sep_temp_dir)
-            # Copy the separated audio file to a permanent location in uploads directory
-            uploads_dir = Path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads")
-            sep_upload_dir = uploads_dir / "separated"
-            sep_upload_dir.mkdir(parents=True, exist_ok=True)
-            separated_filename = f"transcription_{transcription.id}_{Path(separated_path).name}"
-            permanent_separated_path = sep_upload_dir / separated_filename
-            shutil.copy2(separated_path, permanent_separated_path)
-            # Update transcription record with the permanent file path
-            transcription.separated_audio_file_path = str(permanent_separated_path)
+            separated_stems = audio.separate_sources_multi(preprocessed_path, sep_temp_dir)
+            persisted_stems = copy_and_persist_instrument_tracks(
+                transcription,
+                separated_stems,
+                db_session,
+            )
+            if not persisted_stems:
+                raise RuntimeError("Source separation completed but no instrument stems were saved")
+            generate_track_transcription_outputs(transcription.id, db_session)
+            separated_path = select_analysis_source(persisted_stems, preprocessed_path)
+            transcription.separated_audio_file_path = (
+                separated_path if separated_path != preprocessed_path else None
+            )
             db_session.add(transcription)
             db_session.commit()
         except Exception as e:
-            # If source separation fails, continue with preprocessed audio
-            # but log the error
             update_task_state(self, state="PROGRESS", meta={"step": "source_separation_failed"})
-            # We'll still continue processing with the preprocessed audio
+            print(
+                "Source separation failed; continuing with preprocessed full mix: "
+                f"{str(e)}"
+            )
             separated_path = preprocessed_path
+            transcription.separated_audio_file_path = None
+            transcription.processing_error = (
+                "Source separation unavailable; processed the full mix instead. "
+                f"Details: {str(e)}"
+            )
+            db_session.add(transcription)
+            db_session.commit()
         finally:
             # Clean up the temporary directory
             shutil.rmtree(sep_temp_dir)
@@ -315,7 +547,7 @@ def process_audio_transcription(self, transcription_id: int):
             key_result = audio.detect_key(separated_path)
             # Update transcription record with key data
             transcription.detected_key = key_result["key"]
-            transcription.key_confidence = key_result.get("key_confidence", 0)
+            transcription.key_confidence = key_result.get("confidence", 0)
             db_session.add(transcription)
             db_session.commit()
         except Exception as e:
@@ -435,7 +667,6 @@ def process_audio_transcription(self, transcription_id: int):
                     transcription.processing_error = str(e)
                     db_session.add(transcription)
                     db_session.commit()
-                    cleanup_transient_audio_files(transcription, db_session)
             except Exception:
                 pass  # Don't let error handling obscure the original error
 
@@ -449,6 +680,59 @@ def process_audio_transcription(self, transcription_id: int):
         # Re-raise so Celery records the failure
         raise
 
+    finally:
+        if db_session:
+            db_session.close()
+
+
+@celery_app.task(bind=True)
+def reprocess_instrument_track(self, track_id: int):
+    """Regenerate analysis output for one retained guitar or bass stem."""
+    db_session = None
+    try:
+        update_task_state(self, state="PROGRESS", meta={"step": "loading_instrument_track"})
+        db_session = get_db_session()
+        track = db_session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.id == track_id
+        ).first()
+
+        if not track:
+            raise ValueError(f"Instrument track with ID {track_id} not found")
+
+        update_task_state(self, state="PROGRESS", meta={"step": "reprocessing_instrument_track"})
+        generate_single_track_transcription_output(
+            track,
+            db_session,
+            clear_existing=True,
+        )
+        db_session.refresh(track)
+
+        return {
+            "status": track.processing_status,
+            "track_id": track_id,
+            "transcription_id": track.transcription_id,
+            "message": "Instrument track reprocessing finished",
+        }
+    except Exception as e:
+        if db_session:
+            try:
+                track = db_session.query(models.InstrumentTrack).filter(
+                    models.InstrumentTrack.id == track_id
+                ).first()
+                if track:
+                    track.processing_status = "failed"
+                    track.confidence_notes = str(e)
+                    db_session.add(track)
+                    db_session.commit()
+            except Exception:
+                pass
+
+        update_task_state(
+            self,
+            state="FAILURE",
+            meta={"exc_type": type(e).__name__, "exc_message": str(e)}
+        )
+        raise
     finally:
         if db_session:
             db_session.close()

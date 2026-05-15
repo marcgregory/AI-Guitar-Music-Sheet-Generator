@@ -6,21 +6,27 @@ export type IconName =
   | "check"
   | "clock"
   | "download"
+  | "lock"
+  | "mail"
   | "eye"
+  | "file"
   | "flag"
+  | "folder"
   | "gauge"
   | "grid"
   | "home"
   | "key"
+  | "layers"
   | "list"
   | "logout"
-  | "moon"
+  | "microphone"
+  | "more"
   | "music"
   | "plus"
   | "score"
   | "spark"
-  | "sun"
   | "upload"
+  | "user"
   | "waveform";
 
 const paths: Record<IconName, ReactNode> = {
@@ -56,16 +62,43 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M5 21h14" />
     </>
   ),
+  lock: (
+    <>
+      <rect x="5" y="10" width="14" height="10" rx="2" />
+      <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+      <path d="M12 14v2" />
+    </>
+  ),
+  mail: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="m3 7 9 6 9-6" />
+    </>
+  ),
   eye: (
     <>
       <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
       <circle cx="12" cy="12" r="3" />
     </>
   ),
+  file: (
+    <>
+      <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+      <path d="M14 3v6h6" />
+      <path d="M8 13h8" />
+      <path d="M8 17h6" />
+    </>
+  ),
   flag: (
     <>
       <path d="M5 21V4" />
       <path d="M5 4h12l-2 4 2 4H5" />
+    </>
+  ),
+  folder: (
+    <>
+      <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5Z" />
+      <path d="M3 10h18" />
     </>
   ),
   gauge: (
@@ -98,6 +131,13 @@ const paths: Record<IconName, ReactNode> = {
       <path d="m18 3 2 2" />
     </>
   ),
+  layers: (
+    <>
+      <path d="m12 3 9 5-9 5-9-5 9-5Z" />
+      <path d="m3 12 9 5 9-5" />
+      <path d="m3 16 9 5 9-5" />
+    </>
+  ),
   list: (
     <>
       <path d="M8 6h13" />
@@ -115,7 +155,21 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M21 3v18" />
     </>
   ),
-  moon: <path d="M21 14.5A8.5 8.5 0 0 1 9.5 3a7 7 0 1 0 11.5 11.5Z" />,
+  microphone: (
+    <>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v3" />
+      <path d="M8 21h8" />
+    </>
+  ),
+  more: (
+    <>
+      <path d="M12 5h.01" />
+      <path d="M12 12h.01" />
+      <path d="M12 19h.01" />
+    </>
+  ),
   music: (
     <>
       <path d="M9 18V5l11-2v13" />
@@ -143,24 +197,17 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z" />
     </>
   ),
-  sun: (
-    <>
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2" />
-      <path d="M12 20v2" />
-      <path d="m4.93 4.93 1.41 1.41" />
-      <path d="m17.66 17.66 1.41 1.41" />
-      <path d="M2 12h2" />
-      <path d="M20 12h2" />
-      <path d="m6.34 17.66-1.41 1.41" />
-      <path d="m19.07 4.93-1.41 1.41" />
-    </>
-  ),
   upload: (
     <>
       <path d="M12 16V4" />
       <path d="m7 9 5-5 5 5" />
       <path d="M5 20h14" />
+    </>
+  ),
+  user: (
+    <>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21a8 8 0 0 1 16 0" />
     </>
   ),
   waveform: (

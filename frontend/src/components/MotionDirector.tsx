@@ -14,13 +14,16 @@ const MotionDirector = () => {
 
   useLayoutEffect(() => {
     if (prefersReducedMotion()) return;
+    const isLandingPage = location.pathname === "/";
 
     const ctx = gsap.context(() => {
-      gsap.fromTo(
-        ".site-nav",
-        { y: -18, opacity: 0 },
-        { y: 0, opacity: 1, duration: 0.7, ease: "power3.out" },
-      );
+      if (!isLandingPage) {
+        gsap.fromTo(
+          ".site-nav",
+          { y: -18, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.7, ease: "power3.out" },
+        );
+      }
 
       gsap.fromTo(
         [
@@ -66,6 +69,7 @@ const MotionDirector = () => {
 
   useLayoutEffect(() => {
     if (prefersReducedMotion()) return;
+    if (location.pathname === "/") return;
 
     const ctx = gsap.context(() => {
       gsap.fromTo(

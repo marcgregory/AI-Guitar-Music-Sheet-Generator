@@ -6,22 +6,36 @@ import math
 from typing import Dict, Any, List, Optional, Tuple, Union
 
 
+STANDARD_GUITAR_TUNING = [40, 45, 50, 55, 59, 64]
+STANDARD_BASS_TUNING = [28, 33, 38, 43]
+
+
+def get_standard_tuning(instrument_type: str = "guitar") -> List[int]:
+    """Return standard open-string MIDI notes for supported tab instruments."""
+    normalized_instrument = (instrument_type or "guitar").lower()
+    if normalized_instrument == "bass":
+        return STANDARD_BASS_TUNING.copy()
+    return STANDARD_GUITAR_TUNING.copy()
+
+
 def notes_to_tablature(notes_data: Dict[str, Any],
                        tuning: Optional[List[int]] = None,
-                       max_fret: int = 24) -> Dict[str, Any]:
+                       max_fret: int = 24,
+                       instrument_type: str = "guitar") -> Dict[str, Any]:
     """
     Convert pitch detection output to guitar tablature.
 
     Args:
         notes_data: Dictionary containing pitch detection results from audio.detect_pitch()
-        tuning: List of MIDI note numbers for the open strings from 6th string (low E) to 1st string (high E).
-                Default: standard tuning [40, 45, 50, 55, 59, 64]
+        tuning: List of MIDI note numbers for the open strings from lowest to highest.
+                Default: standard guitar tuning [40, 45, 50, 55, 59, 64]
         max_fret: Maximum fret to consider (default: 24)
+        instrument_type: Instrument tuning preset to use when tuning is omitted.
 
     Returns:
         Dictionary containing the tuning and tablature notes.
         Tablature notes are a list of dictionaries with keys:
-            string (1-6, where 1 is high E, 6 is low E),
+            string (1-number of strings, where 1 is the highest string),
             fret (0-max_fret),
             onset (float),
             offset (float),
@@ -37,16 +51,16 @@ def notes_to_tablature(notes_data: Dict[str, Any],
 
     notes = _extract_notes(notes_data)
 
-    # Set default tuning (standard guitar: E2, A2, D3, G3, B3, E4)
+    # Set default tuning.
     if tuning is None:
-        tuning = [40, 45, 50, 55, 59, 64]  # MIDI notes for open strings 6th to 1st
+        tuning = get_standard_tuning(instrument_type)
 
     # Validate tuning
-    if len(tuning) != 6:
-        raise ValueError("Tuning must have 6 strings for standard guitar")
+    if len(tuning) < 1:
+        raise ValueError("Tuning must include at least one string")
 
     # For each note, find all possible (string_index, fret) pairs
-    # string_index: 0 to 5 (0=6th string, 5=1st string)
+    # string_index: 0 to len(tuning) - 1 (0=lowest string)
     note_options = []  # List of lists of (string_index, fret) for each note
     for note in notes:
         # Validate note structure
@@ -102,8 +116,8 @@ def notes_to_tablature(notes_data: Dict[str, Any],
             # Skip notes that couldn't be mapped
             continue
         string_index, fret = chosen_options[i]
-        # Convert string_index to string number (1=high E, 6=low E)
-        string_number = 6 - string_index  # because string_index 0 is 6th string, 5 is 1st string
+        # Convert string_index to string number (1=highest string).
+        string_number = len(tuning) - string_index
         tablature_note = {
             "string": string_number,
             "fret": fret,
@@ -115,6 +129,7 @@ def notes_to_tablature(notes_data: Dict[str, Any],
         tablature_notes.append(tablature_note)
 
     return {
+        "instrument": instrument_type,
         "tuning": tuning,
         "tablature": tablature_notes
     }
@@ -225,19 +240,24 @@ def tablature_to_ascii_tab(tablature_data: Union[str, dict]) -> str:
     num_blocks = math.ceil(max_offset / block_time)
     total_columns = num_blocks * columns_per_block
 
-    # Initialize tab array (6 strings x total_columns) with '-'
-    # String order: e(1), B(2), G(3), D(4), A(5), E(6) [high to low]
-    tab_array = [['-' for _ in range(total_columns)] for _ in range(6)]
-    string_labels = ['e', 'B', 'G', 'D', 'A', 'E']
+    tuning = tablature_dict.get("tuning") or STANDARD_GUITAR_TUNING
+    string_count = len(tuning)
+    if string_count == 4:
+        string_labels = ['G', 'D', 'A', 'E']
+    else:
+        string_labels = ['e', 'B', 'G', 'D', 'A', 'E'][:string_count]
+
+    # Initialize tab array with strings ordered highest to lowest.
+    tab_array = [['-' for _ in range(total_columns)] for _ in range(string_count)]
 
     # Process each note
     for note in tablature_notes:
-        string_num = note.get("string") or 1  # 1=high E, 6=low E
+        string_num = note.get("string") or 1  # 1=highest string
         fret = note.get("fret") or 0
         onset = note.get("onset") or 0.0
 
         # Validate string number
-        if string_num < 1 or string_num > 6:
+        if string_num < 1 or string_num > string_count:
             continue
 
         # Calculate column position
@@ -264,7 +284,7 @@ def tablature_to_ascii_tab(tablature_data: Union[str, dict]) -> str:
 
     # Build output lines
     lines = []
-    for i in range(6):
+    for i in range(string_count):
         line_content = ''.join(tab_array[i])
         lines.append(f"{string_labels[i]}|{line_content}")
 

@@ -58,6 +58,11 @@ class Transcription(Base):
     # Relationships
     user = relationship("User", back_populates="transcriptions")
     project = relationship("Project", back_populates="transcriptions")
+    instrument_tracks = relationship(
+        "InstrumentTrack",
+        back_populates="transcription",
+        cascade="all, delete-orphan",
+    )
 
     # JSON fields for storing transcription data (we'll use Text for simplicity)
     notes_data = Column(Text, nullable=True)  # JSON string of detected notes
@@ -65,3 +70,24 @@ class Transcription(Base):
     tablature_data = Column(Text, nullable=True)  # JSON string of generated tablature
     notation_data = Column(Text, nullable=True)  # MusicXML string of standard notation
     chord_chart_data = Column(Text, nullable=True)  # SVG string of chord chart
+
+
+class InstrumentTrack(Base):
+    __tablename__ = "instrument_tracks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    transcription_id = Column(Integer, ForeignKey("transcriptions.id"), nullable=False, index=True)
+    instrument_type = Column(String, index=True, nullable=False)
+    display_name = Column(String, nullable=False)
+    stem_audio_path = Column(String, nullable=True)
+    notes_json = Column(Text, nullable=True)
+    chords_json = Column(Text, nullable=True)
+    tab_json = Column(Text, nullable=True)
+    notation_json = Column(Text, nullable=True)
+    confidence_score = Column(Integer, nullable=True)
+    processing_status = Column(String, nullable=False, default="pending")
+    confidence_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    transcription = relationship("Transcription", back_populates="instrument_tracks")

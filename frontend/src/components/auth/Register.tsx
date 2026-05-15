@@ -1,13 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { Icon } from "../Icon";
+import { AuthStudioShell } from "./AuthStudioShell";
 import { useAuth } from "./AuthContext";
-
-const EyeIcon = () => (
-  <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
 
 const Register: React.FC = () => {
   const { login } = useAuth();
@@ -80,48 +75,54 @@ const Register: React.FC = () => {
   };
 
   return (
-    <div className="auth-page">
-      <div className="auth-container">
-        <div className="auth-header">
-          <h1>Music Sheet Generator</h1>
-          <p className="auth-subtitle">
-            Build a private library of AI-assisted transcriptions for practice, teaching, and arrangement.
-          </p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="auth-form">
+    <AuthStudioShell
+      eyebrow="Guitar AI Studio"
+      formTitle="Create account"
+      formSubtitle="Build your private guitar transcription library."
+      heroSubtitle="Build a private library of AI-assisted transcriptions for practice, teaching, and arrangement."
+    >
+        <form onSubmit={handleSubmit} className="auth-form auth-form-register">
           <div className="form-group">
             <label htmlFor="username">Username</label>
-            <input
-              type="text"
-              id="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              minLength={3}
-              maxLength={50}
-              autoFocus
-              disabled={isLoading}
-              autoComplete="username"
-            />
+            <div className="auth-input-shell">
+              <Icon name="user" />
+              <input
+                type="text"
+                id="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                required
+                minLength={3}
+                maxLength={50}
+                autoFocus
+                disabled={isLoading}
+                autoComplete="username"
+                placeholder="Enter your username"
+              />
+            </div>
           </div>
 
           <div className="form-group">
             <label htmlFor="email">Email address</label>
-            <input
-              type="email"
-              id="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              disabled={isLoading}
-              autoComplete="email"
-            />
+            <div className="auth-input-shell">
+              <Icon name="mail" />
+              <input
+                type="email"
+                id="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                disabled={isLoading}
+                autoComplete="email"
+                placeholder="you@example.com"
+              />
+            </div>
           </div>
 
           <div className="form-group">
             <label htmlFor="password">Password</label>
-            <div className="password-input-wrapper">
+            <div className="password-input-wrapper auth-input-shell">
+              <Icon name="lock" />
               <input
                 type={showPassword ? "text" : "password"}
                 id="password"
@@ -131,6 +132,7 @@ const Register: React.FC = () => {
                 minLength={8}
                 disabled={isLoading}
                 autoComplete="new-password"
+                placeholder="Enter your password"
               />
               <button
                 type="button"
@@ -139,14 +141,15 @@ const Register: React.FC = () => {
                 aria-label={showPassword ? "Hide password" : "Show password"}
                 title={showPassword ? "Hide password" : "Show password"}
               >
-                <EyeIcon />
+                <Icon name="eye" />
               </button>
             </div>
           </div>
 
           <div className="form-group">
             <label htmlFor="confirmPassword">Confirm password</label>
-            <div className="password-input-wrapper">
+            <div className="password-input-wrapper auth-input-shell">
+              <Icon name="lock" />
               <input
                 type={showConfirmPassword ? "text" : "password"}
                 id="confirmPassword"
@@ -156,6 +159,7 @@ const Register: React.FC = () => {
                 minLength={8}
                 disabled={isLoading}
                 autoComplete="new-password"
+                placeholder="Confirm your password"
               />
               <button
                 type="button"
@@ -164,16 +168,37 @@ const Register: React.FC = () => {
                 aria-label={showConfirmPassword ? "Hide password" : "Show password"}
                 title={showConfirmPassword ? "Hide password" : "Show password"}
               >
-                <EyeIcon />
+                <Icon name="eye" />
               </button>
             </div>
           </div>
 
+          <div className="auth-form-options">
+            <label className="auth-checkbox">
+              <input type="checkbox" required />
+              <span>Agree to private studio terms</span>
+            </label>
+          </div>
+
           <button type="submit" className="submit-button" disabled={isLoading}>
-            {isLoading ? "Creating account..." : "Create account"}
+            <span>{isLoading ? "Creating account..." : "Create account"}</span>
+            <Icon name="arrow" />
           </button>
 
           {error && <div className="error-message">{error}</div>}
+
+          <div className="auth-divider">
+            <span>Or</span>
+          </div>
+
+          <button type="button" className="auth-social-button">
+            <span className="auth-google-mark">G</span>
+            Continue with Google
+          </button>
+          <button type="button" className="auth-social-button">
+            <span className="auth-apple-mark">Apple</span>
+            Continue with Apple
+          </button>
 
           <div className="auth-footer">
             <p>
@@ -181,8 +206,7 @@ const Register: React.FC = () => {
             </p>
           </div>
         </form>
-      </div>
-    </div>
+    </AuthStudioShell>
   );
 };
 

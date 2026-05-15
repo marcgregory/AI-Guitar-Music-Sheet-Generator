@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -51,6 +52,26 @@ def create_user(session, username: str, email: str):
 def auth_headers(username: str):
     token = create_access_token(data={"sub": username})
     return {"Authorization": f"Bearer {token}"}
+
+
+def sample_notes_json():
+    return (
+        '{"notes": ['
+        '{"onset": 0.0, "offset": 0.5, "pitch": 43, "velocity": 84, "confidence": 0.91}'
+        ']}'
+    )
+
+
+def sample_tab_json(instrument: str = "guitar"):
+    if instrument == "bass":
+        return (
+            '{"instrument": "bass", "tuning": [28, 33, 38, 43], '
+            '"tablature": [{"string": 1, "fret": 0, "onset": 0.0, "offset": 0.5}]}'
+        )
+    return (
+        '{"instrument": "guitar", "tuning": [40, 45, 50, 55, 59, 64], '
+        '"tablature": [{"string": 1, "fret": 3, "onset": 0.0, "offset": 0.5}]}'
+    )
 
 
 def test_list_transcriptions_requires_authentication():
@@ -117,3 +138,819 @@ def test_list_transcriptions_returns_only_current_users_items_newest_first():
         "Older song",
     ]
     assert all(item["user_id"] != other_user_id for item in payload)
+
+
+def test_list_instrument_tracks_requires_transcription_access():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "track-owner", "track-owner@example.com")
+        other_user = create_user(session, "track-other", "track-other@example.com")
+        transcription = models.Transcription(
+            title="Owner song",
+            audio_file_path="uploads/owner.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks",
+        headers=auth_headers("track-other"),
+    )
+
+    assert response.status_code == 403
+
+
+def test_list_and_get_instrument_tracks_for_owner():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "tracks-owner", "tracks-owner@example.com")
+        transcription = models.Transcription(
+            title="Multi-track song",
+            audio_file_path="uploads/multitrack.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        guitar_track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            stem_audio_path="uploads/stems/guitar.wav",
+            tab_json='{"strings": []}',
+            confidence_score=82,
+            processing_status="completed",
+        )
+        bass_track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="bass",
+            display_name="Bass",
+            confidence_score=74,
+            processing_status="completed",
+        )
+        session.add_all([guitar_track, bass_track])
+        session.commit()
+        transcription_id = transcription.id
+        guitar_track_id = guitar_track.id
+    finally:
+        session.close()
+
+    list_response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks",
+        headers=auth_headers("tracks-owner"),
+    )
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert [track["instrument_type"] for track in payload] == ["guitar", "bass"]
+    assert payload[0]["confidence_score"] == 82
+
+    get_response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{guitar_track_id}",
+        headers=auth_headers("tracks-owner"),
+    )
+
+    assert get_response.status_code == 200
+    track_payload = get_response.json()
+    assert track_payload["display_name"] == "Guitar"
+    assert track_payload["tab_json"] == '{"strings": []}'
+
+
+def test_update_instrument_track_metadata_only_changes_user_editable_fields():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "metadata-owner", "metadata-owner@example.com")
+        transcription = models.Transcription(
+            title="Metadata song",
+            audio_file_path="uploads/metadata.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            tab_json='{"generated": true}',
+            confidence_score=80,
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.patch(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}",
+        headers=auth_headers("metadata-owner"),
+        json={
+            "display_name": "Lead Guitar",
+            "instrument_type": "guitar",
+            "confidence_notes": "Bright lead part, likely reliable.",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["display_name"] == "Lead Guitar"
+    assert payload["confidence_notes"] == "Bright lead part, likely reliable."
+    assert payload["tab_json"] == '{"generated": true}'
+    assert payload["confidence_score"] == 80
+
+
+def test_reprocess_instrument_track_requires_authentication():
+    reset_database()
+
+    response = client.post("/api/v1/audio/1/tracks/1/reprocess")
+
+    assert response.status_code == 401
+
+
+def test_reprocess_instrument_track_requires_transcription_access(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "reprocess-owner", "reprocess-owner@example.com")
+        create_user(session, "reprocess-other", "reprocess-other@example.com")
+        stem_path = tmp_path / "guitar.wav"
+        stem_path.write_bytes(b"guitar")
+        transcription = models.Transcription(
+            title="Private reprocess song",
+            audio_file_path="uploads/private-reprocess.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            stem_audio_path=str(stem_path),
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.post(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
+        headers=auth_headers("reprocess-other"),
+    )
+
+    assert response.status_code == 403
+
+
+def test_reprocess_instrument_track_returns_404_for_missing_track():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "reprocess-missing-owner", "reprocess-missing-owner@example.com")
+        transcription = models.Transcription(
+            title="Missing track song",
+            audio_file_path="uploads/missing-track.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.post(
+        f"/api/v1/audio/{transcription_id}/tracks/999/reprocess",
+        headers=auth_headers("reprocess-missing-owner"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Instrument track not found"
+
+
+def test_reprocess_instrument_track_rejects_unsupported_instrument(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "reprocess-vocal-owner", "reprocess-vocal-owner@example.com")
+        stem_path = tmp_path / "vocals.wav"
+        stem_path.write_bytes(b"vocals")
+        transcription = models.Transcription(
+            title="Unsupported reprocess song",
+            audio_file_path="uploads/unsupported-reprocess.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="vocals",
+            display_name="Vocals",
+            stem_audio_path=str(stem_path),
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.post(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
+        headers=auth_headers("reprocess-vocal-owner"),
+    )
+
+    assert response.status_code == 422
+    assert "supports guitar, bass, piano, and drum tracks" in response.json()["detail"]
+
+
+def test_reprocess_instrument_track_marks_missing_stem_failed():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "reprocess-missing-stem-owner", "reprocess-missing-stem-owner@example.com")
+        transcription = models.Transcription(
+            title="Missing stem reprocess song",
+            audio_file_path="uploads/missing-stem-reprocess.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            stem_audio_path="uploads/stems/missing-reprocess-guitar.wav",
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.post(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
+        headers=auth_headers("reprocess-missing-stem-owner"),
+    )
+
+    assert response.status_code == 422
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.id == track_id
+        ).first()
+        assert refreshed.processing_status == "failed"
+        assert "missing" in refreshed.confidence_notes.lower()
+    finally:
+        session.close()
+
+
+def test_reprocess_instrument_track_queues_supported_track_and_clears_outputs(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "reprocess-guitar-owner", "reprocess-guitar-owner@example.com")
+        stem_path = tmp_path / "guitar.wav"
+        stem_path.write_bytes(b"guitar")
+        transcription = models.Transcription(
+            title="Queue reprocess song",
+            audio_file_path="uploads/queue-reprocess.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            stem_audio_path=str(stem_path),
+            notes_json=sample_notes_json(),
+            tab_json=sample_tab_json("guitar"),
+            notation_json="<old />",
+            confidence_notes="old note",
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
+            headers=auth_headers("reprocess-guitar-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "processing"
+    assert payload["notes_json"] is None
+    assert payload["tab_json"] is None
+    assert payload["notation_json"] is None
+    assert payload["confidence_notes"] is None
+    send_task_mock.assert_called_once_with(
+        "app.tasks.reprocess_instrument_track",
+        args=[track_id],
+    )
+
+
+def test_reprocess_drum_track_queues_and_clears_outputs(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "reprocess-drum-owner", "reprocess-drum-owner@example.com")
+        stem_path = tmp_path / "drums.wav"
+        stem_path.write_bytes(b"drums")
+        transcription = models.Transcription(
+            title="Queue drum reprocess song",
+            audio_file_path="uploads/queue-drum-reprocess.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="drums",
+            display_name="Drums",
+            stem_audio_path=str(stem_path),
+            notes_json='{"drum_hits": [{"onset": 0.0}]}',
+            tab_json='{"old": true}',
+            notation_json="<old />",
+            confidence_notes="old note",
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
+            headers=auth_headers("reprocess-drum-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "processing"
+    assert payload["notes_json"] is None
+    assert payload["tab_json"] is None
+    assert payload["notation_json"] is None
+    assert payload["confidence_notes"] is None
+    send_task_mock.assert_called_once_with(
+        "app.tasks.reprocess_instrument_track",
+        args=[track_id],
+    )
+
+
+def test_get_instrument_track_stem_returns_404_when_file_is_missing():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "stem-owner", "stem-owner@example.com")
+        transcription = models.Transcription(
+            title="Stem song",
+            audio_file_path="uploads/stem.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            stem_audio_path="uploads/stems/missing-guitar.wav",
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/stem",
+        headers=auth_headers("stem-owner"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Instrument stem audio file not available"
+
+
+def test_get_guitar_track_tab_export_uses_track_tab_json():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "track-tab-owner", "track-tab-owner@example.com")
+        transcription = models.Transcription(
+            title="Track export song",
+            audio_file_path="uploads/export.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            notes_json=sample_notes_json(),
+            tab_json=sample_tab_json("guitar"),
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/tab",
+        headers=auth_headers("track-tab-owner"),
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "filename=transcription_" in response.headers["content-disposition"]
+    assert "_guitar.tab" in response.headers["content-disposition"]
+    assert response.text.startswith("e|")
+    assert " 3" in response.text
+
+
+def test_get_bass_track_tab_export_returns_four_bass_strings():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "bass-tab-owner", "bass-tab-owner@example.com")
+        transcription = models.Transcription(
+            title="Bass export song",
+            audio_file_path="uploads/bass.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="bass",
+            display_name="Bass",
+            notes_json=sample_notes_json(),
+            tab_json=sample_tab_json("bass"),
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/tab",
+        headers=auth_headers("bass-tab-owner"),
+    )
+
+    assert response.status_code == 200
+    lines = response.text.splitlines()
+    assert len(lines) == 4
+    assert [line[:2] for line in lines] == ["G|", "D|", "A|", "E|"]
+
+
+def test_get_track_midi_export_generates_midi_from_track_notes():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "track-midi-owner", "track-midi-owner@example.com")
+        transcription = models.Transcription(
+            title="MIDI export song",
+            audio_file_path="uploads/midi.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            notes_json=sample_notes_json(),
+            tab_json=sample_tab_json("guitar"),
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/midi",
+        headers=auth_headers("track-midi-owner"),
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/midi")
+    assert response.content.startswith(b"MThd")
+
+
+def test_get_piano_track_exports_use_note_events_without_tab_data():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "piano-export-owner", "piano-export-owner@example.com")
+        transcription = models.Transcription(
+            title="Piano export song",
+            audio_file_path="uploads/piano.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="piano",
+            display_name="Piano",
+            notes_json=sample_notes_json(),
+            notation_json="<score-partwise version=\"3.1\"></score-partwise>",
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    midi_response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/midi",
+        headers=auth_headers("piano-export-owner"),
+    )
+    musicxml_response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/musicxml",
+        headers=auth_headers("piano-export-owner"),
+    )
+    tab_response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/tab",
+        headers=auth_headers("piano-export-owner"),
+    )
+
+    assert midi_response.status_code == 200
+    assert midi_response.content.startswith(b"MThd")
+    assert musicxml_response.status_code == 200
+    assert musicxml_response.text == "<score-partwise version=\"3.1\"></score-partwise>"
+    assert tab_response.status_code == 422
+    assert "Per-track TAB export currently supports guitar and bass" in tab_response.json()["detail"]
+
+
+def test_get_track_musicxml_export_uses_existing_notation_json():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "track-xml-owner", "track-xml-owner@example.com")
+        transcription = models.Transcription(
+            title="MusicXML export song",
+            audio_file_path="uploads/xml.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            notes_json=sample_notes_json(),
+            tab_json=sample_tab_json("guitar"),
+            notation_json="<score-partwise version=\"3.1\"></score-partwise>",
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/musicxml",
+        headers=auth_headers("track-xml-owner"),
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/xml")
+    assert response.text == "<score-partwise version=\"3.1\"></score-partwise>"
+
+
+def test_get_track_musicxml_export_generates_and_persists_when_missing():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "track-xml-gen-owner", "track-xml-gen-owner@example.com")
+        transcription = models.Transcription(
+            title="Generate MusicXML song",
+            audio_file_path="uploads/xml-gen.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            notes_json=sample_notes_json(),
+            tab_json=sample_tab_json("guitar"),
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.midi.midi_to_musicxml",
+        return_value="<score-partwise generated=\"true\"></score-partwise>",
+    ):
+        response = client.get(
+            f"/api/v1/audio/{transcription_id}/tracks/{track_id}/musicxml",
+            headers=auth_headers("track-xml-gen-owner"),
+        )
+
+    assert response.status_code == 200
+    assert response.text == "<score-partwise generated=\"true\"></score-partwise>"
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.id == track_id
+        ).first()
+        assert refreshed.notation_json == "<score-partwise generated=\"true\"></score-partwise>"
+    finally:
+        session.close()
+
+
+def test_get_track_export_rejects_stem_only_track_with_useful_error():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "stem-only-owner", "stem-only-owner@example.com")
+        transcription = models.Transcription(
+            title="Stem only export song",
+            audio_file_path="uploads/stem-only.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="vocals",
+            display_name="Vocals",
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/midi",
+        headers=auth_headers("stem-only-owner"),
+    )
+
+    assert response.status_code == 422
+    assert "Per-track MIDI export currently supports guitar, bass, and piano" in response.json()["detail"]
+
+
+def test_get_drum_track_export_remains_unsupported_with_rhythm_data():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "drum-export-owner", "drum-export-owner@example.com")
+        transcription = models.Transcription(
+            title="Drum rhythm export song",
+            audio_file_path="uploads/drums.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="drums",
+            display_name="Drums",
+            notes_json='{"drum_hits": [{"onset": 0.0, "offset": 0.12, "confidence": 0.8}]}',
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/midi",
+        headers=auth_headers("drum-export-owner"),
+    )
+
+    assert response.status_code == 422
+    assert "Per-track MIDI export currently supports guitar, bass, and piano" in response.json()["detail"]
+
+
+def test_get_track_export_requires_transcription_access():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "track-export-owner", "track-export-owner@example.com")
+        create_user(session, "track-export-other", "track-export-other@example.com")
+        transcription = models.Transcription(
+            title="Private export song",
+            audio_file_path="uploads/private-export.wav",
+            user_id=owner.id,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            notes_json=sample_notes_json(),
+            tab_json=sample_tab_json("guitar"),
+            processing_status="completed",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/tracks/{track_id}/tab",
+        headers=auth_headers("track-export-other"),
+    )
+
+    assert response.status_code == 403

@@ -18,8 +18,13 @@ interface Project {
 const filenameFromPath = (path?: string | null): string =>
   path?.split(/[\\/]/).pop() || "Audio source";
 
+const isNonBlockingProcessingWarning = (error?: string | null): boolean =>
+  Boolean(error?.startsWith("Source separation unavailable; processed the full mix instead."));
+
 const getTranscriptionStatus = (transcription: Transcription): Project["status"] => {
-  if (transcription.processing_error) return "failed";
+  if (transcription.processing_error && !isNonBlockingProcessingWarning(transcription.processing_error)) {
+    return "failed";
+  }
   return transcription.is_processed ? "completed" : "processing";
 };
 
@@ -42,7 +47,9 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
       status === "failed"
         ? transcription.processing_error || "Processing failed"
         : status === "completed"
-          ? "Score, tab, and exports are ready"
+          ? transcription.processing_error && isNonBlockingProcessingWarning(transcription.processing_error)
+            ? "Score and exports are ready from the full mix"
+            : "Score, tab, and exports are ready"
           : "Analysis is running in the background",
     createdAt: transcription.created_at || new Date().toISOString(),
     audioFileName,
@@ -99,8 +106,11 @@ const getDifficultyColor = (difficulty: Project["difficulty"]) => {
 const Dashboard: React.FC = () => {
   const { user, token } = useAuth();
   const navigate = useNavigate();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cachedTranscriptions = audioService.getCachedTranscriptions(token);
+  const [projects, setProjects] = useState<Project[]>(
+    () => cachedTranscriptions?.map(mapTranscriptionToProject) ?? [],
+  );
+  const [loading, setLoading] = useState(!cachedTranscriptions);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
 
@@ -160,7 +170,16 @@ const Dashboard: React.FC = () => {
     };
 
     const startAutoRefresh = async () => {
-      const initialProjects = await loadProjects(true);
+      const cachedProjects = audioService
+        .getCachedTranscriptions(token)
+        ?.map(mapTranscriptionToProject);
+
+      if (cachedProjects && isMounted) {
+        setProjects(cachedProjects);
+        setLoading(false);
+      }
+
+      const initialProjects = await loadProjects(!cachedProjects);
       if (!initialProjects || !hasProcessingProject(initialProjects)) return;
 
       refreshTimer = window.setInterval(async () => {
@@ -187,11 +206,63 @@ const Dashboard: React.FC = () => {
   const completedCount = projects.filter((project) => project.status === "completed").length;
   const processingCount = projects.filter((project) => project.status === "processing").length;
   const totalMinutes = Math.floor(projects.reduce((sum, project) => sum + project.duration, 0) / 60);
+  const featuredProject = projects[0];
+  const statCards = [
+    { label: "Total projects", value: projects.length, icon: "folder" as const, tone: "amber" },
+    { label: "Completed", value: completedCount, icon: "check" as const, tone: "green" },
+    { label: "Processing", value: processingCount, icon: "clock" as const, tone: "gold" },
+    { label: "Analyzed audio", value: `${totalMinutes}m`, icon: "waveform" as const, tone: "blue" },
+  ];
+  const quickActions = [
+    {
+      title: "Upload audio",
+      description: "MP3, WAV, or YouTube URL",
+      icon: "upload" as const,
+      onClick: handleNewTranscription,
+    },
+    {
+      title: "Record audio",
+      description: "Capture directly from mic",
+      icon: "microphone" as const,
+      onClick: () => alert("Recording feature coming soon."),
+    },
+    {
+      title: "Batch process",
+      description: "Multiple files at once",
+      icon: "layers" as const,
+      onClick: () => alert("Batch processing coming soon."),
+    },
+    {
+      title: "Templates",
+      description: "Start with arrangement presets",
+      icon: "file" as const,
+      onClick: () => alert("Template library coming soon."),
+    },
+  ];
+  const ProjectCover = ({ title }: { title: string }) => (
+    <div className="project-cover" aria-label={`${title} audio artwork`}>
+      <span className="project-cover-orbit" aria-hidden="true" />
+      <span className="project-cover-play" aria-hidden="true">
+        <Icon name="arrow" />
+      </span>
+    </div>
+  );
 
   return (
     <div className="dashboard-page">
       <div className="dashboard-content">
-        <header className="dashboard-header">
+        <header className="dashboard-header cinematic-dashboard-hero">
+          <div className="dashboard-hero-art" aria-hidden="true">
+            <span className="dashboard-hero-glow" />
+            <span className="dashboard-hero-wave wave-one" />
+            <span className="dashboard-hero-wave wave-two" />
+            <span className="dashboard-hero-wave wave-three" />
+            <span className="dashboard-guitar-plate" />
+            <span className="dashboard-guitar-neck" />
+            <span className="dashboard-guitar-soundhole" />
+            <span className="dashboard-guitar-strings" />
+            <span className="dashboard-hero-sweep" />
+          </div>
           <div className="dashboard-header-content">
             <h1 className="dashboard-title">MusicSheet Studio</h1>
             <p className="dashboard-subtitle">
@@ -216,34 +287,20 @@ const Dashboard: React.FC = () => {
 
         <main className="dashboard-main">
           <div className="dashboard-stats">
-            <div className="stat-card">
-              <div className="stat-content">
-                <h3 className="stat-value">{projects.length}</h3>
-                <p className="stat-label">Total projects</p>
+            {statCards.map((stat) => (
+              <div className={`stat-card stat-card-${stat.tone}`} key={stat.label}>
+                <Icon name={stat.icon} />
+                <div className="stat-content">
+                  <h3 className="stat-value">{stat.value}</h3>
+                  <p className="stat-label">{stat.label}</p>
+                </div>
+                <span className="stat-sparkline" aria-hidden="true" />
               </div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-content">
-                <h3 className="stat-value">{completedCount}</h3>
-                <p className="stat-label">Completed</p>
-              </div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-content">
-                <h3 className="stat-value">{processingCount}</h3>
-                <p className="stat-label">Processing</p>
-              </div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-content">
-                <h3 className="stat-value">{totalMinutes}m</h3>
-                <p className="stat-label">Analyzed audio</p>
-              </div>
-            </div>
+            ))}
           </div>
 
           <section className="projects-section">
-            <h2 className="section-title">Your music projects</h2>
+            <h2 className="section-title">Recent project</h2>
             {loadError && <div className="alert alert-error">{loadError}</div>}
 
             {loading ? (
@@ -261,6 +318,70 @@ const Dashboard: React.FC = () => {
                   Start first transcription
                 </button>
               </div>
+            ) : featuredProject && viewMode === "grid" ? (
+              <article
+                className={`project-card featured-project-card project-card-${featuredProject.status}`}
+                onDoubleClick={() => navigate(getProjectRoute(featuredProject))}
+              >
+                <ProjectCover title={featuredProject.title} />
+                <div className="project-body">
+                  <div className="project-card-header">
+                    <h3 className="project-title">{featuredProject.title}</h3>
+                    <div className="project-status-badge" style={{ background: getStatusGradient(featuredProject.status) }}>
+                      {featuredProject.status}
+                    </div>
+                    <button type="button" className="project-more-button" aria-label="More project actions">
+                      <Icon name="more" />
+                    </button>
+                  </div>
+
+                  <p className="project-description">{featuredProject.description}</p>
+
+                  <div className="project-meta">
+                    <div className="meta-item">
+                      <span className="meta-label">Source</span>
+                      <span className="meta-value">{featuredProject.audioFileName}</span>
+                    </div>
+                    <div className="meta-item">
+                      <span className="meta-label">Duration</span>
+                      <span className="meta-value">{formatDuration(featuredProject.duration)}</span>
+                    </div>
+                    <div className="meta-item">
+                      <span className="meta-label">Created</span>
+                      <span className="meta-value">{formatCreatedDate(featuredProject.createdAt)}</span>
+                    </div>
+                  </div>
+
+                  <div className="project-tags">
+                    <span
+                      className="difficulty-tag"
+                      style={{
+                        color: getDifficultyColor(featuredProject.difficulty),
+                      }}
+                    >
+                      <Icon name="gauge" />
+                      {featuredProject.difficulty}
+                    </span>
+                    {featuredProject.status === "completed" && (
+                      <span className="quality-badge">
+                        <Icon name="check" />
+                        export ready
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="project-actions">
+                  <button onClick={() => navigate(getProjectRoute(featuredProject))} className="action-button view-button">
+                    <Icon name="eye" />
+                    <span>View</span>
+                  </button>
+                  <button onClick={() => navigate(getProjectRoute(featuredProject))} className="action-button export-button">
+                    <Icon name="download" />
+                    <span>Exports</span>
+                  </button>
+                </div>
+              </article>
             ) : (
               <div className={`projects-container ${viewMode}`}>
                 {viewMode === "grid" ? (
@@ -271,14 +392,14 @@ const Dashboard: React.FC = () => {
                         className={`project-card project-card-${project.status}`}
                         onDoubleClick={() => navigate(getProjectRoute(project))}
                       >
-                        <div className="project-card-header">
-                          <h3 className="project-title">{project.title}</h3>
-                          <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
-                            {project.status}
-                          </div>
-                        </div>
-
+                        <ProjectCover title={project.title} />
                         <div className="project-body">
+                          <div className="project-card-header">
+                            <h3 className="project-title">{project.title}</h3>
+                            <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
+                              {project.status}
+                            </div>
+                          </div>
                           <p className="project-description">{project.description}</p>
 
                           <div className="project-meta">
@@ -334,6 +455,7 @@ const Dashboard: React.FC = () => {
                   <div className="projects-list">
                     {projects.map((project) => (
                       <article key={project.id} className={`project-list-item project-list-item-${project.status}`}>
+                        <ProjectCover title={project.title} />
                         <div className="project-list-content">
                           <div className="project-list-header">
                             <h3 className="project-list-title">{project.title}</h3>
@@ -382,36 +504,77 @@ const Dashboard: React.FC = () => {
             )}
           </section>
 
+          {projects.length > 1 && viewMode === "grid" && (
+            <section className="projects-section dashboard-library-section">
+              <h2 className="section-title">Project library</h2>
+              <div className="projects-container grid">
+                <div className="projects-grid">
+                  {projects.slice(1).map((project) => (
+                    <article
+                      key={project.id}
+                      className={`project-card project-card-${project.status}`}
+                      onDoubleClick={() => navigate(getProjectRoute(project))}
+                    >
+                      <ProjectCover title={project.title} />
+                      <div className="project-body">
+                        <div className="project-card-header">
+                          <h3 className="project-title">{project.title}</h3>
+                          <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
+                            {project.status}
+                          </div>
+                        </div>
+                        <p className="project-description">{project.description}</p>
+                        <div className="project-meta">
+                          <div className="meta-item">
+                            <span className="meta-label">Source</span>
+                            <span className="meta-value">{project.audioFileName}</span>
+                          </div>
+                          <div className="meta-item">
+                            <span className="meta-label">Duration</span>
+                            <span className="meta-value">{formatDuration(project.duration)}</span>
+                          </div>
+                          <div className="meta-item">
+                            <span className="meta-label">Created</span>
+                            <span className="meta-value">{formatCreatedDate(project.createdAt)}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="project-actions">
+                        <button onClick={() => navigate(getProjectRoute(project))} className="action-button view-button">
+                          <Icon name="eye" />
+                          <span>View</span>
+                        </button>
+                        {project.status === "completed" && (
+                          <button onClick={() => navigate(getProjectRoute(project))} className="action-button export-button">
+                            <Icon name="download" />
+                            <span>Exports</span>
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
+
           <section className="quick-actions-section">
-            <h2 className="section-title">Quick actions</h2>
             <div className="quick-actions-grid">
-              <button onClick={handleNewTranscription} className="quick-action-button">
-                <div className="quick-action-content">
-                  <h3>Upload audio</h3>
-                  <p>MP3, WAV, or YouTube URL</p>
-                </div>
-              </button>
-
-              <button onClick={() => alert("Recording feature coming soon.")} className="quick-action-button">
-                <div className="quick-action-content">
-                  <h3>Record audio</h3>
-                  <p>Capture directly from mic</p>
-                </div>
-              </button>
-
-              <button onClick={() => alert("Batch processing coming soon.")} className="quick-action-button">
-                <div className="quick-action-content">
-                  <h3>Batch process</h3>
-                  <p>Multiple files at once</p>
-                </div>
-              </button>
-
-              <button onClick={() => alert("Template library coming soon.")} className="quick-action-button">
-                <div className="quick-action-content">
-                  <h3>Templates</h3>
-                  <p>Start with arrangement presets</p>
-                </div>
-              </button>
+              {quickActions.map((action) => (
+                <button onClick={action.onClick} className="quick-action-button" key={action.title}>
+                  <span className="quick-action-icon">
+                    <Icon name={action.icon} />
+                  </span>
+                  <div className="quick-action-content">
+                    <h3>{action.title}</h3>
+                    <p>{action.description}</p>
+                  </div>
+                  <span className="quick-action-arrow">
+                    <Icon name="arrow" />
+                  </span>
+                </button>
+              ))}
             </div>
           </section>
         </main>

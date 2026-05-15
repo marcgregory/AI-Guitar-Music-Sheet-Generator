@@ -1,13 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { Icon } from "../Icon";
+import { AuthStudioShell } from "./AuthStudioShell";
 import { useAuth } from "./AuthContext";
-
-const EyeIcon = () => (
-  <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
 
 const Login: React.FC = () => {
   const { login } = useAuth();
@@ -70,33 +65,35 @@ const Login: React.FC = () => {
   };
 
   return (
-    <div className="auth-page">
-      <div className="auth-container">
-        <div className="auth-header">
-          <h1>Music Sheet Generator</h1>
-          <p className="auth-subtitle">
-            Convert recordings into polished guitar notation, tabs, and export-ready practice material.
-          </p>
-        </div>
-
+    <AuthStudioShell
+      eyebrow="Guitar AI Studio"
+      formTitle="Welcome back"
+      formSubtitle="Sign in to continue to Guitar AI Studio."
+      heroSubtitle="Convert recordings into polished guitar notation, tabs, and export-ready practice material."
+    >
         <form onSubmit={handleSubmit} className="auth-form">
           <div className="form-group">
             <label htmlFor="email">Email address</label>
-            <input
-              type="email"
-              id="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              autoFocus
-              disabled={isLoading}
-              autoComplete="email"
-            />
+            <div className="auth-input-shell">
+              <Icon name="mail" />
+              <input
+                type="email"
+                id="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+                disabled={isLoading}
+                autoComplete="email"
+                placeholder="you@example.com"
+              />
+            </div>
           </div>
 
           <div className="form-group">
             <label htmlFor="password">Password</label>
-            <div className="password-input-wrapper">
+            <div className="password-input-wrapper auth-input-shell">
+              <Icon name="lock" />
               <input
                 type={showPassword ? "text" : "password"}
                 id="password"
@@ -105,6 +102,7 @@ const Login: React.FC = () => {
                 required
                 disabled={isLoading}
                 autoComplete="current-password"
+                placeholder="Enter your password"
               />
               <button
                 type="button"
@@ -113,16 +111,40 @@ const Login: React.FC = () => {
                 aria-label={showPassword ? "Hide password" : "Show password"}
                 title={showPassword ? "Hide password" : "Show password"}
               >
-                <EyeIcon />
+                <Icon name="eye" />
               </button>
             </div>
           </div>
 
+          <div className="auth-form-options">
+            <label className="auth-checkbox">
+              <input type="checkbox" />
+              <span>Remember me</span>
+            </label>
+            <button type="button" className="auth-text-button">
+              Forgot password?
+            </button>
+          </div>
+
           <button type="submit" className="submit-button" disabled={isLoading}>
-            {isLoading ? "Signing in..." : "Sign in"}
+            <span>{isLoading ? "Signing in..." : "Sign in"}</span>
+            <Icon name="arrow" />
           </button>
 
           {error && <div className="error-message">{error}</div>}
+
+          <div className="auth-divider">
+            <span>Or</span>
+          </div>
+
+          <button type="button" className="auth-social-button">
+            <span className="auth-google-mark">G</span>
+            Continue with Google
+          </button>
+          <button type="button" className="auth-social-button">
+            <span className="auth-apple-mark">Apple</span>
+            Continue with Apple
+          </button>
 
           <div className="auth-footer">
             <p>
@@ -130,8 +152,7 @@ const Login: React.FC = () => {
             </p>
           </div>
         </form>
-      </div>
-    </div>
+    </AuthStudioShell>
   );
 };
 

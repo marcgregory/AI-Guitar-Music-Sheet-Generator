@@ -120,3 +120,45 @@ class Transcription(TranscriptionInDBBase):
     tablature_data: Optional[str] = None
     notation_data: Optional[str] = None
     chord_chart_data: Optional[str] = None
+
+
+class InstrumentTrackBase(BaseModel):
+    transcription_id: int
+    instrument_type: str
+    display_name: str
+    stem_audio_path: Optional[str] = None
+    notes_json: Optional[str] = None
+    chords_json: Optional[str] = None
+    tab_json: Optional[str] = None
+    notation_json: Optional[str] = None
+    confidence_score: Optional[int] = None
+    processing_status: str = "pending"
+    confidence_notes: Optional[str] = None
+
+
+class InstrumentTrackCreate(BaseModel):
+    instrument_type: str = Field(..., min_length=1, max_length=50)
+    display_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    stem_audio_path: Optional[str] = None
+    notes_json: Optional[str] = None
+    chords_json: Optional[str] = None
+    tab_json: Optional[str] = None
+    notation_json: Optional[str] = None
+    confidence_score: Optional[int] = None
+    processing_status: str = "pending"
+    confidence_notes: Optional[str] = None
+
+
+class InstrumentTrackUpdate(BaseModel):
+    display_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    instrument_type: Optional[str] = Field(None, min_length=1, max_length=50)
+    confidence_notes: Optional[str] = None
+
+
+class InstrumentTrack(InstrumentTrackBase):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True

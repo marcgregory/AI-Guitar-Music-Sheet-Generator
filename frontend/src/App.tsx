@@ -1,7 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { AuthProvider, useAuth } from './components/auth/AuthContext';
-import { ThemeProvider } from './components/ThemeProvider';
 import Login from './components/auth/Login';
 import Register from './components/auth/Register';
 import Dashboard from './components/auth/Dashboard';
@@ -22,22 +21,20 @@ const PrivateRoute = ({ children }: { children: ReactNode }) => {
 function App() {
   return (
     <AuthProvider>
-      <ThemeProvider>
-        <BrowserRouter>
-          <MotionDirector />
-          <Routes>
-            <Route path="/" element={<PublicShell><LandingPage /></PublicShell>} />
-            <Route path="/login" element={<PublicShell><Login /></PublicShell>} />
-            <Route path="/register" element={<PublicShell><Register /></PublicShell>} />
-            <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
-            <Route path="/upload" element={<PrivateRoute><AudioUpload /></PrivateRoute>} />
-            <Route path="/processing/:transcriptionId" element={<PrivateRoute><ProcessingStatus /></PrivateRoute>} />
-            <Route path="/transcription/:transcriptionId" element={<PrivateRoute><TranscriptionViewer /></PrivateRoute>} />
-            {/* Redirect any other routes to login for now */}
-            <Route path="*" element={<Navigate to="/login" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </ThemeProvider>
+      <BrowserRouter>
+        <MotionDirector />
+        <Routes>
+          <Route path="/" element={<PublicShell><LandingPage /></PublicShell>} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+          <Route path="/upload" element={<PrivateRoute><AudioUpload /></PrivateRoute>} />
+          <Route path="/processing/:transcriptionId" element={<PrivateRoute><ProcessingStatus /></PrivateRoute>} />
+          <Route path="/transcription/:transcriptionId" element={<PrivateRoute><TranscriptionViewer /></PrivateRoute>} />
+          {/* Redirect any other routes to login for now */}
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </BrowserRouter>
     </AuthProvider>
   );
 }

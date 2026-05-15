@@ -1,24 +1,29 @@
-# AI Guitar Music Sheet Generator
+# AI Multi-Instrument Sheet and Stem Studio
 
 ## Problem
 
-Musicians and guitar players often struggle to manually transcribe songs from audio into guitar tabs or music sheets. Existing tools are either inaccurate, expensive, or limited to MIDI-based music only. Beginners also find it difficult to identify chords, notes, and finger placements by ear.
+Musicians often struggle to turn finished audio into useful practice material. A song may contain vocals, drums, bass, guitar, piano, synths, and other instruments mixed together, making it difficult to hear one part clearly or transcribe it by ear.
 
-Additionally, converting songs from MP3 files or YouTube videos into playable guitar tabs usually requires advanced music knowledge and consumes a lot of time.
+Existing tools tend to solve only part of the workflow. Stem splitters can isolate instruments but usually do not create playable notation. Tab and sheet music tools may provide notation, but often depend on manual entry, MIDI files, or a limited instrument focus. Learners and working musicians need a more connected workflow: separate the song, inspect each part, generate notation or tabs where possible, and practice with synchronized playback.
 
 ---
 
 ## Solution
 
-Develop an AI-powered web application that automatically converts audio from MP3 files or YouTube links into guitar music sheets and tablature.
+Develop an AI-powered web application that combines Moises-style stem separation with Songsterr-style synchronized notation and playback.
 
-The system will analyze the uploaded audio, detect notes, chords, tempo, and rhythm, then generate:
-- Guitar tablature (TAB)
-- Standard music notation
-- Chord progressions
-- Suggested fret positions
+The system will analyze audio from MP3/WAV uploads or YouTube links, separate broad instrument stems, detect notes, chords, tempo, key, rhythm, and confidence levels, then generate track-specific musical outputs where supported.
 
-The application will also provide synchronized playback and export options for musicians and learners.
+The application will provide:
+- Multi-stem playback for vocals, drums, bass, guitar, piano, and other/accompaniment
+- Per-instrument transcription tracks
+- Guitar and bass tablature
+- Piano, vocal, and melodic staff notation where supported
+- Drum rhythm lanes and future drum notation
+- Chord progressions and chord charts
+- Synchronized playback, looping, speed control, and export options
+
+The goal is a multi-instrument transcription and practice studio, not a guitar-only tab generator.
 
 ---
 
@@ -27,101 +32,126 @@ The application will also provide synchronized playback and export options for m
 ### Audio Input
 - Upload MP3/WAV audio files
 - Paste YouTube video links
-- Audio preprocessing and normalization
+- Audio preprocessing, normalization, and resampling
 
 ### AI Audio Analysis
-- Pitch detection
+- Source separation into broad stems
+- Pitch detection for melodic stems
 - Chord recognition
 - BPM/tempo detection
 - Key detection
-- Rhythm analysis
+- Rhythm and onset analysis
+- Per-track confidence scoring
 
-### Guitar Tab Generation
-- Automatic guitar tablature creation
-- Chord chart generation
-- Finger positioning suggestions
-- Alternate tuning support
-- Capo support
+### Multi-Instrument Stem Separation
+- Generate and persist separate stems for vocals, drums, bass, guitar, piano, and other/accompaniment
+- Provide stem preview and playback
+- Support mute, solo, and volume controls per stem
+- Allow selected-track reprocessing without rerunning the whole song
 
-### Music Sheet Viewer
-- Interactive tab and notation viewer
+### Multi-Track Transcription
+- Store transcription data per instrument track
+- Generate guitar tablature from guitar stems
+- Generate bass tablature from bass stems
+- Generate piano note/staff notation from piano stems
+- Generate vocal melody notation from vocal stems
+- Generate drum rhythm data from drum stems
+- Keep full-mix transcription as a fallback or summary view
+
+### Notation and Track Viewer
+- Interactive instrument selector
+- Tab, rhythm, and notation views based on selected instrument
 - Audio playback synchronization
 - Playback speed controls
+- Looping and practice controls
 - Zoom controls
 - Dark/light mode
 
 ### Export Options
-- Export as PDF
-- Export as MIDI
-- Export as MusicXML
-- Export as TXT guitar tabs
-- Download sheet image
+- Export track or full-mix MIDI
+- Export MusicXML for notation-capable tracks
+- Export TXT tabs for tab-capable tracks
+- Export PDF sheet music
+- Export sheet images
+- Future support for Guitar Pro, PowerTab, and stem remix/export
 
 ### User Features
 - User authentication
 - Save transcription history
 - Favorite projects
 - Project management dashboard
+- Track metadata editing
+- Manual correction history
 
 ### Optional Advanced Features
-- Beginner-friendly tab simplification
-- Fingerstyle mode
-- Solo extraction
+- Beginner-friendly simplification
+- Instrument role detection
+- Lead/rhythm guitar classification
+- Solo and melody extraction
 - AI-generated practice suggestions
 - Real-time transcription support
+- Collaborative review and comments
 
 ---
 
-## Technical Considerations & Product Decisions
+## Technical Considerations and Product Decisions
 
-### AI Models & Technologies
+### AI Models and Technologies
 
 The platform may use the following AI and audio processing technologies:
 
 #### Source Separation
 - Demucs
 - Spleeter
+- Future specialist models for instrument-specific separation
 
 #### Pitch Detection
 - Spotify Basic Pitch
 - CREPE
+- librosa pYIN fallback
 
 #### Chord Recognition
 - CNN/RNN-based chord classification
 - librosa chroma analysis
+- Template matching
 
 #### Audio Processing
 - FFmpeg
 - librosa
 - Essentia
+- music21 or mido for notation and MIDI conversion
 
 These technologies may evolve as the platform improves accuracy and performance.
 
 ---
 
-### Failure Handling & Confidence Scoring
+### Failure Handling and Confidence Scoring
 
 The system will provide:
-- Confidence scores for detected notes/chords
+- Confidence scores for detected notes, chords, tempo, key, and stems
 - Suggested alternative transcriptions
 - Error indicators for uncertain sections
 - Partial transcription fallback when full analysis fails
+- Clear per-track status messages
 
-Users may manually edit generated tabs to correct inaccuracies.
+Users may manually edit generated track data to correct inaccuracies.
 
 ---
 
 ### Accuracy Expectations
 
 Target performance:
-- 80–90% chord detection accuracy for isolated guitar audio
-- 70–85% note transcription accuracy for mixed audio
+- 80-90% chord detection accuracy for clean, isolated harmonic material
+- 70-85% note transcription accuracy for supported melodic stems
+- Higher reliability for isolated stems than dense full mixes
 
 Performance depends heavily on:
 - Audio quality
 - Background noise
 - Number of instruments
+- Instrument overlap
 - Recording clarity
+- Distortion, reverb, and live-room bleed
 
 ---
 
@@ -131,14 +161,17 @@ The system will support songs containing:
 - Vocals
 - Drums
 - Bass
-- Multiple instruments
+- Guitar
+- Piano
+- Other melodic and accompaniment instruments
 
 The application will:
-- Attempt guitar source isolation
-- Separate stems before transcription
-- Focus primarily on dominant guitar frequencies
+- Separate broad stems before transcription
+- Analyze each supported stem separately
+- Store results as instrument tracks
+- Use full-mix processing only as a fallback or overview
 
-Complex mixes may reduce accuracy.
+Complex mixes may reduce accuracy, especially when multiple similar instruments overlap.
 
 ---
 
@@ -153,10 +186,11 @@ Performance may decrease with:
 - Reverb-heavy mixes
 - Crowd/live recordings
 - Low signal-to-noise ratio
+- Instruments occupying the same frequency range
 
 ---
 
-### Beginner Guidance & Accessibility
+### Beginner Guidance and Accessibility
 
 The platform will include:
 - Beginner-friendly explanations
@@ -172,7 +206,7 @@ Accessibility considerations:
 
 ---
 
-### Mobile & Tablet Support
+### Mobile and Tablet Support
 
 Responsive design is planned from the beginning for:
 - Desktop
@@ -186,22 +220,26 @@ Tablet optimization is important because musicians commonly use tablets while pr
 ### Manual Error Correction
 
 Users will be able to:
-- Edit tabs manually
+- Edit generated notes, tabs, rhythm hits, and chords
 - Modify chord names
-- Move notes between strings/frets
-- Reprocess selected sections only
+- Move guitar/bass notes between strings and frets
+- Adjust piano/vocal note timing and pitch
+- Reprocess selected tracks or sections only
+- Save edited versions without losing the AI-generated baseline
 
 ---
 
-### User Verification & Learning Support
+### User Verification and Learning Support
 
 The application will provide:
-- Synchronized playback
+- Synchronized stem and score playback
 - MIDI comparison playback
 - Animated note highlighting
 - Tempo slowdown features
+- Looping for selected sections
+- Track mute/solo controls for focused listening
 
-This helps users validate generated tabs even without advanced music theory knowledge.
+This helps users validate generated notation even without advanced music theory knowledge.
 
 ---
 
@@ -211,8 +249,9 @@ Possible practice assistance features:
 - Slow practice recommendations
 - Repeated difficult section detection
 - Suggested exercises
-- Finger transition practice hints
-- Difficulty scoring
+- Finger transition practice hints for fretted instruments
+- Coordination hints for rhythm instruments
+- Difficulty scoring per track
 
 ---
 
@@ -220,20 +259,22 @@ Possible practice assistance features:
 
 The platform is intended for:
 - Learning songs
-- Guitar practice
+- Multi-instrument practice
+- Band rehearsal preparation
 - Cover preparation
 - Arrangement assistance
 - Transcription support
+- Stem listening and remix-style study
 
 The system is designed to assist musicians rather than replace professional transcriptionists.
 
 ---
 
-### Copyright & Legal Compliance
+### Copyright and Legal Compliance
 
 The platform will:
 - Process user-provided content only
-- Avoid permanent copyrighted audio storage
+- Avoid permanent copyrighted audio storage unless explicitly required for user projects
 - Follow YouTube API and DMCA policies
 - Display copyright notices where applicable
 
@@ -248,13 +289,15 @@ Generated exports may include:
 - Artist name
 - AI transcription notice
 - Source attribution
+- Selected instrument or track name
 
 ---
 
-### Data Retention & Privacy
+### Data Retention and Privacy
 
 The platform will:
-- Automatically delete uploaded audio after processing
+- Automatically delete temporary uploaded and preprocessed audio after processing
+- Retain separated stems only when needed for playback, reprocessing, or user projects
 - Allow users to manage saved projects
 - Minimize storage of copyrighted material
 
@@ -269,17 +312,18 @@ Usage analytics may be collected to:
 
 Users retain ownership of:
 - Uploaded content
-- Edited tabs
+- Edited track data
 - Generated exports
+- Saved arrangements and corrections
 
-The platform only processes data necessary for transcription functionality.
+The platform only processes data necessary for transcription and practice functionality.
 
 ---
 
 ### Processing Time
 
 Expected processing speed:
-- 1–3 minutes for a typical 3-minute song
+- 1-3 minutes for a typical 3-minute song, depending on model choice and hardware
 
 Real-time transcription may be explored using:
 - WebAssembly
@@ -293,12 +337,14 @@ Real-time transcription may be explored using:
 The platform will use:
 - Server-side AI processing
 - Browser-based playback/editing
-- Cloud storage for saved projects
+- Per-track transcription storage
+- Cloud or local storage for saved projects
 
 Benefits include:
 - Better AI performance
 - Scalability
 - Cross-device compatibility
+- Track-level reprocessing and editing
 
 ---
 
@@ -312,21 +358,56 @@ Premium plans may support larger uploads.
 
 ---
 
-### Playability Optimization
+### Instrument Support
 
-The transcription engine will:
-- Optimize fret positioning
-- Reduce impractical stretches
-- Prioritize realistic fingerings
-- Suggest simplified versions
+MVP support:
+- Vocals stem playback
+- Drum stem playback and rhythm lane
+- Bass stem playback and bass tab
+- Guitar stem playback and guitar tab
+- Piano stem playback
+- Other/accompaniment stem playback
 
-The goal is playable and musician-friendly tabs.
+Near-term expansion:
+- Piano note and staff notation
+- Vocal melody notation
+- Drum MIDI or drum notation
+- Per-track MIDI/MusicXML exports beyond guitar and bass
+
+Future support may include:
+- Ukulele
+- Strings
+- Brass and woodwinds
+- Synth lead and pad classification
+- Improved multi-guitar separation
+- Instrument role detection across sections
 
 ---
 
-### Guitar Techniques Support
+### Fretted Instrument Support
 
-The system aims to support:
+For guitar, bass, ukulele, and similar instruments, the transcription engine will support:
+- Tab generation
+- Tuning preferences
+- Capo settings where applicable
+- Fret positioning optimization
+- Playability-aware simplification
+
+Supported tunings may include:
+- Guitar standard tuning
+- Drop D
+- Open G
+- DADGAD
+- Half-step down
+- Bass standard tuning
+
+Additional tunings may be added over time.
+
+---
+
+### Guitar Technique Support
+
+For guitar-specific tracks, the system aims to support:
 - Bends
 - Slides
 - Hammer-ons
@@ -339,64 +420,42 @@ Support quality may vary depending on audio clarity.
 
 ---
 
-### Polyphonic Guitar Support
+### Polyphonic Instrument Support
 
 The platform will attempt to detect:
-- Fingerstyle playing
+- Guitar fingerstyle playing
+- Piano chords and voicings
 - Simultaneous ringing notes
-- Chord voicings
 - Arpeggios
+- Chord voicings
 
 Polyphonic transcription remains one of the most technically challenging features.
-
----
-
-### Alternate Tunings
-
-Supported tunings may include:
-- Standard tuning
-- Drop D
-- Open G
-- DADGAD
-- Half-step down
-
-Additional tunings may be added over time.
-
----
-
-### Instrument Support
-
-MVP support:
-- Acoustic guitar
-- Electric guitar
-
-Future support may include:
-- Bass guitar
-- Ukulele
-- Piano
-- Violin
 
 ---
 
 ### Notation Customization
 
 Users can customize:
+- Track-only view
+- Full-mix view
 - TAB-only mode
 - Standard notation
 - Rhythmic notation
 - Chord-only view
 - Tuning preferences
 - Capo settings
+- Instrument-specific display preferences
 
 ---
 
-### Quality Assurance & Validation
+### Quality Assurance and Validation
 
 The system will improve through:
 - Beta testing
 - Known-song benchmarking
 - User feedback collection
 - Accuracy evaluation datasets
+- Per-instrument accuracy tracking
 
 User corrections may help improve future transcription models.
 
@@ -409,15 +468,17 @@ To manage AI processing costs, the platform may use:
 - Usage limits
 - Prioritized processing
 - Subscription-based premium access
+- Caching for repeated audio or stem processing
 
 ---
 
-### Model Updates & Maintenance
+### Model Updates and Maintenance
 
 AI models will be updated gradually to:
 - Improve transcription quality
 - Reduce errors
 - Maintain compatibility
+- Add support for more instruments and notation formats
 
 Updates will be tested before deployment to avoid breaking existing functionality.
 
@@ -430,14 +491,16 @@ Potential pricing models:
 - Subscription plans
 - Premium exports
 - Faster processing for paid users
+- Larger file and project limits
 
 ---
 
 ### Offline Capability
 
-The MVP will primarily rely on cloud-based AI processing.
+The MVP will primarily rely on cloud-based or server-side AI processing.
 
 Possible offline features:
-- Viewing saved tabs
-- Audio playback
+- Viewing saved notation and tabs
+- Audio playback for saved stems
 - Basic editing
+- Cached practice sessions

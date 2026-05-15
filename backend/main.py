@@ -3,12 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from app.api.v1 import api
+from app.database_init import init_db
 
 app = FastAPI(
     title="AI Guitar Music Sheet Generator",
     description="API for converting audio to guitar tablature and notation",
     version="0.1.0"
 )
+
+init_db()
 
 # Configure CORS
 app.add_middleware(

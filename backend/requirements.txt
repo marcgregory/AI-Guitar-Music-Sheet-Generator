@@ -1,8 +1,10 @@
 fastapi==0.110.0
+pydantic-settings==2.14.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 python-dotenv==1.0.0
 sqlalchemy>=2.1.0b2,<3.0.0
 alembic==1.10.0
@@ -11,7 +13,7 @@ celery==5.3.4
 # Audio processing libraries will be added in Phase 1
 librosa==0.10.1
 # essentia==2.1b6
-demucs==4.0.3
+demucs==4.0.1
 # Optional TensorFlow-backed pitch detectors. These do not currently install
 # cleanly on the Microsoft Store Python 3.13 runtime used in local dev.
 # crepe==0.0.16
