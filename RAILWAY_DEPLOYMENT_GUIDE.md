@@ -66,7 +66,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 1. **Root Directory:** backend
 2. **Procfile:** Will be auto-detected
-3. **Start Command:** `python -m uvicorn main:app --host 0.0.0.0 --port $PORT`
+3. **Start Command:** `sh -lc 'python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}'`
 
 ## Step 4: Get Your Backend URL
 
