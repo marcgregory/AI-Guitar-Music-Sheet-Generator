@@ -19,5 +19,5 @@ COPY backend/ .
 # Expose application port
 EXPOSE 8000
 
-# Run the FastAPI app
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the FastAPI app using the platform-assigned port when available.
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
