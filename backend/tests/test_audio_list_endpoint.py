@@ -140,7 +140,7 @@ def test_list_transcriptions_returns_only_current_users_items_newest_first():
     assert all(item["user_id"] != other_user_id for item in payload)
 
 
-def test_status_returns_failed_for_unfinished_warning_only_job():
+def test_status_returns_processing_for_unfinished_warning_only_job():
     reset_database()
     session = TestingSessionLocal()
     try:
@@ -167,8 +167,8 @@ def test_status_returns_failed_for_unfinished_warning_only_job():
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "failed"
-    assert "Source separation unavailable" in response.json()["error"]
+    assert response.json()["status"] == "processing"
+    assert response.json().get("error") is None
 
 
 def test_list_instrument_tracks_requires_transcription_access():

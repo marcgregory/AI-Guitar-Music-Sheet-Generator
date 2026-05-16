@@ -182,7 +182,7 @@ def _celery_has_available_worker() -> bool:
 
 def _blocking_processing_error(transcription: models.Transcription) -> str | None:
     error = transcription.processing_error
-    if transcription.is_processed and _is_non_blocking_processing_warning(error):
+    if _is_non_blocking_processing_warning(error):
         return None
     return error
 
