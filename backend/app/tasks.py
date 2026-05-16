@@ -31,7 +31,7 @@ DRUM_RHYTHM_INSTRUMENTS = ("drums",)
 NOTE_TRANSCRIPTION_INSTRUMENTS = TAB_TRANSCRIPTION_INSTRUMENTS + STAFF_NOTATION_INSTRUMENTS
 TRACK_REPROCESS_INSTRUMENTS = NOTE_TRANSCRIPTION_INSTRUMENTS + DRUM_RHYTHM_INSTRUMENTS
 
-
+ENABLE_SOURCE_SEPARATION = False
 def has_note_events(notes_data) -> bool:
     """Return True when pitch analysis contains usable note events."""
     if isinstance(notes_data, str):
@@ -427,42 +427,97 @@ def process_audio_transcription(self, transcription_id: int):
 
         # Separate audio sources and persist available broad instrument stems.
         # If separation is unavailable in local dev, continue with the full mix.
-        sep_temp_dir = tempfile.mkdtemp()
-        try:
-            separated_stems = audio.separate_sources_multi(preprocessed_path, sep_temp_dir)
-            persisted_stems = copy_and_persist_instrument_tracks(
-                transcription,
-                separated_stems,
-                db_session,
-            )
-            if not persisted_stems:
-                raise RuntimeError("Source separation completed but no instrument stems were saved")
-            generate_track_transcription_outputs(transcription.id, db_session)
-            separated_path = select_analysis_source(persisted_stems, preprocessed_path)
-            transcription.separated_audio_file_path = (
-                separated_path if separated_path != preprocessed_path else None
-            )
-            db_session.add(transcription)
-            db_session.commit()
-        except Exception as e:
-            update_task_state(self, state="PROGRESS", meta={"step": "source_separation_failed"})
-            print(
-                "Source separation failed; continuing with preprocessed full mix: "
-                f"{str(e)}"
-            )
-            separated_path = preprocessed_path
-            transcription.separated_audio_file_path = None
-            transcription.processing_error = (
-                "Source separation unavailable; processed the full mix instead. "
-                f"Details: {str(e)}"
-            )
-            db_session.add(transcription)
-            db_session.commit()
-        finally:
-            # Clean up the temporary directory
-            shutil.rmtree(sep_temp_dir)
+        # sep_temp_dir = tempfile.mkdtemp()
+        # try:
+        #     separated_stems = audio.separate_sources_multi(preprocessed_path, sep_temp_dir)
+        #     persisted_stems = copy_and_persist_instrument_tracks(
+        #         transcription,
+        #         separated_stems,
+        #         db_session,
+        #     )
+        #     if not persisted_stems:
+        #         raise RuntimeError("Source separation completed but no instrument stems were saved")
+        #     generate_track_transcription_outputs(transcription.id, db_session)
+        #     separated_path = select_analysis_source(persisted_stems, preprocessed_path)
+        #     transcription.separated_audio_file_path = (
+        #         separated_path if separated_path != preprocessed_path else None
+        #     )
+        #     db_session.add(transcription)
+        #     db_session.commit()
+        # except Exception as e:
+        #     update_task_state(self, state="PROGRESS", meta={"step": "source_separation_failed"})
+        #     print(
+        #         "Source separation failed; continuing with preprocessed full mix: "
+        #         f"{str(e)}"
+        #     )
+        #     separated_path = preprocessed_path
+        #     transcription.separated_audio_file_path = None
+        #     transcription.processing_error = (
+        #         "Source separation unavailable; processed the full mix instead. "
+        #         f"Details: {str(e)}"
+        #     )
+        #     db_session.add(transcription)
+        #     db_session.commit()
+        # finally:
+        #     # Clean up the temporary directory
+        #     shutil.rmtree(sep_temp_dir)
 
-        # Update task state
+        separated_path = preprocessed_path
+
+        if ENABLE_SOURCE_SEPARATION:
+            sep_temp_dir = tempfile.mkdtemp()
+
+            try:
+                separated_stems = audio.separate_sources_multi(
+                    preprocessed_path,
+                    sep_temp_dir
+                )
+
+                persisted_stems = copy_and_persist_instrument_tracks(
+                    transcription,
+                    separated_stems,
+                    db_session,
+                )
+
+                if not persisted_stems:
+                    raise RuntimeError(
+                    "Source separation completed but no instrument stems were saved"
+                )
+
+                generate_track_transcription_outputs(
+                transcription.id,
+                db_session
+                )
+
+                separated_path = select_analysis_source(
+                persisted_stems,
+                preprocessed_path
+                )
+
+                transcription.separated_audio_file_path = (
+                separated_path
+                if separated_path != preprocessed_path
+                else None
+        )
+
+                db_session.add(transcription)
+                db_session.commit()
+
+            except Exception as e:
+                print(
+                f"Source separation failed, using full mix instead: {e}"
+            )
+
+                separated_path = preprocessed_path
+                transcription.separated_audio_file_path = None
+
+                db_session.add(transcription)
+                db_session.commit()
+
+            finally:
+                shutil.rmtree(sep_temp_dir, ignore_errors=True)
+
+                # Update task state
         update_task_state(self, state="PROGRESS", meta={"step": "pitch_detection"})
 
         # Detect pitch (notes) from the separated audio
