@@ -171,6 +171,58 @@ def test_status_returns_processing_for_unfinished_warning_only_job():
     assert response.json().get("error") is None
 
 
+def test_upload_audio_fails_when_active_transcription_exists():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "active-owner", "active-owner@example.com")
+        transcription = models.Transcription(
+            title="Processing track",
+            audio_file_path="uploads/processing.wav",
+            user_id=owner.id,
+            is_processed=False,
+        )
+        session.add(transcription)
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.post(
+        "/api/v1/audio/upload",
+        headers=auth_headers("active-owner"),
+        files={"file": ("sample.wav", b"RIFF....", "audio/wav")},
+    )
+
+    assert response.status_code == 409
+    assert "already being processed" in response.json()["detail"]
+
+
+def test_extract_audio_from_youtube_fails_when_active_transcription_exists():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "youtube-owner", "youtube-owner@example.com")
+        transcription = models.Transcription(
+            title="Processing track",
+            audio_file_path="uploads/processing.wav",
+            user_id=owner.id,
+            is_processed=False,
+        )
+        session.add(transcription)
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.post(
+        "/api/v1/audio/youtube",
+        headers=auth_headers("youtube-owner"),
+        json={"youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+    )
+
+    assert response.status_code == 409
+    assert "already being processed" in response.json()["detail"]
+
+
 def test_list_instrument_tracks_requires_transcription_access():
     reset_database()
     session = TestingSessionLocal()

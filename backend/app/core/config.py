@@ -30,6 +30,10 @@ class Settings(BaseSettings):
 
     # Environment
     ENVIRONMENT: str = "development"
+    SKIP_SOURCE_SEPARATION: bool = False
+    DEMUCS_GUITAR_MODEL: str = "htdemucs"
+    DEMUCS_FALLBACK_MODEL: str = "htdemucs"
+    DEMUCS_CMD_TIMEOUT_SECONDS: int = 1800
 
     @property
     def get_allowed_origins(self) -> List[str]:

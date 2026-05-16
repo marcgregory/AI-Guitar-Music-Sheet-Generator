@@ -10,7 +10,7 @@ import {
   SlidersHorizontal,
   Video,
 } from "lucide-react";
-import audioService from "../services/audioService";
+import audioService, { type Transcription } from "../services/audioService";
 import { useAuth } from "./auth/AuthContext";
 
 const AudioUpload: React.FC = () => {
@@ -27,12 +27,17 @@ const AudioUpload: React.FC = () => {
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(0);
+  const [hasActiveTranscription, setHasActiveTranscription] = useState(false);
+  const [isActiveTranscriptionLoading, setIsActiveTranscriptionLoading] =
+    useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
     if (reduceMotion) return;
 
     const ctx = gsap.context(() => {
@@ -90,8 +95,17 @@ const AudioUpload: React.FC = () => {
     return () => ctx.revert();
   }, []);
 
+  const isNonBlockingProcessingWarning = (error?: string | null): boolean =>
+    Boolean(
+      error?.startsWith(
+        "Source separation unavailable; processed the full mix instead.",
+      ),
+    );
+
   useEffect(() => {
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
     if (reduceMotion || !uploadNoteRef.current) return;
 
     const ctx = gsap.context(() => {
@@ -148,6 +162,43 @@ const AudioUpload: React.FC = () => {
     return () => ctx.revert();
   }, [isUploading]);
 
+  useEffect(() => {
+    if (!token) {
+      setHasActiveTranscription(false);
+      setIsActiveTranscriptionLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+    const loadActiveTranscriptions = async () => {
+      try {
+        const transcriptions = await audioService.listTranscriptions(token);
+        if (isCancelled) return;
+        const active = transcriptions.some(
+          (transcription: Transcription) =>
+            !transcription.is_processed &&
+            (!transcription.processing_error ||
+              isNonBlockingProcessingWarning(transcription.processing_error)),
+        );
+        setHasActiveTranscription(active);
+      } catch (error) {
+        if (!isCancelled) {
+          setHasActiveTranscription(false);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsActiveTranscriptionLoading(false);
+        }
+      }
+    };
+
+    loadActiveTranscriptions();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [token]);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0]);
@@ -198,24 +249,47 @@ const AudioUpload: React.FC = () => {
       return;
     }
 
+    if (isActiveTranscriptionLoading) {
+      setError(
+        "Checking transcription status. Please wait a moment before uploading.",
+      );
+      return;
+    }
+
+    if (hasActiveTranscription) {
+      setError(
+        "A transcription is already processing. Please wait until it finishes before uploading another audio file.",
+      );
+      return;
+    }
+
     setIsUploading(true);
     setUploadProgress(0);
     setError(null);
     setSuccess(null);
 
     try {
-      const response = await audioService.uploadAudioFile(file, token, undefined, (progress) => {
-        setUploadProgress(Math.min(progress, 95));
-      });
+      const response = await audioService.uploadAudioFile(
+        file,
+        token,
+        undefined,
+        (progress) => {
+          setUploadProgress(Math.min(progress, 95));
+        },
+      );
       setUploadProgress(100);
-      setSuccess(`File uploaded successfully. Transcription ID: ${response.id}`);
+      setSuccess(
+        `File uploaded successfully. Transcription ID: ${response.id}`,
+      );
 
       setTimeout(() => {
         navigate(`/processing/${response.id}`);
       }, 1500);
     } catch (err: any) {
       setUploadProgress(0);
-      setError(err.response?.data?.detail || "Upload failed. Please try again.");
+      setError(
+        err.response?.data?.detail || "Upload failed. Please try again.",
+      );
     } finally {
       setIsUploading(false);
     }
@@ -232,6 +306,20 @@ const AudioUpload: React.FC = () => {
       return;
     }
 
+    if (isActiveTranscriptionLoading) {
+      setError(
+        "Checking transcription status. Please wait a moment before extracting audio.",
+      );
+      return;
+    }
+
+    if (hasActiveTranscription) {
+      setError(
+        "A transcription is already processing. Please wait until it finishes before uploading another audio file.",
+      );
+      return;
+    }
+
     const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
     if (!youtubeRegex.test(youtubeUrl)) {
       setError("Please enter a valid YouTube URL");
@@ -244,16 +332,24 @@ const AudioUpload: React.FC = () => {
     setSuccess(null);
 
     try {
-      const response = await audioService.extractAudioFromYouTube(youtubeUrl, token);
+      const response = await audioService.extractAudioFromYouTube(
+        youtubeUrl,
+        token,
+      );
       setUploadProgress(100);
-      setSuccess(`YouTube audio extracted successfully. Transcription ID: ${response.id}`);
+      setSuccess(
+        `YouTube audio extracted successfully. Transcription ID: ${response.id}`,
+      );
 
       setTimeout(() => {
         navigate(`/processing/${response.id}`);
       }, 1500);
     } catch (err: any) {
       setUploadProgress(0);
-      setError(err.response?.data?.detail || "Failed to extract audio from YouTube. Please try again.");
+      setError(
+        err.response?.data?.detail ||
+          "Failed to extract audio from YouTube. Please try again.",
+      );
     } finally {
       setIsUploading(false);
     }
@@ -279,6 +375,13 @@ const AudioUpload: React.FC = () => {
       ? `${Math.round(Math.max(0, Math.min(100, uploadProgress)))}%`
       : null;
   const fileUploadStatusDetail = uploadPercentLabel ?? "We'll handle the rest";
+  const fileUploadDisabled =
+    isUploading || hasActiveTranscription || isActiveTranscriptionLoading;
+  const youtubeSubmitDisabled =
+    isUploading ||
+    !youtubeUrl.trim() ||
+    hasActiveTranscription ||
+    isActiveTranscriptionLoading;
 
   return (
     <div className="audio-upload-container" ref={rootRef}>
@@ -294,14 +397,23 @@ const AudioUpload: React.FC = () => {
         <header className="audio-upload-header">
           <h2 aria-label="Start a transcription">
             <span className="upload-headline-line">Start a</span>
-            <span className="upload-headline-line upload-headline-accent">transcription</span>
+            <span className="upload-headline-line upload-headline-accent">
+              transcription
+            </span>
           </h2>
           <span className="upload-header-divider" aria-hidden="true" />
-          <p>Upload a clean guitar recording or extract audio from YouTube, then send it into the analysis pipeline.</p>
+          <p>
+            Upload a clean guitar recording or extract audio from YouTube, then
+            send it into the analysis pipeline.
+          </p>
         </header>
 
         <div className="transcription-upload-shell">
-          <div className="audio-upload-tabs" role="tablist" aria-label="Upload source">
+          <div
+            className="audio-upload-tabs"
+            role="tablist"
+            aria-label="Upload source"
+          >
             <button
               type="button"
               className={`tab-button ${activeTab === "file" ? "active" : ""}`}
@@ -321,6 +433,21 @@ const AudioUpload: React.FC = () => {
           </div>
 
           <div className="upload-card">
+            {hasActiveTranscription && !isUploading && (
+              <div className="upload-lock-banner">
+                <p>
+                  A transcription is already processing. Please wait until it
+                  finishes before uploading another audio file.
+                </p>
+              </div>
+            )}
+            {isActiveTranscriptionLoading && !isUploading && (
+              <div className="upload-lock-banner upload-info-banner">
+                <p>
+                  Checking current transcription status. Please wait a moment.
+                </p>
+              </div>
+            )}
             <div className="upload-primary-column">
               {activeTab === "file" ? (
                 <div
@@ -339,11 +466,16 @@ const AudioUpload: React.FC = () => {
                     <CloudUpload aria-hidden="true" />
                   </div>
                   <p className="dropzone-title">Drop your audio file here</p>
-                  <p className="file-upload-text">or choose a file from your device</p>
+                  <p className="file-upload-text">
+                    or choose a file from your device
+                  </p>
                   <button
                     type="button"
                     className="browse-button"
-                    onClick={() => document.getElementById("file-input")?.click()}
+                    onClick={() =>
+                      document.getElementById("file-input")?.click()
+                    }
+                    disabled={fileUploadDisabled}
                   >
                     <Folder aria-hidden="true" />
                     Browse files
@@ -355,12 +487,16 @@ const AudioUpload: React.FC = () => {
                     hidden
                     onChange={handleFileChange}
                   />
-                  <p className="file-limits">Supported formats: MP3, WAV &bull; Maximum size: 100MB</p>
+                  <p className="file-limits">
+                    Supported formats: MP3, WAV &bull; Maximum size: 100MB
+                  </p>
 
                   {file && (
                     <div className="selected-file">
                       <span className="file-name">{file.name}</span>
-                      <span className="file-size">{(file.size / (1024 * 1024)).toFixed(2)} MB</span>
+                      <span className="file-size">
+                        {(file.size / (1024 * 1024)).toFixed(2)} MB
+                      </span>
                       <button
                         type="button"
                         className="remove-file-button"
@@ -369,7 +505,12 @@ const AudioUpload: React.FC = () => {
                       >
                         Remove
                       </button>
-                      <button type="button" className="upload-button" onClick={handleFileUpload} disabled={isUploading}>
+                      <button
+                        type="button"
+                        className="upload-button"
+                        onClick={handleFileUpload}
+                        disabled={fileUploadDisabled}
+                      >
                         {isUploading ? "Uploading..." : "Upload audio"}
                       </button>
                     </div>
@@ -378,15 +519,27 @@ const AudioUpload: React.FC = () => {
                   <div
                     ref={uploadNoteRef}
                     className={`upload-audio-note ${file ? "has-file" : ""} ${isUploading ? "is-uploading" : ""}`}
-                    style={{
-                      "--upload-progress": `${fileProgressValue}%`,
-                      "--upload-progress-ratio": fileProgressValue / 100,
-                    } as React.CSSProperties}
+                    style={
+                      {
+                        "--upload-progress": `${fileProgressValue}%`,
+                        "--upload-progress-ratio": fileProgressValue / 100,
+                      } as React.CSSProperties
+                    }
                   >
-                    <div className="upload-waveform-icon" ref={uploadIconRef} aria-hidden="true">
+                    <div
+                      className="upload-waveform-icon"
+                      ref={uploadIconRef}
+                      aria-hidden="true"
+                    >
                       <span className="upload-icon-fill" />
-                      <span className="upload-icon-particles" ref={uploadParticleRef} />
-                      <AudioWaveform className="upload-waveform-glyph" aria-hidden="true" />
+                      <span
+                        className="upload-icon-particles"
+                        ref={uploadParticleRef}
+                      />
+                      <AudioWaveform
+                        className="upload-waveform-glyph"
+                        aria-hidden="true"
+                      />
                     </div>
                     <span className="upload-audio-copy">
                       <span className="upload-status-row">
@@ -411,21 +564,35 @@ const AudioUpload: React.FC = () => {
                       type="button"
                       className="youtube-button"
                       onClick={handleYoutubeSubmit}
-                      disabled={isUploading || !youtubeUrl.trim()}
+                      disabled={youtubeSubmitDisabled}
                     >
                       {isUploading ? "Processing..." : "Extract audio"}
                     </button>
                   </div>
-                  <p className="youtube-help">Use a public YouTube link with clear guitar audio for best extraction results.</p>
+                  <p className="youtube-help">
+                    Use a public YouTube link with clear guitar audio for best
+                    extraction results.
+                  </p>
                 </div>
               )}
-
             </div>
 
             <aside className="upload-help-column" aria-label="Upload guidance">
-              <HelpItem icon={<SlidersHorizontal aria-hidden="true" />} title="Clean audio = better results" body="Remove background noise for higher accuracy." />
-              <HelpItem icon={<Guitar aria-hidden="true" />} title="Guitar recordings work best" body="Solo guitar or minimal background instruments." />
-              <HelpItem icon={<ShieldCheck aria-hidden="true" />} title="Your files are private" body="We never share your audio or your transcriptions." />
+              <HelpItem
+                icon={<SlidersHorizontal aria-hidden="true" />}
+                title="Clean audio = better results"
+                body="Remove background noise for higher accuracy."
+              />
+              <HelpItem
+                icon={<Guitar aria-hidden="true" />}
+                title="Guitar recordings work best"
+                body="Solo guitar or minimal background instruments."
+              />
+              <HelpItem
+                icon={<ShieldCheck aria-hidden="true" />}
+                title="Your files are private"
+                body="We never share your audio or your transcriptions."
+              />
             </aside>
           </div>
         </div>
@@ -447,7 +614,6 @@ const AudioUpload: React.FC = () => {
             </button>
           </div>
         )}
-
       </section>
     </div>
   );

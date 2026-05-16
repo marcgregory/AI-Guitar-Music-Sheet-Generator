@@ -289,6 +289,31 @@ def _get_accessible_transcription(
     return transcription
 
 
+def _has_active_transcription(user_id: int, db_session: Session) -> bool:
+    active_transcriptions = (
+        db_session.query(models.Transcription)
+        .filter(models.Transcription.user_id == user_id)
+        .filter(models.Transcription.is_processed == False)
+        .all()
+    )
+    return any(
+        transcription.processing_error is None
+        or _is_non_blocking_processing_warning(transcription.processing_error)
+        for transcription in active_transcriptions
+    )
+
+
+def _ensure_no_active_transcription(user_id: int, db_session: Session) -> None:
+    if _has_active_transcription(user_id, db_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A transcription is already being processed. "
+                "Please wait for it to finish before uploading another audio file."
+            ),
+        )
+
+
 def _get_accessible_track(
     transcription_id: int,
     track_id: int,
@@ -440,6 +465,9 @@ async def upload_audio_file(
             detail=f"File size too large. Maximum size is {core.config.settings.MAX_UPLOAD_SIZE} bytes"
         )
 
+    # Prevent new uploads while another transcription is still processing
+    _ensure_no_active_transcription(current_user.id, db_session)
+
     # Generate a unique filename to avoid collisions
     unique_filename = f"{uuid.uuid4().hex}{file_extension}"
     file_path = UPLOAD_DIR / unique_filename
@@ -552,6 +580,9 @@ async def extract_audio_from_youtube(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="YouTube URL contains invalid characters"
         )
+
+    # Prevent new uploads while another transcription is still processing
+    _ensure_no_active_transcription(current_user.id, db_session)
 
     # Generate a unique filename for the output (without extension, yt-dlp will add it)
     unique_filename = f"{uuid.uuid4().hex}"

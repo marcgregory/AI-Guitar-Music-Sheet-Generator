@@ -11,9 +11,11 @@ import json
 import csv
 import shutil
 
+from app.core.config import settings
 
-DEMUCS_GUITAR_MODEL = "htdemucs_6s"
-DEMUCS_FALLBACK_MODEL = "htdemucs"
+DEMUCS_GUITAR_MODEL = settings.DEMUCS_GUITAR_MODEL
+DEMUCS_FALLBACK_MODEL = settings.DEMUCS_FALLBACK_MODEL
+DEMUCS_CMD_TIMEOUT_SECONDS = settings.DEMUCS_CMD_TIMEOUT_SECONDS
 DEMUCS_MULTI_STEMS = {
     "guitar": "guitar",
     "bass": "bass",
@@ -64,7 +66,20 @@ def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems:
             else str(DEMUCS_VENDOR_PATH)
         )
 
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=DEMUCS_CMD_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as timeout_error:
+        raise RuntimeError(
+            f"Demucs separation timed out after {DEMUCS_CMD_TIMEOUT_SECONDS} seconds "
+            f"for model {model_name}"
+        ) from timeout_error
+
     if result.returncode != 0:
         error_text = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(f"Demucs separation failed with {model_name}: {error_text}")
@@ -144,7 +159,7 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
     """
     Separate audio sources using Demucs and return available instrument stems.
 
-    The primary path uses Demucs' 6-stem model. If that model is unavailable at
+    The primary path uses Demucs' configured model. If that model is unavailable at
     runtime, the fallback uses the standard vocals/accompaniment split and maps
     accompaniment to the app's broad "other" instrument track.
 
