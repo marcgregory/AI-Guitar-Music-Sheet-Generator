@@ -433,22 +433,22 @@ const AudioUpload: React.FC = () => {
           </div>
 
           <div className="upload-card">
-            {hasActiveTranscription && !isUploading && (
-              <div className="upload-lock-banner">
-                <p>
-                  A transcription is already processing. Please wait until it
-                  finishes before uploading another audio file.
-                </p>
-              </div>
-            )}
-            {isActiveTranscriptionLoading && !isUploading && (
-              <div className="upload-lock-banner upload-info-banner">
-                <p>
-                  Checking current transcription status. Please wait a moment.
-                </p>
-              </div>
-            )}
             <div className="upload-primary-column">
+              {isActiveTranscriptionLoading && !isUploading && (
+                <div className="upload-lock-banner upload-info-banner">
+                  <p>
+                    Checking current transcription status. Please wait a moment.
+                  </p>
+                </div>
+              )}
+              {hasActiveTranscription && !isUploading && (
+                <div className="upload-lock-banner">
+                  <p>
+                    A transcription is already processing. Please wait until it
+                    finishes before uploading another audio file.
+                  </p>
+                </div>
+              )}
               {activeTab === "file" ? (
                 <div
                   ref={dropzoneRef}
