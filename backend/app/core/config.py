@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from typing import List
+from urllib.parse import urlsplit
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AI Guitar Music Sheet Generator"
@@ -32,15 +33,33 @@ class Settings(BaseSettings):
 
     @property
     def get_allowed_origins(self) -> List[str]:
-        """Parse ALLOWED_ORIGINS environment variable into list"""
+        """Parse ALLOWED_ORIGINS into normalized browser Origin values."""
         if isinstance(self.ALLOWED_ORIGINS, str):
-            return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
-        return self.ALLOWED_ORIGINS
+            origins = self.ALLOWED_ORIGINS.split(",")
+        else:
+            origins = self.ALLOWED_ORIGINS
+
+        normalized_origins: List[str] = []
+        for origin in origins:
+            normalized_origin = self._normalize_origin(origin)
+            if normalized_origin:
+                normalized_origins.append(normalized_origin)
+        return normalized_origins
+
+    @staticmethod
+    def _normalize_origin(origin: str) -> str:
+        origin = origin.strip()
+        if not origin:
+            return ""
+
+        parsed = urlsplit(origin)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+
+        return origin.rstrip("/")
 
     class Config:
         case_sensitive = True
         env_file = ".env"
-
-settings = Settings()
 
 settings = Settings()

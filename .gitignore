@@ -1,11 +1,17 @@
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
 .venv/
 backend/.venv/
+.pytest_cache/
+.uv-cache/
+*.db
+*.sqlite
+*.sqlite3
 
 # Node
 node_modules/
@@ -15,14 +21,30 @@ yarn-debug.log*
 yarn-error.log*
 /dist/
 /build/
+frontend/dist/
+frontend/.vercel/
 
 # Environment
 .env
+.env.*
+!.env.example
 *.env.local
 *.env.*.local
 
+# Logs
+logs/
+*.log
+
+# Generated/user uploads
+backend/uploads/
+backend/midi/
+backend/tablature/
+
 # VS Code
 .vscode/
+
+# Local assistant/tool settings
+.claude/settings.local.json
 
 # OS
 .DS_Store

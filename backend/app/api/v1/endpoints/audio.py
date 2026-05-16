@@ -80,6 +80,14 @@ def _start_transcription_processing(
     db_session: Session,
 ):
     """Start processing through Celery, with an in-process fallback for dev."""
+    if _should_use_local_worker_fallback() and not _celery_has_available_worker():
+        logger.warning(
+            "No Celery worker is available; running transcription %s as a local background task",
+            transcription_id,
+        )
+        background_tasks.add_task(_run_transcription_locally, transcription_id)
+        return
+
     try:
         celery_app.send_task(
             "app.tasks.process_audio_transcription",
@@ -98,6 +106,14 @@ def _start_instrument_track_reprocess(
     background_tasks: BackgroundTasks,
 ):
     """Start one track reprocess through Celery, with an in-process dev fallback."""
+    if _should_use_local_worker_fallback() and not _celery_has_available_worker():
+        logger.warning(
+            "No Celery worker is available; running track %s reprocess as a local background task",
+            track_id,
+        )
+        background_tasks.add_task(_run_instrument_track_reprocess_locally, track_id)
+        return
+
     try:
         celery_app.send_task(
             "app.tasks.reprocess_instrument_track",
@@ -151,9 +167,22 @@ def _is_non_blocking_processing_warning(error: str | None) -> bool:
     return error.startswith("Source separation unavailable; processed the full mix instead.")
 
 
+def _should_use_local_worker_fallback() -> bool:
+    return core.config.settings.ENVIRONMENT.lower() in {"development", "local", "test"}
+
+
+def _celery_has_available_worker() -> bool:
+    """Return True only when a worker answers quickly enough for local requests."""
+    try:
+        return bool(celery_app.control.ping(timeout=0.5))
+    except Exception as e:
+        logger.warning("Celery worker check failed; using local background task: %s", e)
+        return False
+
+
 def _blocking_processing_error(transcription: models.Transcription) -> str | None:
     error = transcription.processing_error
-    if _is_non_blocking_processing_warning(error):
+    if transcription.is_processed and _is_non_blocking_processing_warning(error):
         return None
     return error
 

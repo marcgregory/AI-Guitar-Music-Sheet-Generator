@@ -140,6 +140,37 @@ def test_list_transcriptions_returns_only_current_users_items_newest_first():
     assert all(item["user_id"] != other_user_id for item in payload)
 
 
+def test_status_returns_failed_for_unfinished_warning_only_job():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "warning-owner", "warning-owner@example.com")
+        transcription = models.Transcription(
+            title="Warning stuck song",
+            audio_file_path="uploads/warning-stuck.wav",
+            user_id=owner.id,
+            is_processed=False,
+            processing_error=(
+                "Source separation unavailable; processed the full mix instead. "
+                "Details: worker stopped before finishing"
+            ),
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("warning-owner"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert "Source separation unavailable" in response.json()["error"]
+
+
 def test_list_instrument_tracks_requires_transcription_access():
     reset_database()
     session = TestingSessionLocal()
@@ -464,7 +495,10 @@ def test_reprocess_instrument_track_queues_supported_track_and_clears_outputs(tm
     finally:
         session.close()
 
-    with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+    with (
+        patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=True),
+        patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
+    ):
         response = client.post(
             f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
             headers=auth_headers("reprocess-guitar-owner"),
@@ -517,7 +551,10 @@ def test_reprocess_drum_track_queues_and_clears_outputs(tmp_path):
     finally:
         session.close()
 
-    with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+    with (
+        patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=True),
+        patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
+    ):
         response = client.post(
             f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
             headers=auth_headers("reprocess-drum-owner"),

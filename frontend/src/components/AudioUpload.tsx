@@ -19,6 +19,9 @@ const AudioUpload: React.FC = () => {
   const waveRef = useRef<HTMLDivElement | null>(null);
   const cloudRef = useRef<HTMLDivElement | null>(null);
   const dropzoneRef = useRef<HTMLDivElement | null>(null);
+  const uploadNoteRef = useRef<HTMLDivElement | null>(null);
+  const uploadIconRef = useRef<HTMLDivElement | null>(null);
+  const uploadParticleRef = useRef<HTMLSpanElement | null>(null);
   const [activeTab, setActiveTab] = useState<"file" | "youtube">("file");
   const [file, setFile] = useState<File | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -86,6 +89,64 @@ const AudioUpload: React.FC = () => {
 
     return () => ctx.revert();
   }, []);
+
+  useEffect(() => {
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion || !uploadNoteRef.current) return;
+
+    const ctx = gsap.context(() => {
+      if (!isUploading) {
+        gsap.to(uploadNoteRef.current, {
+          y: 0,
+          scale: 1,
+          duration: 0.45,
+          ease: "power2.out",
+        });
+        gsap.to(".upload-waveform-glyph", {
+          scale: 1,
+          opacity: 1,
+          duration: 0.35,
+          ease: "power2.out",
+        });
+        return;
+      }
+
+      gsap.to(uploadNoteRef.current, {
+        y: -3,
+        duration: 2.6,
+        repeat: -1,
+        yoyo: true,
+        ease: "sine.inOut",
+      });
+
+      gsap.to(uploadIconRef.current, {
+        scale: 1.045,
+        duration: 1.45,
+        repeat: -1,
+        yoyo: true,
+        ease: "sine.inOut",
+      });
+
+      gsap.to(".upload-waveform-glyph", {
+        scale: 1.08,
+        opacity: 0.86,
+        duration: 0.72,
+        repeat: -1,
+        yoyo: true,
+        ease: "sine.inOut",
+      });
+
+      gsap.to(uploadParticleRef.current, {
+        rotate: 360,
+        scale: 1.08,
+        duration: 7,
+        repeat: -1,
+        ease: "none",
+      });
+    }, uploadNoteRef);
+
+    return () => ctx.revert();
+  }, [isUploading]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -205,18 +266,7 @@ const AudioUpload: React.FC = () => {
     setError(null);
     setSuccess(null);
   };
-  const fileUploadStatus = isUploading
-    ? uploadProgress === null
-      ? "Preparing audio..."
-      : uploadProgress >= 95
-        ? "Finishing upload..."
-        : `Uploading ${Math.round(uploadProgress)}%`
-    : file
-      ? "Ready to upload"
-      : "Upload audio";
-  const fileUploadStatusDetail = file
-    ? file.name
-    : "We'll handle the rest";
+  const fileUploadStatus = "Upload audio";
   const fileProgressValue = isUploading
     ? uploadProgress === null
       ? 35
@@ -224,6 +274,11 @@ const AudioUpload: React.FC = () => {
     : file
       ? 0
       : 0;
+  const uploadPercentLabel =
+    isUploading && uploadProgress !== null
+      ? `${Math.round(Math.max(0, Math.min(100, uploadProgress)))}%`
+      : null;
+  const fileUploadStatusDetail = uploadPercentLabel ?? "We'll handle the rest";
 
   return (
     <div className="audio-upload-container" ref={rootRef}>
@@ -321,15 +376,22 @@ const AudioUpload: React.FC = () => {
                   )}
 
                   <div
+                    ref={uploadNoteRef}
                     className={`upload-audio-note ${file ? "has-file" : ""} ${isUploading ? "is-uploading" : ""}`}
                     style={{
                       "--upload-progress": `${fileProgressValue}%`,
                       "--upload-progress-ratio": fileProgressValue / 100,
                     } as React.CSSProperties}
                   >
-                    <AudioWaveform aria-hidden="true" />
-                    <span>
-                      <strong>{fileUploadStatus}</strong>
+                    <div className="upload-waveform-icon" ref={uploadIconRef} aria-hidden="true">
+                      <span className="upload-icon-fill" />
+                      <span className="upload-icon-particles" ref={uploadParticleRef} />
+                      <AudioWaveform className="upload-waveform-glyph" aria-hidden="true" />
+                    </div>
+                    <span className="upload-audio-copy">
+                      <span className="upload-status-row">
+                        <strong>{fileUploadStatus}</strong>
+                      </span>
                       <small>{fileUploadStatusDetail}</small>
                     </span>
                   </div>
