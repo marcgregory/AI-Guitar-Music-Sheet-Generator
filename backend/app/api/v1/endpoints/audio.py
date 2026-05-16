@@ -28,9 +28,16 @@ router = APIRouter()
 
 # Define the upload directory relative to the backend package so the location is
 # stable whether uvicorn is launched from the repo root or from backend/.
-BACKEND_DIR = Path(__file__).resolve().parents[4]
-UPLOAD_DIR = BACKEND_DIR / "uploads"
+# BACKEND_DIR = Path(__file__).resolve().parents[4]
+# UPLOAD_DIR = BACKEND_DIR / "uploads"
+# UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+UPLOAD_DIR = Path("/app/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+print("UPLOAD_DIR:", UPLOAD_DIR)
+print("UPLOAD_DIR exists:", UPLOAD_DIR.exists())
+print("UPLOAD FILES:", os.listdir(UPLOAD_DIR))
 
 import logging
 import traceback
