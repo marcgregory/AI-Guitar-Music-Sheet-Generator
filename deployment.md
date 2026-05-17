@@ -11,6 +11,10 @@ Railway is the MVP backend target for:
 
 Railway local storage must not be used as durable file storage. It is temporary scratch space for uploads, worker downloads, Demucs output, and generated files before Cloudinary upload.
 
+The backend runtime is Python 3.11. Both Dockerfiles use Python 3.11 images, and `railway.json` points to the root Dockerfile. Demucs selected-stem processing requires the PyTorch audio stack from `backend/requirements.txt` (`demucs`, `torch`, `torchaudio`, and `torchcodec`) plus an `ffmpeg` executable on `PATH`.
+
+The FastAPI service validates these audio dependencies during startup. `GET /health` returns the overall status and per-dependency availability/version details for `demucs`, `torch`, `torchaudio`, `torchcodec`, and `ffmpeg`.
+
 ## Required Environment Variables
 
 Backend/API and worker:

@@ -3,6 +3,7 @@ import numpy as np
 import soundfile as sf
 from pathlib import Path
 import importlib.util
+import importlib.metadata
 import os
 import subprocess
 import tempfile
@@ -33,11 +34,127 @@ def _configure_demucs_vendor_path() -> None:
             sys.path.append(vendor_path)
 
 
-def _ensure_demucs_available() -> None:
+def _dependency_status(
+    module_name: str,
+    package_name: str | None = None,
+    *,
+    verify_import: bool = True,
+) -> dict:
     _configure_demucs_vendor_path()
-    if importlib.util.find_spec("demucs") is None:
+    package_name = package_name or module_name
+    status = {
+        "available": False,
+        "version": None,
+        "error": None,
+    }
+
+    if importlib.util.find_spec(module_name) is None:
+        status["error"] = f"{module_name} is not importable"
+        return status
+
+    try:
+        status["version"] = importlib.metadata.version(package_name)
+    except importlib.metadata.PackageNotFoundError:
+        status["version"] = "unknown"
+    except Exception as exc:
+        status["error"] = f"Could not read {package_name} version: {exc}"
+
+    if verify_import:
+        try:
+            __import__(module_name)
+            status["available"] = True
+        except Exception as exc:
+            status["error"] = f"{module_name} import failed: {exc}"
+    else:
+        status["available"] = True
+
+    return status
+
+
+def _ffmpeg_status() -> dict:
+    executable = shutil.which("ffmpeg")
+    status = {
+        "available": bool(executable),
+        "version": None,
+        "path": executable,
+        "error": None,
+    }
+    if not executable:
+        status["error"] = "ffmpeg executable was not found on PATH"
+        return status
+
+    try:
+        result = subprocess.run(
+            [executable, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        status["available"] = False
+        status["error"] = f"ffmpeg version check failed: {exc}"
+        return status
+
+    if result.returncode != 0:
+        status["available"] = False
+        status["error"] = (result.stderr or result.stdout or "ffmpeg returned a non-zero exit code").strip()
+        return status
+
+    first_line = (result.stdout or "").splitlines()
+    status["version"] = first_line[0] if first_line else "unknown"
+    return status
+
+
+def validate_audio_dependencies(
+    raise_on_error: bool = False,
+    *,
+    verify_imports: bool = True,
+    include_ffmpeg: bool = True,
+) -> dict:
+    """Return availability/version details for selected-stem audio dependencies."""
+    dependencies = {
+        "demucs": _dependency_status("demucs", verify_import=verify_imports),
+        "torch": _dependency_status("torch", verify_import=verify_imports),
+        "torchaudio": _dependency_status("torchaudio", verify_import=verify_imports),
+        "torchcodec": _dependency_status("torchcodec", verify_import=verify_imports),
+    }
+    if include_ffmpeg:
+        dependencies["ffmpeg"] = _ffmpeg_status()
+    missing = [
+        name
+        for name, status in dependencies.items()
+        if not status.get("available")
+    ]
+    result = {
+        "available": not missing,
+        "dependencies": dependencies,
+        "missing": missing,
+    }
+
+    if missing and raise_on_error:
+        details = "; ".join(
+            f"{name}: {dependencies[name].get('error') or 'unavailable'}"
+            for name in missing
+        )
         raise RuntimeError(
-            "Demucs is not installed. Install backend requirements to enable source separation."
+            "Selected-stem audio dependencies are unavailable. "
+            f"Missing or failing checks: {details}"
+        )
+
+    return result
+
+
+def _ensure_demucs_available() -> None:
+    dependency_status = validate_audio_dependencies(
+        verify_imports=False,
+        include_ffmpeg=False,
+    )
+    if not dependency_status["available"]:
+        missing = ", ".join(dependency_status["missing"])
+        raise RuntimeError(
+            "Selected-stem source separation dependencies are unavailable. "
+            f"Missing or failing checks: {missing}. "
+            "Install backend requirements and ensure ffmpeg is on PATH."
         )
 
 

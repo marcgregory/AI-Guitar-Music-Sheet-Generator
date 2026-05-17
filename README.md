@@ -70,6 +70,12 @@ Persist both the Cloudinary `secure_url` and `public_id` for each stored asset s
 
 Record deletion should delete related Cloudinary assets when safe: original audio, separated stem audio, MIDI file, and TAB file. If Cloudinary deletion fails, keep the database deletion safe and log the cleanup error for retry or manual follow-up.
 
+## Backend Runtime Requirements
+
+The backend is supported on Python 3.11. The Docker-based Railway runtime uses Python 3.11, and selected-stem Demucs processing depends on the pinned PyTorch audio stack in `backend/requirements.txt`: `demucs`, `torch`, `torchaudio`, and `torchcodec`. `ffmpeg` must also be installed and available on `PATH`.
+
+The API validates these dependencies at startup and exposes their availability and versions from `GET /health`.
+
 ## Project Structure
 
 - `backend/` - Python/FastAPI backend with audio processing

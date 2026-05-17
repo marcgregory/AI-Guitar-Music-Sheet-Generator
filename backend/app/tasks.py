@@ -626,10 +626,14 @@ def process_audio_transcription(self, transcription_id: int):
             separated_path = selected_track.stem_audio_path
         except Exception as e:
             update_task_state(self, state="PROGRESS", meta={"step": "source_separation_failed"})
+            logger.exception(
+                "Selected-stem separation failed for transcription %s using stem %s",
+                transcription_id,
+                selected_stem,
+            )
             raise RuntimeError(
                 "Could not isolate the selected stem. "
-                "Try a shorter or clearer song section, or choose a different stem. "
-                f"Details: {str(e)}"
+                "Try a shorter or clearer song section, or choose a different stem."
             ) from e
         finally:
             shutil.rmtree(sep_temp_dir, ignore_errors=True)
