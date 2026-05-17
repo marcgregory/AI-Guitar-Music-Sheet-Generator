@@ -14,7 +14,9 @@ import {
   Link as LinkIcon,
   Music2,
   Play,
+  RotateCcw,
   SlidersHorizontal,
+  TriangleAlert,
   Waves,
 } from "lucide-react";
 
@@ -1365,6 +1367,7 @@ const TranscriptionViewer: React.FC = () => {
   const [audioError, setAudioError] = useState<string | null>(null);
   const [currentPlaybackTime, setCurrentPlaybackTime] = useState<number>(0);
   const [notationZoomLevel, setNotationZoomLevel] = useState<number>(1.0);
+  const [isRetryingTranscription, setIsRetryingTranscription] = useState(false);
   const [reprocessingTrackId, setReprocessingTrackId] = useState<number | null>(null);
   const navigate = useNavigate();
   const { token } = useAuth();
@@ -1497,16 +1500,19 @@ const TranscriptionViewer: React.FC = () => {
         return;
       }
 
-      if (instrumentTracks.length > 0) {
-        setAudioUrl(null);
-        setAudioError(null);
-        return;
-      }
-
       try {
         setAudioError(null);
         setAudioUrl(null);
         setCurrentPlaybackTime(0);
+        if (
+          activeScoreSource.isGlobal &&
+          transcription.processing_status === "completed_with_warning" &&
+          transcription.separated_audio_url
+        ) {
+          setAudioUrl(transcription.separated_audio_url);
+          return;
+        }
+
         const blob = activeScoreSource.isGlobal
           ? await audioService.getSourceAudio(transcription.id, token)
           : await audioService.getInstrumentTrackStem(
@@ -1538,7 +1544,7 @@ const TranscriptionViewer: React.FC = () => {
         window.URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [activeScoreSource, instrumentTracks.length, token, transcription?.id]);
+  }, [activeScoreSource, token, transcription?.id, transcription?.processing_status, transcription?.separated_audio_url]);
 
   const handleDownload = async (format: "midi" | "musicxml" | "tab") => {
     if (!token || !transcription?.id || !activeScoreSource) return;
@@ -1582,6 +1588,23 @@ const TranscriptionViewer: React.FC = () => {
       setError(errorMessageOf(err, "Failed to reprocess instrument track"));
     } finally {
       setReprocessingTrackId(null);
+    }
+  };
+
+  const handleRetryTranscription = async () => {
+    if (!token || !transcription?.id) return;
+
+    try {
+      setError(null);
+      setIsRetryingTranscription(true);
+      await audioService.retryTranscription(transcription.id, token, {
+        lower_threshold: true,
+      });
+      navigate(`/processing/${transcription.id}`);
+    } catch (err: unknown) {
+      setError(errorMessageOf(err, "Failed to retry transcription"));
+    } finally {
+      setIsRetryingTranscription(false);
     }
   };
 
@@ -1688,6 +1711,22 @@ const TranscriptionViewer: React.FC = () => {
   );
   const hasTrackOptions = instrumentTracks.length > 0;
   const selectedTrackHasScore = asciiTab.length > 0 || selectedTrackNoteEventsAvailable || hasUsableBlob(scoreSource?.notationData);
+  const isPlaybackOnlyWarning = Boolean(
+    transcription.processing_status === "completed_with_warning" ||
+      transcription.can_generate_score === false ||
+      (scoreSource && !selectedTrackHasScore && !selectedTrackHasDrumRhythm),
+  );
+  const canGenerateScore = Boolean(
+    scoreSource &&
+      !isPlaybackOnlyWarning &&
+      (selectedTrackHasScore || selectedTrackHasDrumRhythm),
+  );
+  const stemPlaybackAvailable = Boolean(
+    audioUrl ||
+      transcription.can_play_stem ||
+      transcription.separated_audio_url ||
+      scoreSource?.hasStemAudio,
+  );
   const rawProjectTitle = transcription.title || "Untitled transcription";
   const titleWithoutExtension = rawProjectTitle.replace(/\.(mp3|wav|m4a|aac|flac)$/i, "");
   const subtitleMatch = titleWithoutExtension.match(/\(([^)]+)\)\s*$/);
@@ -1755,11 +1794,18 @@ const TranscriptionViewer: React.FC = () => {
           <section className="premium-info-section" aria-labelledby="transcription-status-heading">
             <h2 id="transcription-status-heading">Transcription Status</h2>
             <div className="premium-horizontal-card premium-status-card">
-              <span className="premium-check-icon"><CheckCircle2 aria-hidden="true" /></span>
+              <span className="premium-check-icon">
+                {isPlaybackOnlyWarning ? <Waves aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
+              </span>
               <strong>{scoreSource?.label ?? "Full Mix"}</strong>
               <span className={`premium-completed-badge status-${scoreSource?.processingStatus ?? "completed"}`}>
-                {statusLabel(scoreSource?.processingStatus ?? "completed")}
+                {isPlaybackOnlyWarning ? "Stem Ready" : statusLabel(scoreSource?.processingStatus ?? "completed")}
               </span>
+              {isPlaybackOnlyWarning && (
+                <span className="premium-completed-badge premium-confidence-badge">
+                  Notation unavailable
+                </span>
+              )}
               {hasConfidenceScore(scoreSource?.confidenceScore) && (
                 <span className="premium-completed-badge premium-confidence-badge">
                   {Math.round(Number(scoreSource?.confidenceScore))}% confidence
@@ -1769,11 +1815,11 @@ const TranscriptionViewer: React.FC = () => {
             </div>
           </section>
 
-          {(scoreSource?.confidenceNotes || audioError || notesError) && (
+          {((!isPlaybackOnlyWarning && scoreSource?.confidenceNotes) || audioError || (!isPlaybackOnlyWarning && notesError)) && (
             <div className="premium-warning-stack">
-              {scoreSource?.confidenceNotes && <div className="alert alert-error">{scoreSource.confidenceNotes}</div>}
+              {!isPlaybackOnlyWarning && scoreSource?.confidenceNotes && <div className="alert alert-error">{scoreSource.confidenceNotes}</div>}
               {audioError && <div className="alert alert-error">{audioError}</div>}
-              {notesError && (
+              {!isPlaybackOnlyWarning && notesError && (
                 <div className="alert alert-error">
                   {scoreSource?.instrumentType.toLowerCase() === "drums"
                     ? `Drum rhythm analysis did not produce usable hits: ${notesError}`
@@ -1783,8 +1829,9 @@ const TranscriptionViewer: React.FC = () => {
             </div>
           )}
 
-          <section className="premium-score-workspace" aria-label="Score viewer">
-            <aside className="premium-score-sidebar">
+          {canGenerateScore ? (
+            <section className="premium-score-workspace" aria-label="Score viewer">
+              <aside className="premium-score-sidebar">
               <div className="premium-view-tabs" role="tablist" aria-label="Score mode">
                 <button type="button" className="active" role="tab" aria-selected="true"><Music2 aria-hidden="true" /> Score</button>
                 <button type="button" role="tab" aria-selected="false"><SlidersHorizontal aria-hidden="true" /> Tab</button>
@@ -1847,9 +1894,9 @@ const TranscriptionViewer: React.FC = () => {
                   {reprocessingTrackId === selectedTrack.id ? "Queuing..." : "Reprocess track"}
                 </button>
               )}
-            </aside>
+              </aside>
 
-            <div className="premium-score-stage">
+              <div className="premium-score-stage">
               <button type="button" className="premium-fullscreen-button" aria-label="Fullscreen score">
                 <Expand aria-hidden="true" />
               </button>
@@ -1890,23 +1937,65 @@ const TranscriptionViewer: React.FC = () => {
                       )}
                     />
                   </div>
-                ) : (
-                  <div className="tablature-placeholder track-empty-state">
-                    <strong>{scoreSource?.isGlobal ? "No score data available" : `${scoreSource?.label ?? "This track"} score pending`}</strong>
-                    <p>
-                      {scoreSource?.isGlobal
-                        ? "No score data is available for this transcription yet."
-                        : "Stem playback is available. Score generation is currently enabled for supported instrument tracks."}
-                    </p>
-                  </div>
-                )}
+                ) : null}
               </div>
             </div>
-          </section>
+            </section>
+          ) : (
+            <section className="premium-playback-warning-card" aria-label="Stem playback warning">
+              <div className="premium-warning-badge">
+                <TriangleAlert aria-hidden="true" />
+                <span>Stem isolated successfully</span>
+              </div>
+              <div className="premium-playback-warning-copy">
+                <h2>No notation generated for this stem</h2>
+                <p>
+                  The isolated stem is available, but no playable notes were confidently detected for score generation.
+                </p>
+                <p>Stem playback is still available.</p>
+              </div>
+              <div className="premium-warning-waveform" aria-hidden="true">
+                {Array.from({ length: 46 }).map((_, index) => (
+                  <span key={index} style={{ "--bar": `${14 + ((index * 17) % 48)}px` } as React.CSSProperties} />
+                ))}
+              </div>
+              {audioUrl ? (
+                <AudioPlayer
+                  audioUrl={audioUrl}
+                  onTimeUpdate={(currentTime) => setCurrentPlaybackTime(currentTime)}
+                  onEnded={() => setCurrentPlaybackTime(0)}
+                />
+              ) : (
+                <div className="premium-stem-unavailable">
+                  {stemPlaybackAvailable
+                    ? "Preparing stem playback..."
+                    : "Stem playback is not available from this result."}
+                </div>
+              )}
+              <div className="premium-warning-actions">
+                <button
+                  type="button"
+                  className="button-primary"
+                  onClick={handleRetryTranscription}
+                  disabled={isRetryingTranscription}
+                >
+                  <RotateCcw aria-hidden="true" />
+                  {isRetryingTranscription ? "Queuing retry..." : "Retry with high sensitivity"}
+                </button>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={() => navigate("/upload")}
+                >
+                  Retry another stem
+                </button>
+              </div>
+            </section>
+          )}
         </div>
       </section>
 
-      {audioUrl && (
+      {audioUrl && canGenerateScore && (
         <div className="premium-hidden-audio">
           <AudioPlayer
             audioUrl={audioUrl}
@@ -1941,39 +2030,43 @@ const TranscriptionViewer: React.FC = () => {
           <button type="button" className="premium-icon-only" aria-label="Copy link">
             <LinkIcon aria-hidden="true" />
           </button>
-          <select
-            className="premium-zoom-select"
-            value={String(Math.round(notationZoomLevel * 100))}
-            onChange={(event) => setNotationZoomLevel(Number(event.target.value) / 100)}
-            aria-label="Score zoom"
-          >
-            <option value="50">50%</option>
-            <option value="75">75%</option>
-            <option value="100">100%</option>
-            <option value="125">125%</option>
-            <option value="150">150%</option>
-          </select>
-          <button
-            className="button-secondary premium-download-button"
-            onClick={() => handleDownload("midi")}
-            disabled={!canDownloadMidi}
-          >
-            <Download aria-hidden="true" /> Download MIDI
-          </button>
-          <button
-            className="button-secondary premium-download-button"
-            onClick={() => handleDownload("musicxml")}
-            disabled={!canDownloadMusicXml}
-          >
-            <FileDown aria-hidden="true" /> Download MusicXML
-          </button>
-          <button
-            className="button-secondary premium-download-button"
-            onClick={() => handleDownload("tab")}
-            disabled={!canDownloadTab}
-          >
-            <Download aria-hidden="true" /> Download TAB
-          </button>
+          {canGenerateScore && (
+            <>
+              <select
+                className="premium-zoom-select"
+                value={String(Math.round(notationZoomLevel * 100))}
+                onChange={(event) => setNotationZoomLevel(Number(event.target.value) / 100)}
+                aria-label="Score zoom"
+              >
+                <option value="50">50%</option>
+                <option value="75">75%</option>
+                <option value="100">100%</option>
+                <option value="125">125%</option>
+                <option value="150">150%</option>
+              </select>
+              <button
+                className="button-secondary premium-download-button"
+                onClick={() => handleDownload("midi")}
+                disabled={!canDownloadMidi}
+              >
+                <Download aria-hidden="true" /> Download MIDI
+              </button>
+              <button
+                className="button-secondary premium-download-button"
+                onClick={() => handleDownload("musicxml")}
+                disabled={!canDownloadMusicXml}
+              >
+                <FileDown aria-hidden="true" /> Download MusicXML
+              </button>
+              <button
+                className="button-secondary premium-download-button"
+                onClick={() => handleDownload("tab")}
+                disabled={!canDownloadTab}
+              >
+                <Download aria-hidden="true" /> Download TAB
+              </button>
+            </>
+          )}
           {!transcription.is_processed && (
             <button
               className="button-secondary"

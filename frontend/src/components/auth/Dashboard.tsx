@@ -61,7 +61,7 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
       status === "failed"
         ? transcription.processing_error || "Processing failed"
         : status === "warning"
-          ? transcription.warning_message || "Stem preview is ready, but notation exports are unavailable"
+          ? "Stem isolated successfully. Notation unavailable for this stem."
         : status === "queued"
           ? "Queued because another Railway MVP job is processing"
           : status === "pending"
@@ -115,6 +115,9 @@ const getStatusGradient = (status: Project["status"]) => {
       return "linear-gradient(135deg, #4e4a44, #171513)";
   }
 };
+
+const getStatusDisplay = (status: Project["status"]): string =>
+  status === "warning" ? "Stem Ready" : status;
 
 type ToastState = {
   tone: "success" | "error";
@@ -559,7 +562,7 @@ const Dashboard: React.FC = () => {
                   <div className="project-card-header">
                     <h3 className="project-title">{featuredProject.title}</h3>
                     <div className="project-status-badge" style={{ background: getStatusGradient(featuredProject.status) }}>
-                      {featuredProject.status}
+                      {getStatusDisplay(featuredProject.status)}
                     </div>
                     <ProjectActionMenu
                       project={featuredProject}
@@ -603,7 +606,7 @@ const Dashboard: React.FC = () => {
                     {(featuredProject.status === "completed" || featuredProject.status === "warning") && (
                       <span className="quality-badge">
                         <Icon name="check" />
-                        {featuredProject.status === "warning" ? "stem ready" : "export ready"}
+                        {featuredProject.status === "warning" ? "Stem Ready" : "export ready"}
                       </span>
                     )}
                   </div>
@@ -631,7 +634,7 @@ const Dashboard: React.FC = () => {
                           <div className="project-card-header">
                             <h3 className="project-title">{project.title}</h3>
                             <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
-                              {project.status}
+                              {getStatusDisplay(project.status)}
                             </div>
                             <ProjectActionMenu
                               project={project}
@@ -674,7 +677,7 @@ const Dashboard: React.FC = () => {
                             {(project.status === "completed" || project.status === "warning") && (
                               <span className="quality-badge">
                                 <Icon name="check" />
-                                {project.status === "warning" ? "stem ready" : "export ready"}
+                                {project.status === "warning" ? "Stem Ready" : "export ready"}
                               </span>
                             )}
                           </div>
@@ -698,7 +701,7 @@ const Dashboard: React.FC = () => {
                           <div className="project-list-header">
                             <h3 className="project-list-title">{project.title}</h3>
                             <div className="project-list-status" style={{ background: getStatusGradient(project.status) }}>
-                              {project.status}
+                              {getStatusDisplay(project.status)}
                             </div>
                             <ProjectActionMenu
                               project={project}
@@ -768,7 +771,7 @@ const Dashboard: React.FC = () => {
                         <div className="project-card-header">
                           <h3 className="project-title">{project.title}</h3>
                           <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
-                            {project.status}
+                            {getStatusDisplay(project.status)}
                           </div>
                           <ProjectActionMenu
                             project={project}
