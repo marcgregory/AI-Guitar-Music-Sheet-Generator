@@ -36,12 +36,14 @@ For preview playback, prefer `separated_audio_url` and redirect to Cloudinary. L
 
 When a processing record is deleted, delete related Cloudinary files when safe:
 
-- original audio
-- selected separated stem audio
-- MIDI file
-- TAB file
+- original audio with `resource_type="video"`
+- selected separated stem audio with `resource_type="video"`
+- MIDI file with `resource_type="raw"`
+- TAB/text export with `resource_type="raw"`
 
-If Cloudinary deletion fails, keep the database deletion safe and log the cleanup error for retry or manual follow-up.
+Cleanup is attempted before soft-deleting or hard-deleting database records. If Cloudinary deletion fails, log the exception, keep the database deletion safe, and leave enough log context for retry or manual follow-up.
+
+Before deleting a Cloudinary public ID, check whether another transcription outside the current deletion set still references it. This protects duplicate-reused files from being removed while another transcription still needs them. Project deletion should collect all related transcription IDs, delete assets shared only within that project once, skip assets referenced outside the project, and then delete or mark the database records.
 
 ## Duplicate Storage Guard
 

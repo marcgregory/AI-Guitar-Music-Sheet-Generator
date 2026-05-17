@@ -24,5 +24,8 @@ ALTER TABLE transcriptions ADD COLUMN queue_position INTEGER;
 ALTER TABLE transcriptions ADD COLUMN estimated_wait_time INTEGER;
 ALTER TABLE transcriptions ADD COLUMN celery_task_id VARCHAR;
 
+ALTER TABLE projects ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE;
+ALTER TABLE projects ADD COLUMN deleted_at DATETIME;
+
 CREATE INDEX IF NOT EXISTS ix_transcriptions_audio_hash ON transcriptions (audio_hash);
 CREATE INDEX IF NOT EXISTS ix_transcriptions_normalized_source_id ON transcriptions (normalized_source_id);

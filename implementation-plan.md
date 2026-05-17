@@ -80,8 +80,11 @@ Deletion policy:
 - Queued jobs should be removed/cancelled when possible.
 - Processing jobs should be marked cancelled/deleted in the database and stopped if cancellation is supported.
 - MVP limitation: stopping an active Celery task may not be reliable; the UI record can be hidden/deleted, temporary files should still be cleaned up, and the active worker may finish silently.
-- Delete related Cloudinary files when safe: original audio, separated stem audio, MIDI file, and TAB file.
-- If Cloudinary deletion fails, keep database deletion safe and log the cleanup error.
+- Delete related Cloudinary files before DB records are soft-deleted or hard-deleted: original audio, separated stem audio, MIDI file, and TAB file.
+- Use `resource_type="video"` for original/separated audio and `resource_type="raw"` for MIDI/TAB/text exports.
+- Before deleting a Cloudinary public ID, check whether another transcription outside the deletion set still references it. Shared duplicate assets must be skipped.
+- If Cloudinary deletion fails, log the exception and continue the DB cleanup safely.
+- Project deletion cascades through all related transcriptions and uses the same cleanup path as manual transcription delete, admin delete, and scheduled cleanup jobs.
 
 Duplicate flow:
 

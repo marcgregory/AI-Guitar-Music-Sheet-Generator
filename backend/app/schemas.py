@@ -55,6 +55,8 @@ class ProjectUpdate(BaseModel):
 class ProjectInDBBase(ProjectBase):
     id: int
     owner_id: int
+    is_deleted: Optional[bool] = False
+    deleted_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -223,5 +225,5 @@ class WorkerCompleteRequest(BaseModel):
 
 
 class WorkerFailedRequest(BaseModel):
-    error: str = Field(..., min_length=1, max_length=500)
-    internal_logs: Optional[str] = None
+    error: Optional[str] = None
+    internal_logs: Optional[Any] = None

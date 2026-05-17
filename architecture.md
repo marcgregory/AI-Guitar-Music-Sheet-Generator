@@ -151,12 +151,14 @@ Queued jobs should be removed or cancelled when possible. Processing jobs should
 
 Deleting a record should also delete related Cloudinary assets when safe:
 
-- original audio
-- separated stem audio
-- MIDI file
-- TAB file
+- original audio: `resource_type="video"`
+- separated stem audio: `resource_type="video"`
+- MIDI file: `resource_type="raw"`
+- TAB/text export: `resource_type="raw"`
 
-If Cloudinary deletion fails, database deletion should remain safe and the cleanup error should be logged.
+Cloudinary lifecycle management is best-effort but must run before the database row is soft-deleted or hard-deleted. The cleanup service logs asset deleted, skipped, missing, and deletion-failure states. If Cloudinary deletion fails, database deletion should remain safe and the cleanup error should be logged.
+
+Duplicate asset protection is required because completed duplicate records may reuse the same Cloudinary public IDs. Before deleting a public ID, the API checks for references from transcriptions outside the current deletion set. Project deletion passes all project transcription IDs as the deletion set so assets shared only inside the deleted project can be removed, while assets still referenced elsewhere are skipped.
 
 ## Data Model
 

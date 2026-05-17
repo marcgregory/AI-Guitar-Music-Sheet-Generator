@@ -115,8 +115,10 @@ The frontend must require one stem before submitting a processing request, displ
 
 Records may be deleted in `completed`, `failed`, `queued`, and `processing` states.
 
-- `completed` or `failed`: mark deleted or remove record, then delete Cloudinary assets when safe.
+- `completed` or `failed`: delete Cloudinary assets when safe, then mark deleted or remove the record.
 - `queued`: remove/cancel the queued Celery task when possible, then mark deleted.
 - `processing`: mark as cancelled/deleted and revoke/stop the Celery task if supported.
+
+Cloudinary cleanup uses `resource_type="video"` for original and separated audio and `resource_type="raw"` for MIDI/TAB/text exports. Before deleting a public ID, the API checks whether another transcription outside the current deletion set still references it; shared duplicate assets are skipped. Project deletion cascades through related transcriptions with the same cleanup strategy.
 
 MVP limitation: stopping an active Celery task may not be reliable. In that case, the API can hide/delete the UI record while the worker finishes silently. Temporary files should still be cleaned up. If Cloudinary deletion fails, keep the database deletion safe and log the cleanup error.

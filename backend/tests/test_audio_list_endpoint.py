@@ -1,4 +1,5 @@
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -227,8 +228,10 @@ def test_upload_audio_requires_selected_stem():
 def test_upload_audio_queues_when_active_transcription_exists():
     reset_database()
     session = TestingSessionLocal()
+    original_mode = config.settings.PROCESSING_MODE
     try:
         owner = create_user(session, "active-owner", "active-owner@example.com")
+        config.settings.PROCESSING_MODE = "modal"
         transcription = models.Transcription(
             title="Processing track",
             audio_file_path="uploads/processing.wav",
@@ -241,21 +244,25 @@ def test_upload_audio_queues_when_active_transcription_exists():
     finally:
         session.close()
 
-    with (
-        patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=True),
-        patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
-    ):
-        response = client.post(
-            "/api/v1/audio/upload",
-            headers=auth_headers("active-owner"),
-            data={"selected_stem": "other"},
-            files={"file": ("sample.wav", b"RIFF....", "audio/wav")},
-        )
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock,
+            patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
+        ):
+            response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("active-owner"),
+                data={"selected_stem": "other"},
+                files={"file": ("sample.wav", b"RIFF....", "audio/wav")},
+            )
+    finally:
+        config.settings.PROCESSING_MODE = original_mode
 
     assert response.status_code == 200
     assert response.json()["selected_stem"] == "other"
     assert response.json()["processing_status"] == "queued"
-    send_task_mock.assert_called_once()
+    modal_trigger_mock.assert_not_called()
+    send_task_mock.assert_not_called()
 
 
 def test_upload_audio_reuses_completed_duplicate_same_hash_and_stem():
@@ -349,8 +356,152 @@ def test_upload_audio_modal_mode_triggers_modal_path_without_celery():
 
     assert response.status_code == 200
     assert response.json()["selected_stem"] == "bass"
+    assert response.json()["processing_status"] == "processing"
     modal_trigger_mock.assert_called_once()
     send_task_mock.assert_not_called()
+
+
+def test_upload_audio_modal_second_job_remains_queued():
+    reset_database()
+    session = TestingSessionLocal()
+    original_mode = config.settings.PROCESSING_MODE
+    try:
+        create_user(session, "modal-queue-owner", "modal-queue@example.com")
+        config.settings.PROCESSING_MODE = "modal"
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock:
+            first = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("modal-queue-owner"),
+                data={"selected_stem": "bass"},
+                files={"file": ("first.wav", b"RIFF first", "audio/wav")},
+            )
+            second = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("modal-queue-owner"),
+                data={"selected_stem": "bass"},
+                files={"file": ("second.wav", b"RIFF second", "audio/wav")},
+            )
+    finally:
+        config.settings.PROCESSING_MODE = original_mode
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["processing_status"] == "processing"
+    assert second.json()["processing_status"] == "queued"
+    modal_trigger_mock.assert_called_once()
+
+
+def test_worker_complete_triggers_oldest_queued_modal_job():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    original_mode = config.settings.PROCESSING_MODE
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "handoff-owner", "handoff@example.com")
+        first = models.Transcription(
+            title="Complete first",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/first.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        second = models.Transcription(
+            title="Queued second",
+            user_id=owner.id,
+            selected_stem="bass",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/second.wav",
+            is_processed=False,
+            processing_status="queued",
+            created_at=datetime.utcnow() + timedelta(seconds=1),
+        )
+        session.add_all([first, second])
+        session.commit()
+        first_id = first.id
+        second_id = second.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+        config.settings.PROCESSING_MODE = "modal"
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock:
+            response = client.post(
+                f"/api/v1/worker/jobs/{first_id}/complete",
+                headers={"X-Worker-Token": "test-worker-token"},
+                json={
+                    "notes_data": {"notes": [{"pitch": 64, "onset": 0.0, "offset": 0.5}]},
+                    "tablature_data": {"instrument": "guitar", "tablature": []},
+                },
+            )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+        config.settings.PROCESSING_MODE = original_mode
+
+    assert response.status_code == 200
+    modal_trigger_mock.assert_called_once_with(second_id)
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == second_id
+        ).one()
+        assert refreshed.processing_status == "processing"
+        assert refreshed.queue_position == 0
+    finally:
+        session.close()
+
+
+def test_two_simultaneous_modal_uploads_do_not_both_become_processing():
+    reset_database()
+    session = TestingSessionLocal()
+    original_mode = config.settings.PROCESSING_MODE
+    try:
+        create_user(session, "race-owner-a", "race-a@example.com")
+        create_user(session, "race-owner-b", "race-b@example.com")
+        config.settings.PROCESSING_MODE = "modal"
+    finally:
+        session.close()
+
+    def upload(username: str, filename: str, contents: bytes):
+        return client.post(
+            "/api/v1/audio/upload",
+            headers=auth_headers(username),
+            data={"selected_stem": "other"},
+            files={"file": (filename, contents, "audio/wav")},
+        )
+
+    try:
+        with patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                responses = list(
+                    executor.map(
+                        lambda args: upload(*args),
+                        [
+                            ("race-owner-a", "race-a.wav", b"RIFF race a"),
+                            ("race-owner-b", "race-b.wav", b"RIFF race b"),
+                        ],
+                    )
+                )
+    finally:
+        config.settings.PROCESSING_MODE = original_mode
+
+    assert [response.status_code for response in responses] == [200, 200]
+    session = TestingSessionLocal()
+    try:
+        statuses = [
+            row[0]
+            for row in session.query(models.Transcription.processing_status).all()
+        ]
+    finally:
+        session.close()
+
+    assert statuses.count("processing") == 1
+    assert statuses.count("queued") == 1
+    assert modal_trigger_mock.call_count == 1
 
 
 def test_worker_endpoints_require_worker_token():
@@ -517,6 +668,101 @@ def test_worker_failed_saves_sanitized_error_without_internal_logs():
     assert "stack trace" not in payload["processing_error"]
 
 
+def test_modal_failed_callback_accepts_missing_optional_fields():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "modal-failed-owner", "modal-failed@example.com")
+        transcription = models.Transcription(
+            title="Modal failed callback",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+            processing_error=None,
+            queue_position=0,
+            estimated_wait_time=0,
+            celery_task_id="modal-job",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/failed",
+            headers={"Authorization": "Bearer test-worker-token"},
+            json={},
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "failed"
+    assert payload["is_processed"] is False
+    assert payload["processing_error"] == "Worker processing failed."
+    assert payload["queue_position"] is None
+    assert payload["estimated_wait_time"] is None
+    assert payload["celery_task_id"] is None
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "failed"
+        assert refreshed.processing_error == "Worker processing failed."
+    finally:
+        session.close()
+
+
+def test_modal_failed_callback_truncates_long_worker_error():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "modal-long-error-owner", "modal-long-error@example.com")
+        transcription = models.Transcription(
+            title="Modal long error callback",
+            user_id=owner.id,
+            selected_stem="bass",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/failed",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "error": "Demucs failed " + ("because the selected stem was absent " * 40),
+                "internal_logs": {"stderr": "full demucs traceback"},
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "failed"
+    assert payload["processing_error"].startswith("Demucs failed")
+    assert len(payload["processing_error"]) == 500
+    assert "full demucs traceback" not in payload["processing_error"]
+
+
 def test_extract_audio_from_youtube_requires_selected_stem():
     reset_database()
     session = TestingSessionLocal()
@@ -646,7 +892,7 @@ def test_delete_transcription_cancels_queued_job_and_hides_record(tmp_path):
 
     with (
         patch("app.api.v1.endpoints.audio.celery_app.control.revoke") as revoke_mock,
-        patch("app.api.v1.endpoints.audio.storage.delete_asset", return_value=True) as delete_mock,
+        patch("app.api.v1.endpoints.audio.storage.delete_cloudinary_asset", return_value=True) as delete_mock,
     ):
         response = client.delete(
             f"/api/v1/transcriptions/{transcription_id}",
@@ -659,11 +905,243 @@ def test_delete_transcription_cancels_queued_job_and_hides_record(tmp_path):
     assert payload["processing_status"] == "cancelled"
     revoke_mock.assert_called_once_with("task-123", terminate=False)
     assert delete_mock.call_count == 4
+    delete_mock.assert_any_call("musicstudio/original", resource_type="video")
+    delete_mock.assert_any_call("musicstudio/stem", resource_type="video")
+    delete_mock.assert_any_call("musicstudio/midi", resource_type="raw")
+    delete_mock.assert_any_call("musicstudio/tab", resource_type="raw")
     assert not local_audio.exists()
 
     list_response = client.get("/api/v1/audio/", headers=auth_headers("delete-owner"))
     assert list_response.status_code == 200
     assert list_response.json() == []
+
+
+def test_delete_transcription_skips_cloudinary_asset_still_referenced_elsewhere():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "shared-delete-owner", "shared-delete@example.com")
+        deleting = models.Transcription(
+            title="Shared source",
+            original_audio_public_id="musicstudio/shared-original",
+            separated_audio_public_id="musicstudio/delete-stem",
+            user_id=owner.id,
+            is_processed=True,
+            processing_status="completed",
+        )
+        keeper = models.Transcription(
+            title="Keep source",
+            original_audio_public_id="musicstudio/shared-original",
+            user_id=owner.id,
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add_all([deleting, keeper])
+        session.commit()
+        deleting_id = deleting.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=True,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/transcriptions/{deleting_id}",
+            headers=auth_headers("shared-delete-owner"),
+        )
+
+    assert response.status_code == 200
+    deleted_public_ids = [call.args[0] for call in delete_mock.call_args_list]
+    assert "musicstudio/shared-original" not in deleted_public_ids
+    assert "musicstudio/delete-stem" in deleted_public_ids
+
+
+def test_delete_transcription_with_missing_assets_does_not_crash():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "missing-delete-owner", "missing-delete@example.com")
+        transcription = models.Transcription(
+            title="No cloud assets",
+            user_id=owner.id,
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=False,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/transcriptions/{transcription_id}",
+            headers=auth_headers("missing-delete-owner"),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["is_deleted"] is True
+    assert delete_mock.call_count == 4
+
+
+def test_delete_project_removes_transcriptions_and_cloudinary_assets():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "project-delete-owner", "project-delete@example.com")
+        project = models.Project(
+            name="Delete me",
+            owner_id=owner.id,
+        )
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        transcription = models.Transcription(
+            title="Project song",
+            project_id=project.id,
+            user_id=owner.id,
+            original_audio_public_id="musicstudio/project-original",
+            separated_audio_public_id="musicstudio/project-stem",
+            midi_file_public_id="musicstudio/project-midi",
+            tab_file_public_id="musicstudio/project-tab",
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add(transcription)
+        session.commit()
+        project_id = project.id
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=True,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/projects/{project_id}",
+            headers=auth_headers("project-delete-owner"),
+        )
+
+    assert response.status_code == 200
+    delete_mock.assert_any_call("musicstudio/project-original", resource_type="video")
+    delete_mock.assert_any_call("musicstudio/project-stem", resource_type="video")
+    delete_mock.assert_any_call("musicstudio/project-midi", resource_type="raw")
+    delete_mock.assert_any_call("musicstudio/project-tab", resource_type="raw")
+
+    session = TestingSessionLocal()
+    try:
+        assert session.query(models.Project).filter(models.Project.id == project_id).first() is None
+        assert (
+            session.query(models.Transcription)
+            .filter(models.Transcription.id == transcription_id)
+            .first()
+            is None
+        )
+    finally:
+        session.close()
+
+
+def test_delete_project_keeps_duplicate_cloudinary_assets_referenced_elsewhere():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "project-shared-owner", "project-shared@example.com")
+        project = models.Project(name="Shared delete", owner_id=owner.id)
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        deleting = models.Transcription(
+            title="Project duplicate",
+            project_id=project.id,
+            user_id=owner.id,
+            original_audio_public_id="musicstudio/shared-project-original",
+            separated_audio_public_id="musicstudio/project-only-stem",
+            is_processed=True,
+            processing_status="completed",
+        )
+        keeper = models.Transcription(
+            title="Outside duplicate",
+            user_id=owner.id,
+            original_audio_public_id="musicstudio/shared-project-original",
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add_all([deleting, keeper])
+        session.commit()
+        project_id = project.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=True,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/projects/{project_id}",
+            headers=auth_headers("project-shared-owner"),
+        )
+
+    assert response.status_code == 200
+    deleted_public_ids = [call.args[0] for call in delete_mock.call_args_list]
+    assert "musicstudio/shared-project-original" not in deleted_public_ids
+    assert "musicstudio/project-only-stem" in deleted_public_ids
+
+
+def test_soft_delete_project_marks_records_after_cloudinary_cleanup():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "project-soft-owner", "project-soft@example.com")
+        project = models.Project(name="Soft delete", owner_id=owner.id)
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        transcription = models.Transcription(
+            title="Soft project song",
+            project_id=project.id,
+            user_id=owner.id,
+            original_audio_public_id="musicstudio/soft-original",
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add(transcription)
+        session.commit()
+        project_id = project.id
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=True,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/projects/{project_id}?hard_delete=false",
+            headers=auth_headers("project-soft-owner"),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["is_deleted"] is True
+    delete_mock.assert_any_call("musicstudio/soft-original", resource_type="video")
+
+    session = TestingSessionLocal()
+    try:
+        project = session.query(models.Project).filter(models.Project.id == project_id).one()
+        transcription = (
+            session.query(models.Transcription)
+            .filter(models.Transcription.id == transcription_id)
+            .one()
+        )
+        assert project.is_deleted is True
+        assert transcription.is_deleted is True
+        assert transcription.processing_status == "deleted"
+    finally:
+        session.close()
 
 
 def test_delete_transcription_marks_processing_job_best_effort_cancelled():

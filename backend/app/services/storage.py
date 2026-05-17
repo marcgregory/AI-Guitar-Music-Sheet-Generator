@@ -101,23 +101,50 @@ def safe_upload_file(
         raise
 
 
-def delete_asset(public_id: str | None, *, resource_type: str = "auto") -> bool:
-    """Best-effort Cloudinary asset deletion."""
-    if not public_id or not _cloudinary_configured():
+def delete_cloudinary_asset(public_id: str | None, resource_type: str = "video") -> bool:
+    """Best-effort Cloudinary asset deletion with lifecycle logging."""
+    if not public_id:
+        logger.info("Cloudinary asset missing; nothing to delete")
+        return False
+
+    if not _cloudinary_configured():
+        logger.info("Cloudinary asset skipped for %s; Cloudinary is not configured", public_id)
         return False
 
     try:
         _configure_cloudinary()
         from cloudinary import uploader
 
-        uploader.destroy(public_id, resource_type=resource_type, invalidate=True)
-        return True
+        result = uploader.destroy(public_id, resource_type=resource_type, invalidate=True)
+        if result.get("result") == "not found":
+            logger.info(
+                "Cloudinary asset missing for %s with resource_type=%s",
+                public_id,
+                resource_type,
+            )
+            return False
+        logger.info(
+            "Cloudinary asset deleted for %s with resource_type=%s",
+            public_id,
+            resource_type,
+        )
+        return result.get("result") == "ok"
     except Exception as exc:
-        logger.warning("Cloudinary cleanup failed for %s: %s", public_id, exc)
+        logger.exception(
+            "Cloudinary deletion failure for %s with resource_type=%s: %s",
+            public_id,
+            resource_type,
+            exc,
+        )
         return False
+
+
+def delete_asset(public_id: str | None, *, resource_type: str = "auto") -> bool:
+    """Backward-compatible wrapper for best-effort Cloudinary deletion."""
+    return delete_cloudinary_asset(public_id, resource_type=resource_type)
 
 
 def delete_assets(public_ids: list[str | None], *, resource_type: str = "auto") -> None:
     """Delete a group of durable assets best-effort, leaving DB deletion safe."""
     for public_id in public_ids:
-        delete_asset(public_id, resource_type=resource_type)
+        delete_cloudinary_asset(public_id, resource_type=resource_type)

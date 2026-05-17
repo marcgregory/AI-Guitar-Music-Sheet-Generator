@@ -16,6 +16,7 @@ def init_db():
     logger.info("Creating database tables...")
     Base.metadata.create_all(bind=engine)
     _ensure_transcription_phase1_columns()
+    _ensure_project_deletion_columns()
     logger.info("Database tables created successfully")
 
 
@@ -61,6 +62,32 @@ def _ensure_transcription_phase1_columns():
             logger.info("Adding missing transcriptions.%s column", column_name)
             conn.execute(
                 text(f"ALTER TABLE transcriptions ADD COLUMN {column_name} {ddl_type}")
+            )
+        conn.commit()
+
+
+def _ensure_project_deletion_columns():
+    """Lightweight schema compatibility for project soft-deletion fields."""
+    inspector = inspect(engine)
+    if "projects" not in inspector.get_table_names():
+        return
+
+    existing_columns = {
+        column["name"]
+        for column in inspector.get_columns("projects")
+    }
+    required_columns = {
+        "is_deleted": "BOOLEAN DEFAULT FALSE",
+        "deleted_at": "TIMESTAMP",
+    }
+
+    with engine.connect() as conn:
+        for column_name, ddl_type in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            logger.info("Adding missing projects.%s column", column_name)
+            conn.execute(
+                text(f"ALTER TABLE projects ADD COLUMN {column_name} {ddl_type}")
             )
         conn.commit()
 

@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, 
 import json
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import or_, update
 import os
 import uuid
 import hashlib
@@ -45,8 +46,10 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 import logging
 import traceback
+from threading import Lock
 
 logger = logging.getLogger(__name__)
+_queue_promotion_lock = Lock()
 
 
 def _run_transcription_locally(transcription_id: int):
@@ -139,20 +142,24 @@ def _build_worker_payload_for_modal(transcription: models.Transcription) -> dict
 
 def _trigger_modal_worker(transcription_id: int) -> None:
     modal_trigger_url = core.config.settings.MODAL_TRIGGER_URL
-    if not modal_trigger_url:
-        logger.info(
-            "PROCESSING_MODE=modal but MODAL_TRIGGER_URL is not configured; "
-            "transcription %s remains queued for worker polling.",
-            transcription_id,
-        )
-        return
-
     session = db.SessionLocal()
     try:
         transcription = session.query(models.Transcription).filter(
             models.Transcription.id == transcription_id
         ).first()
         if not transcription or transcription.is_deleted:
+            return
+        if not modal_trigger_url:
+            transcription.processing_status = "queued"
+            transcription.queue_position = None
+            transcription.estimated_wait_time = None
+            session.add(transcription)
+            session.commit()
+            logger.info(
+                "PROCESSING_MODE=modal but MODAL_TRIGGER_URL is not configured; "
+                "transcription %s remains queued.",
+                transcription_id,
+            )
             return
 
         headers = {}
@@ -166,12 +173,20 @@ def _trigger_modal_worker(transcription_id: int) -> None:
             timeout=10.0,
         )
         response.raise_for_status()
-        transcription.processing_status = "processing"
-        transcription.queue_position = 0
-        transcription.estimated_wait_time = 0
-        session.add(transcription)
-        session.commit()
+        logger.info("Triggered Modal worker for transcription %s", transcription_id)
     except Exception as exc:
+        try:
+            transcription = session.query(models.Transcription).filter(
+                models.Transcription.id == transcription_id
+            ).first()
+            if transcription and transcription.processing_status == "processing":
+                transcription.processing_status = "queued"
+                transcription.queue_position = None
+                transcription.estimated_wait_time = None
+                session.add(transcription)
+                session.commit()
+        except Exception:
+            session.rollback()
         logger.error(
             "Modal trigger failed for transcription %s; leaving job queued: %s",
             transcription_id,
@@ -186,6 +201,13 @@ def _dispatch_transcription_processing(
     background_tasks: BackgroundTasks,
     db_session: Session,
 ) -> str | None:
+    if transcription.processing_status != "processing":
+        logger.info(
+            "Transcription %s is queued; Modal/Celery dispatch skipped until it is promoted.",
+            transcription.id,
+        )
+        return None
+
     mode = _processing_mode()
     if mode == "local":
         return _start_transcription_processing(
@@ -194,6 +216,7 @@ def _dispatch_transcription_processing(
             db_session,
         )
     if mode == "modal":
+        logger.info("Dispatching transcription %s to Modal", transcription.id)
         background_tasks.add_task(_trigger_modal_worker, transcription.id)
         return None
 
@@ -202,6 +225,75 @@ def _dispatch_transcription_processing(
         transcription.id,
     )
     return None
+
+
+def _promote_oldest_queued_transcription(db_session: Session) -> models.Transcription | None:
+    with _queue_promotion_lock:
+        candidate = (
+            db_session.query(models.Transcription)
+            .filter(models.Transcription.processing_status.in_(["pending", "queued"]))
+            .filter(models.Transcription.is_deleted == False)
+            .order_by(models.Transcription.created_at.asc(), models.Transcription.id.asc())
+            .first()
+        )
+        if not candidate:
+            return None
+
+        active_exists = (
+            db_session.query(models.Transcription.id)
+            .filter(models.Transcription.processing_status == "processing")
+            .filter(models.Transcription.is_deleted == False)
+            .exists()
+        )
+        result = db_session.execute(
+            update(models.Transcription)
+            .where(models.Transcription.id == candidate.id)
+            .where(models.Transcription.processing_status.in_(["pending", "queued"]))
+            .where(models.Transcription.is_deleted == False)
+            .where(~active_exists)
+            .values(
+                processing_status="processing",
+                queue_position=0,
+                estimated_wait_time=0,
+                processing_error=None,
+            ),
+            execution_options={"synchronize_session": False},
+        )
+        if result.rowcount != 1:
+            db_session.rollback()
+            logger.info(
+                "Transcription %s stayed queued because another job is already processing.",
+                candidate.id,
+            )
+            return None
+
+        db_session.commit()
+        db_session.refresh(candidate)
+        logger.info("Promoted queued transcription %s to processing", candidate.id)
+        return candidate
+
+
+def _trigger_next_queued_transcription(
+    background_tasks: BackgroundTasks,
+    db_session: Session,
+) -> models.Transcription | None:
+    if _processing_mode() == "external_worker":
+        logger.info(
+            "PROCESSING_MODE=external_worker; queued jobs will be claimed by worker polling."
+        )
+        return None
+
+    promoted = _promote_oldest_queued_transcription(db_session)
+    if not promoted:
+        return None
+
+    task_id = _dispatch_transcription_processing(promoted, background_tasks, db_session)
+    if task_id:
+        promoted.celery_task_id = task_id
+        db_session.add(promoted)
+        db_session.commit()
+        db_session.refresh(promoted)
+    return promoted
 
 
 def _start_instrument_track_reprocess(
@@ -369,26 +461,140 @@ def _delete_local_file(path_value: str | None) -> None:
         logger.warning("Local cleanup failed for %s: %s", path_value, exc)
 
 
-def _cleanup_transcription_assets(transcription: models.Transcription) -> None:
-    cloudinary_assets = [
-        transcription.original_audio_public_id,
-        transcription.separated_audio_public_id,
-        transcription.midi_file_public_id,
-        transcription.tab_file_public_id,
+def _cloudinary_asset_specs(transcription: models.Transcription):
+    return [
+        (
+            "original_audio_public_id",
+            transcription.original_audio_public_id,
+            "video",
+        ),
+        (
+            "separated_audio_public_id",
+            transcription.separated_audio_public_id,
+            "video",
+        ),
+        (
+            "midi_file_public_id",
+            transcription.midi_file_public_id,
+            "raw",
+        ),
+        (
+            "tab_file_public_id",
+            transcription.tab_file_public_id,
+            "raw",
+        ),
     ]
-    storage.delete_assets(cloudinary_assets, resource_type="auto")
 
-    for path_value in [
-        transcription.audio_file_path,
-        transcription.preprocessed_audio_file_path,
-        transcription.separated_audio_file_path,
-        transcription.midi_file_path,
-        transcription.tab_file_path,
-    ]:
-        _delete_local_file(path_value)
 
-    for track in transcription.instrument_tracks:
-        _delete_local_file(track.stem_audio_path)
+def _cloudinary_asset_is_referenced(
+    db_session: Session,
+    *,
+    public_id: str,
+    resource_type: str,
+    excluded_transcription_ids: set[int],
+) -> bool:
+    fields = (
+        [
+            models.Transcription.original_audio_public_id,
+            models.Transcription.separated_audio_public_id,
+        ]
+        if resource_type == "video"
+        else [
+            models.Transcription.midi_file_public_id,
+            models.Transcription.tab_file_public_id,
+        ]
+    )
+    query = db_session.query(models.Transcription.id).filter(
+        or_(*(field == public_id for field in fields))
+    )
+    if excluded_transcription_ids:
+        query = query.filter(~models.Transcription.id.in_(excluded_transcription_ids))
+    return db_session.query(query.exists()).scalar()
+
+
+def _cleanup_transcription_cloudinary_assets(
+    transcription: models.Transcription,
+    db_session: Session | None = None,
+    *,
+    excluded_transcription_ids: set[int] | None = None,
+) -> None:
+    excluded_ids = excluded_transcription_ids or {transcription.id}
+    deleted_or_attempted: set[tuple[str, str]] = set()
+    for field_name, public_id, resource_type in _cloudinary_asset_specs(transcription):
+        if not public_id:
+            logger.info(
+                "Cloudinary asset missing for transcription %s field %s",
+                transcription.id,
+                field_name,
+            )
+            storage.delete_cloudinary_asset(public_id, resource_type=resource_type)
+            continue
+        asset_key = (public_id, resource_type)
+        if asset_key in deleted_or_attempted:
+            logger.info(
+                "Cloudinary asset skipped for transcription %s field %s public_id %s; already handled",
+                transcription.id,
+                field_name,
+                public_id,
+            )
+            continue
+        if db_session is not None and _cloudinary_asset_is_referenced(
+            db_session,
+            public_id=public_id,
+            resource_type=resource_type,
+            excluded_transcription_ids=excluded_ids,
+        ):
+            logger.info(
+                "Cloudinary asset skipped for transcription %s field %s public_id %s; still referenced",
+                transcription.id,
+                field_name,
+                public_id,
+            )
+            continue
+        storage.delete_cloudinary_asset(public_id, resource_type=resource_type)
+        deleted_or_attempted.add(asset_key)
+
+
+def _cleanup_transcriptions_cloudinary_assets(
+    transcriptions: list[models.Transcription],
+    db_session: Session,
+) -> None:
+    excluded_ids = {transcription.id for transcription in transcriptions}
+    deleted_or_attempted: set[tuple[str, str]] = set()
+    for transcription in transcriptions:
+        for field_name, public_id, resource_type in _cloudinary_asset_specs(transcription):
+            if not public_id:
+                logger.info(
+                    "Cloudinary asset missing for transcription %s field %s",
+                    transcription.id,
+                    field_name,
+                )
+                storage.delete_cloudinary_asset(public_id, resource_type=resource_type)
+                continue
+            asset_key = (public_id, resource_type)
+            if asset_key in deleted_or_attempted:
+                logger.info(
+                    "Cloudinary asset skipped for transcription %s field %s public_id %s; already handled",
+                    transcription.id,
+                    field_name,
+                    public_id,
+                )
+                continue
+            if _cloudinary_asset_is_referenced(
+                db_session,
+                public_id=public_id,
+                resource_type=resource_type,
+                excluded_transcription_ids=excluded_ids,
+            ):
+                logger.info(
+                    "Cloudinary asset skipped for transcription %s field %s public_id %s; still referenced",
+                    transcription.id,
+                    field_name,
+                    public_id,
+                )
+                continue
+            storage.delete_cloudinary_asset(public_id, resource_type=resource_type)
+            deleted_or_attempted.add(asset_key)
 
 
 def _revoke_transcription_task(transcription: models.Transcription) -> None:
@@ -429,6 +635,9 @@ def _soft_delete_transcription(
             detail=f"Cannot delete transcription in {previous_status} state",
         )
 
+    _cleanup_transcription_cloudinary_assets(transcription, db_session)
+    _cleanup_transcription_local_assets(transcription)
+
     transcription.is_deleted = True
     transcription.deleted_at = datetime.now(timezone.utc)
     transcription.is_processed = False if transcription.processing_status == "cancelled" else transcription.is_processed
@@ -436,8 +645,94 @@ def _soft_delete_transcription(
     db_session.commit()
     db_session.refresh(transcription)
 
-    _cleanup_transcription_assets(transcription)
     return transcription
+
+
+def _cleanup_transcription_local_assets(transcription: models.Transcription) -> None:
+    for path_value in [
+        transcription.audio_file_path,
+        transcription.preprocessed_audio_file_path,
+        transcription.separated_audio_file_path,
+        transcription.midi_file_path,
+        transcription.tab_file_path,
+    ]:
+        _delete_local_file(path_value)
+
+    for track in transcription.instrument_tracks:
+        _delete_local_file(track.stem_audio_path)
+
+
+def _hard_delete_transcription(
+    transcription: models.Transcription,
+    db_session: Session,
+) -> None:
+    _cleanup_transcription_cloudinary_assets(transcription, db_session)
+    _cleanup_transcription_local_assets(transcription)
+    db_session.delete(transcription)
+    db_session.commit()
+
+
+def _delete_project_with_transcriptions(
+    project: models.Project,
+    db_session: Session,
+    *,
+    hard_delete: bool = True,
+):
+    transcriptions = (
+        db_session.query(models.Transcription)
+        .filter(models.Transcription.project_id == project.id)
+        .all()
+    )
+    for transcription in transcriptions:
+        if transcription.processing_status in {"queued", "pending", "processing"}:
+            _revoke_transcription_task(transcription)
+
+    _cleanup_transcriptions_cloudinary_assets(transcriptions, db_session)
+    for transcription in transcriptions:
+        _cleanup_transcription_local_assets(transcription)
+
+    project_payload = {
+        "id": project.id,
+        "name": project.name,
+        "description": project.description,
+        "owner_id": project.owner_id,
+        "is_public": project.is_public,
+        "is_deleted": project.is_deleted,
+        "deleted_at": project.deleted_at,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+    }
+
+    if hard_delete:
+        for transcription in transcriptions:
+            db_session.delete(transcription)
+        db_session.delete(project)
+    else:
+        deletion_time = datetime.now(timezone.utc)
+        for transcription in transcriptions:
+            previous_status = transcription.processing_status or "pending"
+            transcription.processing_status = (
+                "cancelled"
+                if previous_status in {"queued", "pending", "processing"}
+                else "deleted"
+            )
+            transcription.is_deleted = True
+            transcription.deleted_at = deletion_time
+            transcription.is_processed = (
+                False
+                if transcription.processing_status == "cancelled"
+                else transcription.is_processed
+            )
+            db_session.add(transcription)
+        project.is_deleted = True
+        project.deleted_at = deletion_time
+        db_session.add(project)
+
+    db_session.commit()
+    if not hard_delete:
+        db_session.refresh(project)
+        return project
+    return project_payload
 
 
 def _should_use_local_worker_fallback() -> bool:
@@ -598,7 +893,7 @@ def _active_queue_count(db_session: Session) -> int:
 
 def _queue_metadata_for_new_job(db_session: Session) -> tuple[str, int | None, int | None]:
     active_count = _active_queue_count(db_session)
-    status_value = "queued" if active_count else "pending"
+    status_value = "queued"
     queue_position = active_count + 1 if active_count else 0
     estimated_wait = active_count * ESTIMATED_SECONDS_PER_SELECTED_STEM_JOB
     return status_value, queue_position, estimated_wait
@@ -921,12 +1216,8 @@ async def upload_audio_file(
             detail="Original audio could not be uploaded to durable storage.",
         ) from exc
 
-    task_id = _dispatch_transcription_processing(db_transcription, background_tasks, db_session)
-    if task_id:
-        db_transcription.celery_task_id = task_id
-        db_session.add(db_transcription)
-        db_session.commit()
-        db_session.refresh(db_transcription)
+    _trigger_next_queued_transcription(background_tasks, db_session)
+    db_session.refresh(db_transcription)
 
     return db_transcription
 
@@ -1118,12 +1409,8 @@ async def extract_audio_from_youtube(
             detail="Original audio could not be uploaded to durable storage.",
         ) from exc
 
-    task_id = _dispatch_transcription_processing(db_transcription, background_tasks, db_session)
-    if task_id:
-        db_transcription.celery_task_id = task_id
-        db_session.add(db_transcription)
-        db_session.commit()
-        db_session.refresh(db_transcription)
+    _trigger_next_queued_transcription(background_tasks, db_session)
+    db_session.refresh(db_transcription)
 
     return db_transcription
 

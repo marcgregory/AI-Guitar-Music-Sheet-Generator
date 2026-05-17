@@ -1,4 +1,5 @@
 import os
+import logging
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,7 @@ import modal
 
 
 app = modal.App("musicstudio")
+logger = logging.getLogger(__name__)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -252,6 +254,10 @@ def process(job: dict[str, Any]) -> dict[str, Any]:
     try:
         return _process_job(job)
     except Exception as exc:
+        logger.exception(
+            "Modal worker failed before backend callback for job %s",
+            job.get("transcription_id") if isinstance(job, dict) else None,
+        )
         try:
             if isinstance(job, dict):
                 _fail_job(job, "Could not isolate the selected stem.", str(exc))

@@ -1,12 +1,15 @@
 import json
 import logging
+import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from .... import core, db, models
 from .. import schemas
+from .audio import _promote_oldest_queued_transcription, _trigger_next_queued_transcription
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -32,6 +35,7 @@ def _worker_token_dependency(
 ) -> None:
     expected_token = core.config.settings.WORKER_API_TOKEN
     if not expected_token:
+        logger.error("WORKER_API_TOKEN is not configured; rejecting worker callback.")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Worker API token is not configured.",
@@ -43,8 +47,8 @@ def _worker_token_dependency(
         if scheme.lower() == "bearer" and credentials:
             bearer_token = credentials.strip()
 
-    provided_token = bearer_token or x_worker_token
-    if provided_token != expected_token:
+    provided_token = (bearer_token or x_worker_token or "").strip()
+    if not secrets.compare_digest(provided_token, expected_token.strip()):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid worker token.",
@@ -59,8 +63,8 @@ def _json_or_text(value: Any) -> str | None:
     return json.dumps(value)
 
 
-def _sanitize_worker_error(error: str) -> str:
-    cleaned = " ".join(error.split())
+def _sanitize_worker_error(error: str | None) -> str:
+    cleaned = " ".join(str(error or "").split())
     if not cleaned:
         return "Worker processing failed."
     return cleaned[:500]
@@ -101,25 +105,10 @@ async def get_next_worker_job(
     request: Request,
     db_session: Session = Depends(db.get_db),
 ):
-    transcription = (
-        db_session.query(models.Transcription)
-        .filter(models.Transcription.processing_status.in_(["pending", "queued"]))
-        .filter(models.Transcription.is_deleted == False)
-        .filter(models.Transcription.original_audio_url.isnot(None))
-        .order_by(models.Transcription.created_at.asc(), models.Transcription.id.asc())
-        .first()
-    )
-
+    transcription = _promote_oldest_queued_transcription(db_session)
     if not transcription:
         return None
 
-    transcription.processing_status = "processing"
-    transcription.queue_position = 0
-    transcription.estimated_wait_time = 0
-    transcription.processing_error = None
-    db_session.add(transcription)
-    db_session.commit()
-    db_session.refresh(transcription)
     return _build_worker_job(transcription, request)
 
 
@@ -131,6 +120,7 @@ async def get_next_worker_job(
 async def complete_worker_job(
     transcription_id: int,
     payload: schemas.WorkerCompleteRequest,
+    background_tasks: BackgroundTasks,
     db_session: Session = Depends(db.get_db),
 ):
     transcription = db_session.query(models.Transcription).filter(
@@ -196,6 +186,7 @@ async def complete_worker_job(
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(transcription)
+    _trigger_next_queued_transcription(background_tasks, db_session)
     return transcription
 
 
@@ -207,35 +198,71 @@ async def complete_worker_job(
 async def fail_worker_job(
     transcription_id: int,
     payload: schemas.WorkerFailedRequest,
+    background_tasks: BackgroundTasks,
     db_session: Session = Depends(db.get_db),
 ):
-    transcription = db_session.query(models.Transcription).filter(
-        models.Transcription.id == transcription_id
-    ).first()
-    if not transcription:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transcription not found")
-    if transcription.is_deleted:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Transcription was deleted before worker failure callback.",
-        )
+    try:
+        transcription = db_session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        if not transcription:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={
+                    "status": "not_found",
+                    "transcription_id": transcription_id,
+                    "detail": "Transcription not found",
+                },
+            )
+        if transcription.is_deleted:
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "status": "deleted",
+                    "transcription_id": transcription_id,
+                    "detail": "Transcription was deleted before worker failure callback.",
+                },
+            )
 
-    sanitized_error = _sanitize_worker_error(payload.error)
-    if payload.internal_logs:
+        sanitized_error = _sanitize_worker_error(payload.error)
         logger.error(
             "Worker failed transcription %s. User error: %s. Internal logs: %s",
             transcription_id,
             sanitized_error,
-            payload.internal_logs,
+            _json_or_text(payload.internal_logs) if payload.internal_logs else None,
         )
 
-    transcription.processing_status = "failed"
-    transcription.is_processed = False
-    transcription.processing_error = sanitized_error
-    transcription.queue_position = None
-    transcription.estimated_wait_time = None
-    transcription.celery_task_id = None
-    db_session.add(transcription)
-    db_session.commit()
-    db_session.refresh(transcription)
-    return transcription
+        transcription.processing_status = "failed"
+        transcription.is_processed = False
+        transcription.processing_error = sanitized_error
+        transcription.queue_position = None
+        transcription.estimated_wait_time = None
+        transcription.celery_task_id = None
+        db_session.add(transcription)
+        db_session.commit()
+        db_session.refresh(transcription)
+        try:
+            _trigger_next_queued_transcription(background_tasks, db_session)
+        except Exception:
+            logger.exception(
+                "Worker failure callback was recorded for transcription %s, "
+                "but promoting the next queued job failed.",
+                transcription_id,
+            )
+        return transcription
+    except Exception as exc:
+        db_session.rollback()
+        logger.exception(
+            "Failed to handle worker failure callback for transcription %s. Payload: %s",
+            transcription_id,
+            payload.model_dump() if hasattr(payload, "model_dump") else payload.dict(),
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "transcription_id": transcription_id,
+                "detail": "Worker failure callback could not be recorded.",
+                "error": str(exc),
+            },
+        )
