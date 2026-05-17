@@ -10,12 +10,16 @@ const ProcessingStatus: React.FC = () => {
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+  const [canPlayStem, setCanPlayStem] = useState(false);
+  const [canGenerateScore, setCanGenerateScore] = useState(true);
   const [selectedStem, setSelectedStem] = useState<string | null>(null);
   const [transcriptionIdNum, setTranscriptionIdNum] = useState<number | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showErrorDialog, setShowErrorDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
   const [toast, setToast] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
@@ -70,14 +74,18 @@ const ProcessingStatus: React.FC = () => {
       const response = await audioService.getTranscriptionStatus(id, token);
       setSelectedStem(response.selected_stem ?? null);
       setStatusMessage(response.message ?? null);
+      setWarning(response.warning ?? null);
+      setCanPlayStem(Boolean(response.can_play_stem));
+      setCanGenerateScore(response.can_generate_score !== false);
 
       if (response.status === 'completed') {
         setStatus('completed');
         setProgress(100);
-        // Navigate to transcription result after a short delay
-        setTimeout(() => {
-          navigate(`/transcription/${id}`);
-        }, 1500);
+        if (response.can_generate_score !== false) {
+          setTimeout(() => {
+            navigate(`/transcription/${id}`);
+          }, 1500);
+        }
       } else if (response.status === 'failed') {
         setStatus('failed');
         setError(response.error || 'Processing failed');
@@ -111,6 +119,25 @@ const ProcessingStatus: React.FC = () => {
     }
   };
 
+  const handleRetry = async () => {
+    if (!token || transcriptionIdNum === null) return;
+    setIsRetrying(true);
+    try {
+      const response = await audioService.retryTranscription(transcriptionIdNum, token, {
+        lower_threshold: true,
+      });
+      setStatus(response.status);
+      setWarning(response.warning ?? null);
+      setStatusMessage(response.message ?? null);
+      setError(null);
+      showToast('success', 'Retry queued with lower note threshold.');
+    } catch (err: any) {
+      showToast('error', err.response?.data?.detail || 'Could not retry transcription.');
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   const statusActionLabel = status === 'queued' || status === 'pending'
     ? 'View queue status'
     : 'View progress';
@@ -119,6 +146,8 @@ const ProcessingStatus: React.FC = () => {
     status === 'pending' ||
     status === 'queued' ||
     status === 'processing' ||
+    status === 'completed' ||
+    status === 'completed_with_warning' ||
     status === 'failed';
 
   if (status === 'idle') {
@@ -250,17 +279,41 @@ const ProcessingStatus: React.FC = () => {
       )}
 
       {status === 'completed' && (
-        <div className="processing-status-content processing-success">
-          <div className="success-icon" aria-hidden="true"></div>
-          <h3>Processing complete</h3>
-          <p>Your audio has been successfully processed and transcribed into guitar tabs.</p>
+        <div className={`processing-status-content ${canGenerateScore ? 'processing-success' : 'processing-warning'}`}>
+          <div className={canGenerateScore ? 'success-icon' : 'warning-icon'} aria-hidden="true"></div>
+          <h3>{canGenerateScore ? 'Processing complete' : 'Stem preview ready'}</h3>
+          {canGenerateScore ? (
+            <p>Your audio has been successfully processed and transcribed into guitar tabs.</p>
+          ) : (
+            <>
+              <p>{warning || 'Stem separated successfully, but no playable notes were detected for notation generation.'}</p>
+              <p>You can still preview the isolated stem audio.</p>
+            </>
+          )}
           <div className="processing-actions">
             <button
               className="button-primary"
               onClick={() => navigate(`/transcription/${transcriptionIdNum}`)}
             >
-              View Transcription
+              {canGenerateScore ? 'View Transcription' : canPlayStem ? 'Preview isolated stem' : 'Open result'}
             </button>
+            {!canGenerateScore && (
+              <>
+                <button
+                  className="button-secondary"
+                  disabled={isRetrying}
+                  onClick={handleRetry}
+                >
+                  {isRetrying ? 'Queuing retry...' : 'Retry transcription'}
+                </button>
+                <button
+                  className="button-secondary"
+                  onClick={() => navigate('/upload')}
+                >
+                  Choose another stem
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

@@ -1191,14 +1191,16 @@ h3 {
 }
 
 .processing-success,
-.processing-error {
+.processing-error,
+.processing-warning {
   justify-items: center;
   padding: clamp(2rem, 6vw, 4rem);
   text-align: center;
 }
 
 .success-icon,
-.error-icon {
+.error-icon,
+.warning-icon {
   display: block;
   width: 58px;
   height: 58px;
@@ -1209,6 +1211,11 @@ h3 {
 
 .error-icon {
   background: var(--red);
+}
+
+.warning-icon {
+  background: #bf8d31;
+  box-shadow: 0 0 0 8px rgba(191, 141, 49, 0.14);
 }
 
 .audio-player-container {

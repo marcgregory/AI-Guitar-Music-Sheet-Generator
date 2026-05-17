@@ -52,14 +52,22 @@ logger = logging.getLogger(__name__)
 _queue_promotion_lock = Lock()
 
 
-def _run_transcription_locally(transcription_id: int):
+def _run_transcription_locally(
+    transcription_id: int,
+    detection_sensitivity: str | None = None,
+    selected_stem_override: str | None = None,
+):
     """Run transcription without a Celery broker for local development."""
     from ....tasks import process_audio_transcription
 
     original_update_state = process_audio_transcription.update_state
     process_audio_transcription.update_state = lambda *args, **kwargs: None
     try:
-        process_audio_transcription.run(transcription_id)
+        process_audio_transcription.run(
+            transcription_id,
+            detection_sensitivity,
+            selected_stem_override,
+        )
     except Exception as e:
         logger.error(
             "Local transcription task failed for transcription %s: %s",
@@ -92,6 +100,9 @@ def _start_transcription_processing(
     transcription_id: int,
     background_tasks: BackgroundTasks,
     db_session: Session,
+    *,
+    detection_sensitivity: str | None = None,
+    selected_stem_override: str | None = None,
 ) -> str | None:
     """Start processing through Celery, with an in-process fallback for dev."""
     if _should_use_local_worker_fallback() and not _celery_has_available_worker():
@@ -99,13 +110,21 @@ def _start_transcription_processing(
             "No Celery worker is available; running transcription %s as a local background task",
             transcription_id,
         )
-        background_tasks.add_task(_run_transcription_locally, transcription_id)
+        background_tasks.add_task(
+            _run_transcription_locally,
+            transcription_id,
+            detection_sensitivity,
+            selected_stem_override,
+        )
         return None
 
     try:
+        task_args = [transcription_id]
+        if detection_sensitivity or selected_stem_override:
+            task_args.extend([detection_sensitivity, selected_stem_override])
         result = celery_app.send_task(
             "app.tasks.process_audio_transcription",
-            args=[transcription_id]
+            args=task_args
         )
         task_id = getattr(result, "id", None)
         return str(task_id) if isinstance(task_id, (str, int)) else None
@@ -114,7 +133,12 @@ def _start_transcription_processing(
             "Celery broker unavailable; falling back to local background task: %s",
             e,
         )
-        background_tasks.add_task(_run_transcription_locally, transcription_id)
+        background_tasks.add_task(
+            _run_transcription_locally,
+            transcription_id,
+            detection_sensitivity,
+            selected_stem_override,
+        )
         return None
 
 
@@ -419,7 +443,7 @@ def _find_duplicate_transcription(
         db_session.query(models.Transcription)
         .filter(models.Transcription.user_id == user_id)
         .filter(models.Transcription.selected_stem == selected_stem)
-        .filter(models.Transcription.processing_status == "completed")
+        .filter(models.Transcription.processing_status.in_(["completed", "completed_with_warning"]))
         .filter(models.Transcription.is_processed == True)
         .filter(models.Transcription.is_deleted == False)
     )
@@ -753,6 +777,48 @@ def _blocking_processing_error(transcription: models.Transcription) -> str | Non
     if _is_non_blocking_processing_warning(error):
         return None
     return error
+
+
+def _can_play_stem(transcription: models.Transcription) -> bool:
+    if transcription.can_play_stem or transcription.separated_audio_url:
+        return True
+    if transcription.separated_audio_file_path and os.path.exists(
+        storage.normalize_local_path(transcription.separated_audio_file_path)
+    ):
+        return True
+    return any(
+        track.stem_audio_path and os.path.exists(storage.normalize_local_path(track.stem_audio_path))
+        for track in transcription.instrument_tracks
+    )
+
+
+def _can_generate_score(transcription: models.Transcription) -> bool:
+    return bool(transcription.can_generate_score and _has_note_events(transcription.notes_data))
+
+
+def _status_payload(
+    transcription: models.Transcription,
+    transcription_id: int,
+    selected_stem: str,
+    *,
+    message: str | None = None,
+) -> dict:
+    warning = transcription.warning_message
+    can_play_stem = _can_play_stem(transcription)
+    can_generate_score = _can_generate_score(transcription)
+    payload = {
+        "status": "completed",
+        "warning": warning,
+        "transcription_id": transcription_id,
+        "selected_stem": selected_stem,
+        "can_play_stem": can_play_stem,
+        "can_generate_score": can_generate_score,
+        "queue_position": None,
+        "estimated_wait_time": None,
+    }
+    if message:
+        payload["message"] = message
+    return payload
 
 
 def _ensure_transcription_access(
@@ -1477,6 +1543,9 @@ async def get_transcription_status(
             "status": transcription.processing_status or "deleted",
             "transcription_id": transcription_id,
             "selected_stem": selected_stem,
+            "warning": transcription.warning_message,
+            "can_play_stem": _can_play_stem(transcription),
+            "can_generate_score": _can_generate_score(transcription),
             "deleted_at": transcription.deleted_at,
             "message": "This transcription record was deleted.",
             "queue_position": None,
@@ -1490,6 +1559,9 @@ async def get_transcription_status(
             "error": blocking_error or transcription.processing_error or "Processing failed",
             "transcription_id": transcription_id,
             "selected_stem": selected_stem,
+            "warning": transcription.warning_message,
+            "can_play_stem": _can_play_stem(transcription),
+            "can_generate_score": _can_generate_score(transcription),
             "queue_position": None,
             "estimated_wait_time": None,
         }
@@ -1497,32 +1569,22 @@ async def get_transcription_status(
     # Return status based on transcription record
     if transcription.is_processed:
         notes_error = _notes_error(transcription.notes_data)
-        if blocking_error or notes_error:
-            return {
-                "status": "failed",
-                "error": blocking_error or f"Pitch detection failed: {notes_error}",
-                "transcription_id": transcription_id,
-                "selected_stem": selected_stem,
-                "queue_position": None,
-                "estimated_wait_time": None,
-            }
+        if notes_error and not transcription.warning_message:
+            transcription.warning_message = f"Pitch detection warning: {notes_error}"
+            transcription.can_generate_score = False
+            transcription.can_play_stem = _can_play_stem(transcription)
+            db_session.add(transcription)
+            db_session.commit()
+            db_session.refresh(transcription)
         if selected_stem not in {"drums", "vocals"} and not _has_note_events(transcription.notes_data):
-            return {
-                "status": "failed",
-                "error": "No note events were detected, so MIDI, MusicXML, and TAB exports cannot be generated.",
-                "transcription_id": transcription_id,
-                "selected_stem": selected_stem,
-                "queue_position": None,
-                "estimated_wait_time": None,
-            }
-        else:
-            return {
-                "status": "completed",
-                "transcription_id": transcription_id,
-                "selected_stem": selected_stem,
-                "queue_position": None,
-                "estimated_wait_time": None,
-            }
+            if not transcription.warning_message:
+                transcription.warning_message = "No note events detected for this stem."
+            transcription.can_generate_score = False
+            transcription.can_play_stem = _can_play_stem(transcription)
+            db_session.add(transcription)
+            db_session.commit()
+            db_session.refresh(transcription)
+        return _status_payload(transcription, transcription_id, selected_stem)
     else:
         current_status = transcription.processing_status or "queued"
         _apply_queue_metadata(transcription, db_session)
@@ -1540,6 +1602,9 @@ async def get_transcription_status(
             "status": current_status,
             "transcription_id": transcription_id,
             "selected_stem": selected_stem,
+            "warning": transcription.warning_message,
+            "can_play_stem": _can_play_stem(transcription),
+            "can_generate_score": _can_generate_score(transcription),
             "message": message,
             "queue_position": transcription.queue_position,
             "estimated_wait_time": transcription.estimated_wait_time,
@@ -1656,6 +1721,90 @@ async def get_transcription_result(
 
     # Return the transcription data
     return transcription
+
+
+@router.post("/{transcription_id}/retry")
+async def retry_transcription(
+    transcription_id: int,
+    retry: schemas.RetryTranscriptionRequest,
+    background_tasks: BackgroundTasks,
+    db_session: Session = Depends(db.get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """
+    Retry note transcription from the retained stem when possible.
+
+    Lower-threshold mode increases detection sensitivity without treating a
+    previous no-note pass as a failed separation job. A new stem selection is
+    accepted when the original/preprocessed source is still available.
+    """
+    transcription = _get_accessible_transcription(transcription_id, db_session, current_user)
+    if transcription.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot retry a deleted transcription.",
+        )
+
+    selected_stem = _validate_selected_stem(retry.selected_stem or transcription.selected_stem)
+    stem_changed = selected_stem != (transcription.selected_stem or "other")
+    source_available = any(
+        path_value and os.path.exists(storage.normalize_local_path(path_value))
+        for path_value in (transcription.audio_file_path, transcription.preprocessed_audio_file_path)
+    )
+    if stem_changed and not source_available:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Cannot choose another stem because the original source is no longer local. "
+                "Upload the source again to separate a different stem."
+            ),
+        )
+
+    sensitivity = (
+        "high"
+        if retry.lower_threshold or (retry.alternate_settings or {}).get("sensitivity") == "high"
+        else "normal"
+    )
+    transcription.selected_stem = selected_stem
+    transcription.is_processed = False
+    transcription.processing_status = "processing"
+    transcription.processing_error = None
+    transcription.warning_message = None
+    transcription.can_generate_score = selected_stem not in {"vocals", "drums"}
+    transcription.can_play_stem = _can_play_stem(transcription)
+    transcription.queue_position = 0
+    transcription.estimated_wait_time = 0
+    transcription.midi_file_path = None
+    transcription.midi_file_url = None
+    transcription.midi_file_public_id = None
+    transcription.tab_file_path = None
+    transcription.tab_file_url = None
+    transcription.tab_file_public_id = None
+    db_session.add(transcription)
+    db_session.commit()
+    db_session.refresh(transcription)
+
+    task_id = _start_transcription_processing(
+        transcription.id,
+        background_tasks,
+        db_session,
+        detection_sensitivity=sensitivity,
+        selected_stem_override=selected_stem,
+    )
+    if task_id:
+        transcription.celery_task_id = task_id
+        db_session.add(transcription)
+        db_session.commit()
+        db_session.refresh(transcription)
+
+    return {
+        "status": transcription.processing_status,
+        "transcription_id": transcription.id,
+        "selected_stem": selected_stem,
+        "can_play_stem": _can_play_stem(transcription),
+        "can_generate_score": transcription.can_generate_score,
+        "message": "Retry transcription queued with alternate detection settings.",
+    }
 
 
 @router.get("/{transcription_id}/tracks", response_model=list[schemas.InstrumentTrack])

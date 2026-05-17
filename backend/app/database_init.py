@@ -53,6 +53,10 @@ def _ensure_transcription_phase1_columns():
     "tab_file_url": "TEXT",
     "tab_file_public_id": "VARCHAR",
     "processing_error": "TEXT",
+    "warning_message": "TEXT",
+    "can_generate_score": "BOOLEAN DEFAULT TRUE",
+    "can_play_stem": "BOOLEAN DEFAULT FALSE",
+    "transcription_attempts": "INTEGER DEFAULT 0",
 }
 
     with engine.connect() as conn:

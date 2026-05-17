@@ -10,7 +10,7 @@ interface Project {
   description: string;
   createdAt: string;
   audioFileName: string;
-  status: "pending" | "queued" | "processing" | "completed" | "failed";
+  status: "pending" | "queued" | "processing" | "completed" | "warning" | "failed";
   duration: number;
   difficulty: "beginner" | "intermediate" | "advanced";
   processingError?: string | null;
@@ -28,8 +28,12 @@ const getTranscriptionStatus = (transcription: Transcription): Project["status"]
     transcription.processing_status === "queued" ||
     transcription.processing_status === "processing" ||
     transcription.processing_status === "completed" ||
+    transcription.processing_status === "completed_with_warning" ||
     transcription.processing_status === "failed"
   ) {
+    if (transcription.processing_status === "completed_with_warning") {
+      return "warning";
+    }
     return transcription.processing_status;
   }
   if (transcription.processing_error && !isNonBlockingProcessingWarning(transcription.processing_error)) {
@@ -56,6 +60,8 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
     description:
       status === "failed"
         ? transcription.processing_error || "Processing failed"
+        : status === "warning"
+          ? transcription.warning_message || "Stem preview is ready, but notation exports are unavailable"
         : status === "queued"
           ? "Queued because another Railway MVP job is processing"
           : status === "pending"
@@ -96,6 +102,8 @@ const getStatusGradient = (status: Project["status"]) => {
   switch (status) {
     case "completed":
       return "linear-gradient(135deg, #42755f, #244c69)";
+    case "warning":
+      return "linear-gradient(135deg, #bf8d31, #7a6331)";
     case "queued":
     case "pending":
       return "linear-gradient(135deg, #7a6331, #5a4321)";
@@ -129,7 +137,7 @@ type ProjectActionMenuItem = {
 const getProjectActionMenuItems = (project: Project): ProjectActionMenuItem[] => {
   const items: ProjectActionMenuItem[] = [];
 
-  if (project.status === "completed") {
+  if (project.status === "completed" || project.status === "warning") {
     items.push({ action: "source", label: "Open source audio", icon: "music" });
   }
 
@@ -248,6 +256,8 @@ const Dashboard: React.FC = () => {
   const getProjectRoute = (project: Project): string =>
     project.status === "completed"
       ? `/transcription/${project.id}`
+      : project.status === "warning"
+        ? `/transcription/${project.id}`
       : `/processing/${project.id}`;
 
   const showToast = (nextToast: ToastState) => {
@@ -419,7 +429,9 @@ const Dashboard: React.FC = () => {
     return null;
   }
 
-  const completedCount = projects.filter((project) => project.status === "completed").length;
+  const completedCount = projects.filter((project) =>
+    project.status === "completed" || project.status === "warning",
+  ).length;
   const processingCount = projects.filter((project) =>
     project.status === "pending" || project.status === "queued" || project.status === "processing",
   ).length;
@@ -588,10 +600,10 @@ const Dashboard: React.FC = () => {
                       <Icon name="gauge" />
                       {featuredProject.difficulty}
                     </span>
-                    {featuredProject.status === "completed" && (
+                    {(featuredProject.status === "completed" || featuredProject.status === "warning") && (
                       <span className="quality-badge">
                         <Icon name="check" />
-                        export ready
+                        {featuredProject.status === "warning" ? "stem ready" : "export ready"}
                       </span>
                     )}
                   </div>
@@ -659,10 +671,10 @@ const Dashboard: React.FC = () => {
                               <Icon name="gauge" />
                               {project.difficulty}
                             </span>
-                            {project.status === "completed" && (
+                            {(project.status === "completed" || project.status === "warning") && (
                               <span className="quality-badge">
                                 <Icon name="check" />
-                                export ready
+                                {project.status === "warning" ? "stem ready" : "export ready"}
                               </span>
                             )}
                           </div>

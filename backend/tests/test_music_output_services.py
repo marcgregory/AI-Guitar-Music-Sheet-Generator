@@ -813,6 +813,77 @@ def test_process_audio_transcription_persists_selected_other_stem_and_analyzes_a
         session.close()
 
 
+def test_process_audio_transcription_no_notes_completes_with_warning_and_keeps_stem(tmp_path):
+    session = create_test_session()
+    try:
+        upload_path = tmp_path / "upload.wav"
+        preprocessed_path = tmp_path / "upload_preprocessed.wav"
+        other_stem = tmp_path / "other.wav"
+        upload_path.write_bytes(b"upload")
+        preprocessed_path.write_bytes(b"preprocessed")
+        other_stem.write_bytes(b"other")
+
+        transcription = models.Transcription(
+            title="No notes task flow",
+            audio_file_path=str(upload_path),
+            selected_stem="other",
+            user_id=1,
+            is_processed=False,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        transcription_id = transcription.id
+        upload_dir = tmp_path / "uploads"
+
+        pitch_mock = Mock(return_value={
+            "notes": [],
+            "model_outputs": {"backend": "test"},
+            "confidence_stats": {"count": 0, "min": None, "max": None, "mean": None},
+            "total_notes_detected": 0,
+        })
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.settings") as settings_mock:
+                settings_mock.UPLOAD_DIR = str(upload_dir)
+                settings_mock.NOTE_DETECTION_SENSITIVITY = "normal"
+                with patch("app.tasks.audio.preprocess_audio", return_value=str(preprocessed_path)):
+                    with patch("app.tasks.audio.separate_selected_stem", return_value=str(other_stem)):
+                        with patch("app.tasks.audio.normalize_audio_volume", return_value=str(other_stem)):
+                            with patch("app.tasks.audio.audio_debug_stats", return_value={"rms_loudness": 0.1, "peak_amplitude": 0.5, "detected_onset_count": 0}):
+                                with patch("app.tasks.audio.detect_pitch", pitch_mock):
+                                    with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
+                                        with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
+                                            with patch("app.tasks.audio.detect_rhythm", return_value={"total_duration": 1.0}):
+                                                with patch("app.tasks.audio.detect_chords", return_value={"chords": []}):
+                                                    with patch("app.tasks.chord_chart.chord_data_to_chord_chart_json", return_value="[]"):
+                                                        with patch("app.tasks.estimate_stem_confidence", return_value=90):
+                                                            result = process_audio_transcription.run(transcription_id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription_id
+        ).one()
+
+        assert result["status"] == "completed"
+        assert result["warning"] == "No note events detected for this stem."
+        assert result["can_play_stem"] is True
+        assert result["can_generate_score"] is False
+        assert refreshed.is_processed is True
+        assert refreshed.processing_status == "completed_with_warning"
+        assert refreshed.warning_message == "No note events detected for this stem."
+        assert refreshed.can_play_stem is True
+        assert refreshed.can_generate_score is False
+        assert refreshed.processing_error is None
+        assert track.processing_status == "completed_with_warning"
+        assert track.stem_audio_path and Path(track.stem_audio_path).exists()
+        assert pitch_mock.call_count == 2
+    finally:
+        session.close()
+
+
 def test_process_audio_transcription_fails_clearly_when_selected_stem_separation_fails(tmp_path):
     session = create_test_session()
     try:

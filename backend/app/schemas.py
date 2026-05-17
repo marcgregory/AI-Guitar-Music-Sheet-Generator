@@ -105,6 +105,10 @@ class TranscriptionBase(BaseModel):
     tempo_confidence: Optional[int] = None
     detected_key: Optional[str] = None
     key_confidence: Optional[int] = None
+    warning_message: Optional[str] = None
+    can_generate_score: Optional[bool] = True
+    can_play_stem: Optional[bool] = False
+    transcription_attempts: Optional[int] = 0
 
 class TranscriptionCreate(TranscriptionBase):
     project_id: Optional[int] = None
@@ -119,6 +123,10 @@ class TranscriptionUpdate(BaseModel):
     is_processed: Optional[bool] = None
     processing_status: Optional[str] = None
     processing_error: Optional[str] = None
+    warning_message: Optional[str] = None
+    can_generate_score: Optional[bool] = None
+    can_play_stem: Optional[bool] = None
+    transcription_attempts: Optional[int] = None
 
 class TranscriptionInDBBase(TranscriptionBase):
     id: int
@@ -227,3 +235,9 @@ class WorkerCompleteRequest(BaseModel):
 class WorkerFailedRequest(BaseModel):
     error: Optional[str] = None
     internal_logs: Optional[Any] = None
+
+
+class RetryTranscriptionRequest(BaseModel):
+    lower_threshold: bool = True
+    alternate_settings: Optional[dict[str, Any]] = None
+    selected_stem: Optional[str] = None

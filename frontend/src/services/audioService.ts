@@ -44,6 +44,10 @@ export interface Transcription {
   project_id?: number | null;
   is_processed: boolean;
   processing_error?: string | null;
+  warning_message?: string | null;
+  can_generate_score?: boolean | null;
+  can_play_stem?: boolean | null;
+  transcription_attempts?: number | null;
   notes_data?: string | null;
   chords_data?: string | null;
   tablature_data?: string | null;
@@ -75,8 +79,11 @@ export interface TranscriptionStatus {
   transcription_id: number;
   progress?: number;
   error?: string;
+  warning?: string | null;
   message?: string;
   selected_stem?: StemSelection | null;
+  can_play_stem?: boolean;
+  can_generate_score?: boolean;
   queue_position?: number | null;
   estimated_wait_time?: number | null;
   duplicate_reused?: boolean;
@@ -89,6 +96,7 @@ export type ProcessingStatusValue =
   | "queued"
   | "processing"
   | "completed"
+  | "completed_with_warning"
   | "failed"
   | "cancelled"
   | "deleted";
@@ -335,6 +343,30 @@ const audioService = {
     const response = await axios.post(
       `${API_BASE_URL}/audio/${transcriptionId}/tracks/${trackId}/reprocess`,
       {},
+      {
+        headers: getAuthHeader(token),
+      },
+    );
+
+    return response.data;
+  },
+
+  retryTranscription: async (
+    transcriptionId: number,
+    token: string,
+    options?: {
+      lower_threshold?: boolean;
+      alternate_settings?: Record<string, unknown>;
+      selected_stem?: StemSelection;
+    },
+  ): Promise<TranscriptionStatus> => {
+    const response = await axios.post(
+      `${API_BASE_URL}/audio/${transcriptionId}/retry`,
+      {
+        lower_threshold: options?.lower_threshold ?? true,
+        alternate_settings: options?.alternate_settings,
+        selected_stem: options?.selected_stem,
+      },
       {
         headers: getAuthHeader(token),
       },

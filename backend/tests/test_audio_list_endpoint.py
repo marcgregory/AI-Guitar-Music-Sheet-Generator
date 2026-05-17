@@ -627,6 +627,119 @@ def test_worker_complete_saves_cloudinary_outputs_and_track_metadata():
         session.close()
 
 
+def test_status_no_note_warning_is_completed_and_playable(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "warning-owner", "warning-owner@example.com")
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"stem")
+        transcription = models.Transcription(
+            title="No note warning",
+            user_id=owner.id,
+            selected_stem="other",
+            separated_audio_file_path=str(stem_path),
+            notes_data='{"notes": [], "message": "No note events detected for this stem."}',
+            is_processed=True,
+            processing_status="completed_with_warning",
+            warning_message="No note events detected for this stem.",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        session.add(models.InstrumentTrack(
+            transcription_id=transcription_id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            stem_audio_path=str(stem_path),
+            processing_status="completed_with_warning",
+            confidence_notes="No note events detected for this stem.",
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("warning-owner"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "status": "completed",
+        "warning": "No note events detected for this stem.",
+        "transcription_id": transcription_id,
+        "selected_stem": "other",
+        "can_play_stem": True,
+        "can_generate_score": False,
+        "queue_position": None,
+        "estimated_wait_time": None,
+    }
+
+
+def test_retry_transcription_endpoint_queues_lower_threshold_retry(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "retry-owner", "retry-owner@example.com")
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"stem")
+        transcription = models.Transcription(
+            title="Retry warning",
+            user_id=owner.id,
+            selected_stem="other",
+            separated_audio_file_path=str(stem_path),
+            notes_data='{"notes": []}',
+            is_processed=True,
+            processing_status="completed_with_warning",
+            warning_message="No note events detected for this stem.",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        session.add(models.InstrumentTrack(
+            transcription_id=transcription_id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            stem_audio_path=str(stem_path),
+            processing_status="completed_with_warning",
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_transcription_processing", return_value="retry-task") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/retry",
+            headers=auth_headers("retry-owner"),
+            json={"lower_threshold": True},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "processing"
+    assert payload["selected_stem"] == "other"
+    assert payload["can_play_stem"] is True
+    assert payload["can_generate_score"] is True
+    assert start_mock.call_args.kwargs["detection_sensitivity"] == "high"
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "processing"
+        assert refreshed.warning_message is None
+        assert refreshed.celery_task_id == "retry-task"
+    finally:
+        session.close()
+
+
 def test_worker_failed_saves_sanitized_error_without_internal_logs():
     reset_database()
     original_token = config.settings.WORKER_API_TOKEN

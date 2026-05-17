@@ -34,6 +34,11 @@ STAFF_NOTATION_INSTRUMENTS = ("piano",)
 DRUM_RHYTHM_INSTRUMENTS = ("drums",)
 NOTE_TRANSCRIPTION_INSTRUMENTS = TAB_TRANSCRIPTION_INSTRUMENTS + STAFF_NOTATION_INSTRUMENTS
 TRACK_REPROCESS_INSTRUMENTS = NOTE_TRANSCRIPTION_INSTRUMENTS + DRUM_RHYTHM_INSTRUMENTS
+PLAYBACK_ONLY_INSTRUMENTS = ("vocals", "drums")
+NO_NOTES_WARNING = "No note events detected for this stem."
+UNSUPPORTED_STEM_WARNING = (
+    "Stem separated successfully, but notation generation is not supported for this stem in the MVP."
+)
 
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
 STEM_TO_ANALYSIS_INSTRUMENT = {
@@ -98,18 +103,79 @@ def average_drum_hit_confidence(drum_result: Dict[str, Any]) -> int | None:
     return int(round(max(0.0, min(1.0, sum(confidences) / len(confidences))) * 100))
 
 
+def stem_can_generate_score(selected_stem: str, analysis_instrument: str) -> bool:
+    if selected_stem in {"vocals", "drums"}:
+        return False
+    return analysis_instrument in NOTE_TRANSCRIPTION_INSTRUMENTS
+
+
+def stem_playback_available(transcription) -> bool:
+    if getattr(transcription, "separated_audio_url", None):
+        return True
+    if getattr(transcription, "separated_audio_file_path", None):
+        return Path(transcription.separated_audio_file_path).exists()
+    return any(
+        track.stem_audio_path and Path(track.stem_audio_path).exists()
+        for track in getattr(transcription, "instrument_tracks", [])
+    )
+
+
+def set_transcription_warning(
+    transcription,
+    warning: str,
+    *,
+    can_generate_score: bool = False,
+) -> None:
+    transcription.warning_message = warning
+    transcription.processing_error = None
+    transcription.can_generate_score = can_generate_score
+    transcription.can_play_stem = True
+
+
+def pitch_debug_payload(stem_path: str, selected_stem: str, result: dict | None = None) -> dict:
+    try:
+        stats = audio.audio_debug_stats(stem_path)
+    except Exception as exc:
+        stats = {"audio_debug_error": str(exc)}
+    result = result or {}
+    notes = result.get("notes") if isinstance(result, dict) else []
+    if not isinstance(notes, list):
+        notes = []
+    return {
+        **stats,
+        "selected_stem": selected_stem,
+        "confidence_stats": result.get("confidence_stats") or audio.note_confidence_stats(notes),
+        "model_outputs": result.get("model_outputs"),
+        "total_notes_detected": result.get("total_notes_detected", len(notes)),
+    }
+
+
 def generate_single_track_transcription_output(
     track: models.InstrumentTrack,
     db_session: Session,
     *,
     clear_existing: bool = False,
+    detection_sensitivity: str = "normal",
+    selected_stem: str | None = None,
 ) -> models.InstrumentTrack:
     """Generate notes/rhythm, tab data, and notation for one supported instrument track."""
+    if track.instrument_type in PLAYBACK_ONLY_INSTRUMENTS:
+        track.processing_status = "completed_with_warning"
+        track.confidence_notes = UNSUPPORTED_STEM_WARNING
+        track.notes_json = json.dumps({
+            "notes": [],
+            "message": UNSUPPORTED_STEM_WARNING,
+            "stem_capability": "playback_only",
+        })
+        track.tab_json = None
+        track.notation_json = None
+        db_session.add(track)
+        db_session.commit()
+        return track
+
     if track.instrument_type not in TRACK_REPROCESS_INSTRUMENTS:
-        track.processing_status = "failed"
-        track.confidence_notes = (
-            "Single-track reprocessing currently supports guitar, bass, piano, and drum tracks."
-        )
+        track.processing_status = "completed_with_warning"
+        track.confidence_notes = UNSUPPORTED_STEM_WARNING
         db_session.add(track)
         db_session.commit()
         return track
@@ -137,7 +203,18 @@ def generate_single_track_transcription_output(
         if track.instrument_type in DRUM_RHYTHM_INSTRUMENTS:
             drum_result = audio.analyze_drum_rhythm(track.stem_audio_path)
             if not has_drum_hits(drum_result):
-                raise RuntimeError("Drum rhythm analysis completed but found no usable hits")
+                track.notes_json = json.dumps({
+                    "drum_hits": [],
+                    "message": "Drum stem separated successfully, but no usable hits were detected.",
+                    "stem_capability": "playback_only",
+                })
+                track.tab_json = None
+                track.notation_json = None
+                track.processing_status = "completed_with_warning"
+                track.confidence_notes = "No drum hits detected for this stem."
+                db_session.add(track)
+                db_session.commit()
+                return track
 
             track.notes_json = json.dumps(drum_result)
             track.tab_json = None
@@ -146,9 +223,62 @@ def generate_single_track_transcription_output(
             track.confidence_notes = None
             track.processing_status = "completed"
         else:
-            pitch_result = audio.detect_pitch(track.stem_audio_path, pitch_temp_dir)
+            try:
+                normalized_stem_path = audio.normalize_audio_volume(track.stem_audio_path)
+            except Exception as normalize_error:
+                logger.warning(
+                    "Could not normalize separated stem for track %s; using original stem: %s",
+                    track.id,
+                    normalize_error,
+                )
+                normalized_stem_path = track.stem_audio_path
+            logger.info(
+                "Starting note detection for transcription track %s with stats %s",
+                track.id,
+                pitch_debug_payload(normalized_stem_path, selected_stem or track.instrument_type),
+            )
+            pitch_result = audio.detect_pitch(
+                normalized_stem_path,
+                pitch_temp_dir,
+                sensitivity=detection_sensitivity,
+            )
+            logger.info(
+                "Note detection output for transcription track %s: %s",
+                track.id,
+                pitch_debug_payload(normalized_stem_path, selected_stem or track.instrument_type, pitch_result),
+            )
+            if not has_note_events(pitch_result) and detection_sensitivity != "high":
+                logger.info(
+                    "Retrying note detection for transcription track %s with fallback sensitivity",
+                    track.id,
+                )
+                pitch_result = audio.detect_pitch(
+                    normalized_stem_path,
+                    pitch_temp_dir,
+                    sensitivity="high",
+                )
+                logger.info(
+                    "Fallback note detection output for transcription track %s: %s",
+                    track.id,
+                    pitch_debug_payload(normalized_stem_path, selected_stem or track.instrument_type, pitch_result),
+                )
             if not has_note_events(pitch_result):
-                raise RuntimeError("Pitch detection completed but found no usable note events")
+                track.notes_json = json.dumps({
+                    "notes": [],
+                    "message": NO_NOTES_WARNING,
+                    "debug": pitch_debug_payload(
+                        normalized_stem_path,
+                        selected_stem or track.instrument_type,
+                        pitch_result,
+                    ),
+                })
+                track.tab_json = None
+                track.notation_json = None
+                track.processing_status = "completed_with_warning"
+                track.confidence_notes = NO_NOTES_WARNING
+                db_session.add(track)
+                db_session.commit()
+                return track
 
             track.notes_json = json.dumps(pitch_result)
             if track.instrument_type in TAB_TRANSCRIPTION_INSTRUMENTS:
@@ -316,13 +446,11 @@ def generate_derived_outputs(transcription, db_session: Session) -> None:
 
 
 def cleanup_transient_audio_files(transcription, db_session: Session) -> None:
-    """Delete stored audio artifacts once analysis data has been persisted."""
+    """Delete source scratch files while retaining separated stems for playback/retry."""
     path_fields = [
         "audio_file_path",
         "preprocessed_audio_file_path",
     ]
-    if transcription.separated_audio_url:
-        path_fields.append("separated_audio_file_path")
     if transcription.midi_file_url:
         path_fields.append("midi_file_path")
     if transcription.tab_file_url:
@@ -346,11 +474,6 @@ def cleanup_transient_audio_files(transcription, db_session: Session) -> None:
             continue
 
         setattr(transcription, field_name, None)
-        if field_name == "separated_audio_file_path":
-            for track in transcription.instrument_tracks:
-                if track.stem_audio_path == path_value:
-                    track.stem_audio_path = None
-                    db_session.add(track)
         changed = True
 
     if changed:
@@ -506,7 +629,12 @@ def ensure_duration_within_mvp_limit(audio_path: str) -> int | None:
 
 
 @celery_app.task(bind=True)
-def process_audio_transcription(self, transcription_id: int):
+def process_audio_transcription(
+    self,
+    transcription_id: int,
+    detection_sensitivity: str | None = None,
+    selected_stem_override: str | None = None,
+):
     """
     Process audio transcription asynchronously.
 
@@ -550,20 +678,41 @@ def process_audio_transcription(self, transcription_id: int):
                 "message": "Transcription was deleted before processing started",
             }
 
-        selected_stem = transcription.selected_stem or "other"
+        selected_stem = (selected_stem_override or transcription.selected_stem or "other").strip().lower()
         if selected_stem not in VALID_SELECTED_STEMS:
             raise ValueError(
                 f"selected_stem must be one of: {', '.join(sorted(VALID_SELECTED_STEMS))}"
             )
+        if selected_stem != transcription.selected_stem:
+            transcription.selected_stem = selected_stem
 
         analysis_instrument = STEM_TO_ANALYSIS_INSTRUMENT[selected_stem]
+        detection_sensitivity = detection_sensitivity or getattr(
+            settings,
+            "NOTE_DETECTION_SENSITIVITY",
+            "normal",
+        )
         transcription.processing_status = "processing"
         transcription.queue_position = 0
         transcription.estimated_wait_time = 0
         transcription.processing_error = None
+        transcription.warning_message = None
+        transcription.can_generate_score = stem_can_generate_score(selected_stem, analysis_instrument)
+        transcription.can_play_stem = stem_playback_available(transcription)
+        transcription.transcription_attempts = (transcription.transcription_attempts or 0) + 1
         db_session.add(transcription)
         db_session.commit()
         ensure_transcription_not_deleted(transcription)
+
+        existing_selected_track = db_session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription.id,
+            models.InstrumentTrack.instrument_type == analysis_instrument,
+        ).first()
+        can_reuse_selected_stem = (
+            existing_selected_track
+            and existing_selected_track.stem_audio_path
+            and Path(existing_selected_track.stem_audio_path).exists()
+        )
 
         # Update task state
         update_task_state(self, state="PROGRESS", meta={"step": "preprocessing_audio"})
@@ -590,7 +739,9 @@ def process_audio_transcription(self, transcription_id: int):
                 "message": "Derived music outputs regenerated from stored analysis"
             }
 
-        if not preprocessed_path or not os.path.exists(preprocessed_path):
+        if can_reuse_selected_stem:
+            preprocessed_path = None
+        elif not preprocessed_path or not os.path.exists(preprocessed_path):
             if not audio_file_path or not os.path.exists(audio_file_path):
                 raise ValueError(f"Audio file not found: {audio_file_path}")
             # Preprocess the audio
@@ -600,43 +751,55 @@ def process_audio_transcription(self, transcription_id: int):
             db_session.add(transcription)
             db_session.commit()
 
-        detected_duration = ensure_duration_within_mvp_limit(preprocessed_path)
-        if detected_duration is not None:
-            transcription.duration = detected_duration
-            db_session.add(transcription)
-            db_session.commit()
+        if preprocessed_path:
+            detected_duration = ensure_duration_within_mvp_limit(preprocessed_path)
+            if detected_duration is not None:
+                transcription.duration = detected_duration
+                db_session.add(transcription)
+                db_session.commit()
         ensure_transcription_not_deleted(transcription)
 
         # Update task state
         update_task_state(self, state="PROGRESS", meta={"step": "source_separation"})
 
-        sep_temp_dir = tempfile.mkdtemp()
-        try:
-            selected_stem_path = audio.separate_selected_stem(
-                preprocessed_path,
-                selected_stem,
-                sep_temp_dir,
-            )
-            selected_track = persist_selected_stem_track(
-                transcription,
-                selected_stem,
-                selected_stem_path,
-                db_session,
-            )
+        if can_reuse_selected_stem:
+            selected_track = existing_selected_track
             separated_path = selected_track.stem_audio_path
-        except Exception as e:
-            update_task_state(self, state="PROGRESS", meta={"step": "source_separation_failed"})
-            logger.exception(
-                "Selected-stem separation failed for transcription %s using stem %s",
-                transcription_id,
-                selected_stem,
-            )
-            raise RuntimeError(
-                "Could not isolate the selected stem. "
-                "Try a shorter or clearer song section, or choose a different stem."
-            ) from e
-        finally:
-            shutil.rmtree(sep_temp_dir, ignore_errors=True)
+            transcription.separated_audio_file_path = separated_path
+            transcription.can_play_stem = True
+            db_session.add(transcription)
+            db_session.commit()
+        else:
+            sep_temp_dir = tempfile.mkdtemp()
+            try:
+                selected_stem_path = audio.separate_selected_stem(
+                    preprocessed_path,
+                    selected_stem,
+                    sep_temp_dir,
+                )
+                selected_track = persist_selected_stem_track(
+                    transcription,
+                    selected_stem,
+                    selected_stem_path,
+                    db_session,
+                )
+                separated_path = selected_track.stem_audio_path
+                transcription.can_play_stem = True
+                db_session.add(transcription)
+                db_session.commit()
+            except Exception as e:
+                update_task_state(self, state="PROGRESS", meta={"step": "source_separation_failed"})
+                logger.exception(
+                    "Selected-stem separation failed for transcription %s using stem %s",
+                    transcription_id,
+                    selected_stem,
+                )
+                raise RuntimeError(
+                    "Could not isolate the selected stem. "
+                    "Try a shorter or clearer song section, or choose a different stem."
+                ) from e
+            finally:
+                shutil.rmtree(sep_temp_dir, ignore_errors=True)
         db_session.refresh(transcription)
         ensure_transcription_not_deleted(transcription)
 
@@ -648,6 +811,8 @@ def process_audio_transcription(self, transcription_id: int):
                 selected_track,
                 db_session,
                 clear_existing=True,
+                detection_sensitivity=detection_sensitivity,
+                selected_stem=selected_stem,
             )
             db_session.refresh(selected_track)
 
@@ -662,8 +827,21 @@ def process_audio_transcription(self, transcription_id: int):
                 db_session.add(transcription)
                 db_session.commit()
                 raise RuntimeError(transcription.processing_error)
+            if selected_track.processing_status == "completed_with_warning":
+                set_transcription_warning(
+                    transcription,
+                    selected_track.confidence_notes or NO_NOTES_WARNING,
+                    can_generate_score=False,
+                )
+                transcription.midi_file_path = None
+                transcription.midi_file_url = None
+                transcription.midi_file_public_id = None
+                transcription.tab_file_path = None
+                transcription.tab_file_url = None
+                transcription.tab_file_public_id = None
 
             if has_note_events(transcription.notes_data):
+                transcription.can_generate_score = True
                 try:
                     midi_file_path = midi.save_midi_from_transcription(
                         transcription.notes_data,
@@ -723,6 +901,11 @@ def process_audio_transcription(self, transcription_id: int):
                     "is not enabled in this MVP yet."
                 ),
             })
+            set_transcription_warning(
+                transcription,
+                UNSUPPORTED_STEM_WARNING,
+                can_generate_score=False,
+            )
             db_session.add(transcription)
             db_session.commit()
 
@@ -842,10 +1025,19 @@ def process_audio_transcription(self, transcription_id: int):
 
         # Mark as processed (placeholder - actual implementation will come later)
         transcription.is_processed = True
-        transcription.processing_status = "completed"
+        transcription.processing_status = (
+            "completed_with_warning"
+            if transcription.warning_message and not transcription.can_generate_score
+            else "completed"
+        )
         transcription.queue_position = None
         transcription.estimated_wait_time = None
-        if has_note_events(transcription.notes_data) or analysis_instrument in {"drums", "vocals"}:
+        transcription.can_play_stem = stem_playback_available(transcription)
+        transcription.can_generate_score = bool(
+            stem_can_generate_score(selected_stem, analysis_instrument)
+            and has_note_events(transcription.notes_data)
+        )
+        if has_note_events(transcription.notes_data) or transcription.warning_message:
             transcription.processing_error = None
 
         # Placeholder results for other data types - will be replaced with actual processing in subsequent tasks
@@ -859,7 +1051,11 @@ def process_audio_transcription(self, transcription_id: int):
 
         return {
             "status": "completed",
+            "warning": transcription.warning_message,
             "transcription_id": transcription_id,
+            "selected_stem": selected_stem,
+            "can_play_stem": transcription.can_play_stem,
+            "can_generate_score": transcription.can_generate_score,
             "message": "Audio processing completed successfully"
         }
 

@@ -27,7 +27,8 @@ Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For guitar tran
 
 Queue policy:
 - New jobs should be queued instead of running heavy AI work in request handlers.
-- Status responses should distinguish `pending`, `queued`, `processing`, `completed`, and `failed`.
+- Status responses should distinguish `pending`, `queued`, `processing`, `completed`, `completed_with_warning`, and `failed`.
+- A no-note result after successful stem separation is `completed_with_warning`/API `completed`, not `failed`.
 - In `PROCESSING_MODE=local`, Celery worker concurrency must be `1` and should process very short files only.
 - In `PROCESSING_MODE=modal`, Modal/serverless GPU handles the Demucs workload.
 - In `PROCESSING_MODE=external_worker`, a manual worker pulls jobs and reports results.
@@ -64,6 +65,28 @@ Worker endpoints to add/document:
 - `GET /api/v1/worker/jobs/next`
 - `POST /api/v1/worker/jobs/{transcription_id}/complete`
 - `POST /api/v1/worker/jobs/{transcription_id}/failed`
+- `POST /api/v1/audio/{transcription_id}/retry`
+
+Warning/capability rules:
+
+- Preserve separated stem playback, local/cloud stem references, waveform/rhythm data, and stem metadata when note detection finds zero notes.
+- Set `warning_message`, `can_play_stem=true`, `can_generate_score=false`, and increment `transcription_attempts`.
+- Return status payloads like `{"status":"completed","warning":"No note events detected for this stem.","can_play_stem":true,"can_generate_score":false}`.
+- Disable only MIDI/MusicXML/TAB export generation for no-note stems.
+
+Fallback transcription behavior:
+
+- Lower the default note confidence threshold and expose sensitivity through configuration.
+- Normalize separated stem volume before pitch transcription.
+- Retry pitch detection with lower-threshold/high-sensitivity settings when the first pass detects zero notes.
+- Log RMS loudness, peak amplitude, onset count, note confidence stats, selected stem, and transcription model output metadata.
+
+Stem support matrix:
+
+- `vocals`: playback only.
+- `drums`: playback only.
+- `bass`: playback only or simple notation when note detection succeeds.
+- `other`: attempt guitar transcription.
 
 Modal worker rules:
 

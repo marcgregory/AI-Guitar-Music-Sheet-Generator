@@ -21,6 +21,33 @@ User Upload / YouTube URL + selected stem
 -> Frontend polls status and shows playback/export/download
 ```
 
+## Warning States vs Failures
+
+Stem separation and notation generation are separate capability layers. If Demucs/source separation succeeds, the transcription record should not be marked failed just because note detection returns zero playable notes. In that case the backend records `processing_status=completed_with_warning` or returns API status `completed`, sets `warning_message`, preserves `separated_audio_file_path`/`separated_audio_url` and track stem metadata, and exposes:
+
+- `can_play_stem=true`
+- `can_generate_score=false`
+- `warning="No note events detected for this stem."`
+
+Only hard blockers such as missing source audio, failed separation, deleted records, or worker infrastructure errors should become `failed`. MIDI, MusicXML, and TAB endpoints return unavailable/export errors when `can_generate_score=false`, while stem preview remains available.
+
+## Stem Capability Matrix
+
+For the MVP:
+
+- `vocals`: playback only.
+- `drums`: playback only.
+- `bass`: playback plus simple notation when note detection succeeds.
+- `other`: playback plus guitar-style transcription attempt.
+
+Unsupported notation for a valid separated stem is a warning state, not a processing failure.
+
+## Fallback Transcription and Retry Flow
+
+The note-detection pipeline normalizes separated stem volume before transcription, logs RMS loudness, peak amplitude, onset count, confidence statistics, selected stem, and model output metadata, then retries with lower threshold/high-sensitivity settings if the first pass detects zero notes.
+
+Users can call `POST /api/v1/audio/{transcription_id}/retry` with lower-threshold mode and an optional alternate `selected_stem`. Same-stem retry can reuse the retained separated stem. Alternate-stem retry requires the original/preprocessed source to still be available so Demucs can run again.
+
 The old architecture is replaced:
 
 ```txt

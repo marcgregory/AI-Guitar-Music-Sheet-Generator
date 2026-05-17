@@ -75,6 +75,10 @@ class Transcription(Base):
     project_id = Column(Integer, ForeignKey("projects.id"))
     is_processed = Column(Boolean, default=False)
     processing_error = Column(Text, nullable=True)
+    warning_message = Column(Text, nullable=True)
+    can_generate_score = Column(Boolean, default=True, nullable=False)
+    can_play_stem = Column(Boolean, default=False, nullable=False)
+    transcription_attempts = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

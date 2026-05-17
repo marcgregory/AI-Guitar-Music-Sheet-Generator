@@ -70,6 +70,20 @@ def _sanitize_worker_error(error: str | None) -> str:
     return cleaned[:500]
 
 
+def _payload_has_note_events(value: Any) -> bool:
+    if isinstance(value, list):
+        return len(value) > 0
+    if isinstance(value, dict):
+        notes = value.get("notes")
+        pitch_info = value.get("pitch_info")
+        return (
+            isinstance(notes, list) and len(notes) > 0
+        ) or (
+            isinstance(pitch_info, list) and len(pitch_info) > 0
+        )
+    return False
+
+
 def _build_worker_job(transcription: models.Transcription, request: Request) -> schemas.WorkerJob:
     selected_stem = transcription.selected_stem or "other"
     if selected_stem not in VALID_SELECTED_STEMS:
@@ -150,7 +164,19 @@ async def complete_worker_job(
     transcription.tablature_data = _json_or_text(payload.tablature_data)
     transcription.notation_data = _json_or_text(payload.notation_data)
     transcription.chord_chart_data = _json_or_text(payload.chord_chart_data)
-    transcription.processing_status = "completed"
+    notes_available = _payload_has_note_events(payload.notes_data)
+    warning_message = None
+    if selected_stem := (transcription.selected_stem or "other"):
+        if selected_stem in {"vocals", "drums"}:
+            warning_message = (
+                "Stem separated successfully, but notation generation is not supported for this stem in the MVP."
+            )
+        elif not notes_available:
+            warning_message = "No note events detected for this stem."
+    transcription.warning_message = warning_message
+    transcription.can_play_stem = bool(payload.separated_audio_url)
+    transcription.can_generate_score = bool(notes_available and not warning_message)
+    transcription.processing_status = "completed_with_warning" if warning_message else "completed"
     transcription.is_processed = True
     transcription.processing_error = None
     transcription.queue_position = None
@@ -180,7 +206,9 @@ async def complete_worker_job(
     track.tab_json = transcription.tablature_data
     track.notation_json = transcription.notation_data
     track.confidence_score = payload.confidence
-    track.processing_status = "completed"
+    track.processing_status = "completed_with_warning" if warning_message else "completed"
+    if warning_message and not track.confidence_notes:
+        track.confidence_notes = warning_message
     db_session.add(track)
 
     db_session.add(transcription)

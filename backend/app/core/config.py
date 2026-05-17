@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     DEMUCS_GUITAR_MODEL: str = "htdemucs"
     DEMUCS_FALLBACK_MODEL: str = "htdemucs"
     DEMUCS_CMD_TIMEOUT_SECONDS: int = 1800
+    NOTE_DETECTION_SENSITIVITY: str = "normal"
+    NOTE_CONFIDENCE_THRESHOLD: float = 0.35
+    NOTE_CONFIDENCE_THRESHOLD_LOW: float = 0.2
 
     @property
     def get_allowed_origins(self) -> List[str]:

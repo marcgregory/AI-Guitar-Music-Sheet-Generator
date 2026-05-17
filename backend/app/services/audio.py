@@ -11,9 +11,12 @@ import sys
 import json
 import csv
 import shutil
+import logging
 
 from app.core.config import settings
 from app.services import storage
+
+logger = logging.getLogger(__name__)
 
 DEMUCS_GUITAR_MODEL = settings.DEMUCS_GUITAR_MODEL
 DEMUCS_FALLBACK_MODEL = settings.DEMUCS_FALLBACK_MODEL
@@ -389,7 +392,87 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
     raise RuntimeError("Source separation completed without usable stems")
 
 
-def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
+def audio_debug_stats(input_file_path: str) -> dict:
+    input_path = Path(storage.normalize_local_path(input_file_path))
+    y, sr = librosa.load(input_path, sr=None, mono=True)
+    rms = float(np.sqrt(np.mean(np.square(y)))) if y.size else 0.0
+    peak = float(np.max(np.abs(y))) if y.size else 0.0
+    try:
+        onset_frames = librosa.onset.onset_detect(y=y, sr=sr, hop_length=512)
+        onset_count = int(len(onset_frames))
+    except Exception:
+        onset_count = 0
+    return {
+        "rms_loudness": rms,
+        "peak_amplitude": peak,
+        "detected_onset_count": onset_count,
+        "sample_rate": int(sr),
+    }
+
+
+def normalize_audio_volume(
+    input_file_path: str,
+    output_file_path: str = None,
+    *,
+    target_peak: float = 0.95,
+) -> str:
+    input_path = Path(storage.normalize_local_path(input_file_path))
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
+
+    if output_file_path is None:
+        output_file_path = str(input_path.parent / f"{input_path.stem}_normalized{input_path.suffix}")
+    output_path = Path(storage.normalize_local_path(output_file_path))
+
+    y, sr = librosa.load(input_path, sr=None, mono=True)
+    peak = float(np.max(np.abs(y))) if y.size else 0.0
+    if peak > 0:
+        y = y * min(target_peak / peak, 20.0)
+    sf.write(output_path, y, sr)
+    return output_path.as_posix()
+
+
+def note_confidence_stats(notes: list) -> dict:
+    confidences = [
+        float(note.get("confidence", 0))
+        for note in notes
+        if isinstance(note, dict)
+    ]
+    if not confidences:
+        return {"count": 0, "min": None, "max": None, "mean": None}
+    return {
+        "count": len(confidences),
+        "min": round(float(np.min(confidences)), 4),
+        "max": round(float(np.max(confidences)), 4),
+        "mean": round(float(np.mean(confidences)), 4),
+    }
+
+
+def _confidence_threshold_for_sensitivity(
+    sensitivity: str | None,
+    note_confidence_threshold: float | None,
+) -> float:
+    if note_confidence_threshold is not None:
+        return float(note_confidence_threshold)
+    if (sensitivity or "").lower() in {"high", "low_threshold", "retry"}:
+        return float(getattr(settings, "NOTE_CONFIDENCE_THRESHOLD_LOW", 0.2))
+    return float(getattr(settings, "NOTE_CONFIDENCE_THRESHOLD", 0.35))
+
+
+def _filter_note_confidence(notes: list, threshold: float) -> list:
+    return [
+        note for note in notes
+        if not isinstance(note, dict) or float(note.get("confidence", 1.0)) >= threshold
+    ]
+
+
+def detect_pitch(
+    input_file_path: str,
+    output_dir: str = None,
+    *,
+    sensitivity: str | None = None,
+    note_confidence_threshold: float | None = None,
+) -> dict:
     """
     Detect pitch (notes) from audio using Spotify Basic Pitch with CREPE as fallback.
 
@@ -410,6 +493,11 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
         output_dir = tempfile.mkdtemp()
     output_path = Path(storage.normalize_local_path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
+    sensitivity = sensitivity or getattr(settings, "NOTE_DETECTION_SENSITIVITY", "normal")
+    confidence_threshold = _confidence_threshold_for_sensitivity(
+        sensitivity,
+        note_confidence_threshold,
+    )
 
     # First, try Basic Pitch
     try:
@@ -418,10 +506,19 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
             from basic_pitch.inference import predict
 
             model_output, _midi_data, note_events = predict(str(input_path))
-            formatted_notes = _format_basic_pitch_note_events(note_events)
+            formatted_notes = _filter_note_confidence(
+                _format_basic_pitch_note_events(note_events),
+                confidence_threshold,
+            )
             return {
                 "notes": formatted_notes,
-                "model_outputs": {},
+                "model_outputs": {
+                    "backend": "basic_pitch.api",
+                    "sensitivity": sensitivity,
+                    "confidence_threshold": confidence_threshold,
+                    "raw_output_summary": str(type(model_output)),
+                },
+                "confidence_stats": note_confidence_stats(formatted_notes),
                 "total_notes_detected": len(formatted_notes)
             }
         except Exception as api_e:
@@ -454,11 +551,20 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
             if not note_event_files:
                 raise FileNotFoundError("Could not find Basic Pitch note-event CSV output")
 
-            formatted_notes = _load_basic_pitch_note_events_csv(note_event_files[0])
+            formatted_notes = _filter_note_confidence(
+                _load_basic_pitch_note_events_csv(note_event_files[0]),
+                confidence_threshold,
+            )
 
             return {
                 "notes": formatted_notes,
-                "model_outputs": {},
+                "model_outputs": {
+                    "backend": "basic_pitch.cli",
+                    "sensitivity": sensitivity,
+                    "confidence_threshold": confidence_threshold,
+                    "stdout": result.stdout[-1000:],
+                },
+                "confidence_stats": note_confidence_stats(formatted_notes),
                 "total_notes_detected": len(formatted_notes)
             }
         else:
@@ -467,10 +573,19 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
     except Exception as e:
         # If Basic Pitch fails, try CREPE
         try:
-            return _detect_pitch_crepe(input_file_path, output_dir)
+            return _detect_pitch_crepe(
+                input_file_path,
+                output_dir,
+                confidence_threshold=confidence_threshold,
+                sensitivity=sensitivity,
+            )
         except Exception as crepe_e:
             try:
-                return _detect_pitch_librosa(input_file_path)
+                return _detect_pitch_librosa(
+                    input_file_path,
+                    confidence_threshold=confidence_threshold,
+                    sensitivity=sensitivity,
+                )
             except Exception as librosa_e:
                 # If all pitch backends fail, raise an error
                 raise RuntimeError(
@@ -514,7 +629,13 @@ def _load_basic_pitch_note_events_csv(csv_path: Path) -> list:
     return _format_basic_pitch_note_events(events)
 
 
-def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
+def _detect_pitch_crepe(
+    input_file_path: str,
+    output_dir: str = None,
+    *,
+    confidence_threshold: float = 0.35,
+    sensitivity: str = "normal",
+) -> dict:
     """
     Detect pitch (notes) from audio using CREPE as a fallback.
 
@@ -554,9 +675,6 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
             audio, sr, viterbi=True, step_size=10
         )
 
-        # Filter out low-confidence predictions
-        # We'll use a confidence threshold of 0.5
-        confidence_threshold = 0.5
         valid = confidence > confidence_threshold
         time = time[valid]
         frequency = frequency[valid]
@@ -619,7 +737,12 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
 
         return {
             "notes": notes,
-            "model_outputs": {},  # CREPE doesn't provide the same model outputs as Basic Pitch
+            "model_outputs": {
+                "backend": "crepe",
+                "sensitivity": sensitivity,
+                "confidence_threshold": confidence_threshold,
+            },
+            "confidence_stats": note_confidence_stats(notes),
             "total_notes_detected": len(notes)
         }
 
@@ -627,7 +750,12 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
         raise RuntimeError(f"CREPE pitch detection failed: {str(e)}")
 
 
-def _detect_pitch_librosa(input_file_path: str) -> dict:
+def _detect_pitch_librosa(
+    input_file_path: str,
+    *,
+    confidence_threshold: float = 0.35,
+    sensitivity: str = "normal",
+) -> dict:
     """
     Detect monophonic pitch using librosa pYIN as a dependency-light fallback.
 
@@ -652,7 +780,7 @@ def _detect_pitch_librosa(input_file_path: str) -> dict:
     )
 
     times = librosa.frames_to_time(np.arange(len(f0)), sr=sr, hop_length=256)
-    valid = voiced_flag & ~np.isnan(f0)
+    valid = voiced_flag & ~np.isnan(f0) & (voiced_prob >= confidence_threshold)
     if not np.any(valid):
         return {"notes": [], "model_outputs": {}, "total_notes_detected": 0}
 
@@ -709,7 +837,12 @@ def _detect_pitch_librosa(input_file_path: str) -> dict:
 
     return {
         "notes": notes,
-        "model_outputs": {"backend": "librosa.pyin"},
+        "model_outputs": {
+            "backend": "librosa.pyin",
+            "sensitivity": sensitivity,
+            "confidence_threshold": confidence_threshold,
+        },
+        "confidence_stats": note_confidence_stats(notes),
         "total_notes_detected": len(notes),
     }
 
