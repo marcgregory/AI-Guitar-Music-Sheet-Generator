@@ -1,8 +1,10 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 from urllib.parse import urlsplit
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(case_sensitive=True, env_file=".env")
+
     PROJECT_NAME: str = "AI Guitar Music Sheet Generator"
     API_V1_STR: str = "/api/v1"
 
@@ -36,6 +38,12 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "/app/uploads"
     MAX_SONG_DURATION_SECONDS: int = 5 * 60  # Railway-friendly MVP recommendation
     ALLOWED_AUDIO_EXTENSIONS: set = {".mp3", ".wav"}
+
+    # YouTube imports
+    # Set YOUTUBE_COOKIES_FILE to a Netscape cookies.txt path in the container,
+    # or YOUTUBE_COOKIES to the raw cookies.txt contents for hosted deploys.
+    YOUTUBE_COOKIES_FILE: str | None = None
+    YOUTUBE_COOKIES: str | None = None
 
     # Cloudinary durable storage
     CLOUDINARY_URL: str | None = None
@@ -80,9 +88,5 @@ class Settings(BaseSettings):
             return f"{parsed.scheme}://{parsed.netloc}"
 
         return origin.rstrip("/")
-
-    class Config:
-        case_sensitive = True
-        env_file = ".env"
 
 settings = Settings()

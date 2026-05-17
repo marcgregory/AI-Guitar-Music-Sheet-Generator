@@ -893,6 +893,53 @@ def test_extract_audio_from_youtube_requires_selected_stem():
     assert response.status_code == 422
 
 
+def test_extract_audio_from_youtube_returns_service_unavailable_for_verification_challenge():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-bot-check", "youtube-bot-check@example.com")
+    finally:
+        session.close()
+
+    class RaisingYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def extract_info(self, url, download):
+            raise RuntimeError("Sign in to confirm you're not a bot. Use --cookies for authentication.")
+
+    with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", RaisingYoutubeDL):
+        response = client.post(
+            "/api/v1/audio/youtube",
+            headers=auth_headers("youtube-bot-check"),
+            json={
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "selected_stem": "other",
+            },
+        )
+
+    assert response.status_code == 503
+    assert "YOUTUBE_COOKIES_FILE" in response.json()["detail"]
+
+
+def test_youtube_download_options_include_cookiefile_when_configured():
+    from app.api.v1.endpoints.audio import _build_youtube_download_options
+
+    options = _build_youtube_download_options(
+        unique_filename="song",
+        ffmpeg_path="/usr/bin",
+        cookiefile="/app/secrets/youtube.cookies.txt",
+    )
+
+    assert options["cookiefile"] == "/app/secrets/youtube.cookies.txt"
+
+
 def test_list_instrument_tracks_requires_transcription_access():
     reset_database()
     session = TestingSessionLocal()

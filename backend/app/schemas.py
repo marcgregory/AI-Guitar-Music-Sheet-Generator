@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import Any, Optional
 from datetime import datetime
 
@@ -16,13 +16,12 @@ class UserUpdate(BaseModel):
     password: Optional[str] = Field(None, min_length=8)
 
 class UserInDBBase(UserBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     is_active: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
-
-    class Config:
-        orm_mode = True
 
 class UserInDB(UserInDBBase):
     hashed_password: str
@@ -53,15 +52,14 @@ class ProjectUpdate(BaseModel):
     is_public: Optional[bool] = None
 
 class ProjectInDBBase(ProjectBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     owner_id: int
     is_deleted: Optional[bool] = False
     deleted_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-
-    class Config:
-        orm_mode = True
 
 class ProjectInDB(ProjectInDBBase):
     pass
@@ -129,6 +127,8 @@ class TranscriptionUpdate(BaseModel):
     transcription_attempts: Optional[int] = None
 
 class TranscriptionInDBBase(TranscriptionBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     user_id: int
     project_id: Optional[int] = None
@@ -137,9 +137,6 @@ class TranscriptionInDBBase(TranscriptionBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     chord_chart_data: Optional[str] = None
-
-    class Config:
-        orm_mode = True
 
 class TranscriptionInDB(TranscriptionInDBBase):
     notes_data: Optional[str] = None
@@ -190,12 +187,11 @@ class InstrumentTrackUpdate(BaseModel):
 
 
 class InstrumentTrack(InstrumentTrackBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     created_at: datetime
     updated_at: Optional[datetime] = None
-
-    class Config:
-        orm_mode = True
 
 
 class WorkerJob(BaseModel):

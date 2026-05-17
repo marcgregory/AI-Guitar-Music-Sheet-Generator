@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import tempfile
 import yt_dlp
+from yt_dlp.utils import DownloadError
 import httpx
 from pydantic import BaseModel
 from urllib.parse import parse_qs, urlsplit
@@ -1302,7 +1303,11 @@ def _find_ffmpeg_path():
     return None
 
 
-def _build_youtube_download_options(unique_filename: str, ffmpeg_path: str | None):
+def _build_youtube_download_options(
+    unique_filename: str,
+    ffmpeg_path: str | None,
+    cookiefile: str | None = None,
+):
     """Build yt-dlp options using a simple filename template for Windows."""
     options = {
         'format': 'bestaudio/best',
@@ -1324,8 +1329,60 @@ def _build_youtube_download_options(unique_filename: str, ffmpeg_path: str | Non
 
     if ffmpeg_path:
         options['ffmpeg_location'] = ffmpeg_path
+    if cookiefile:
+        options['cookiefile'] = cookiefile
 
     return options
+
+
+def _write_youtube_cookies_tempfile(cookies_text: str) -> str:
+    if "\\n" in cookies_text and "\n" not in cookies_text:
+        cookies_text = cookies_text.replace("\\n", "\n")
+
+    cookie_file = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".cookies.txt",
+        dir=UPLOAD_DIR,
+        delete=False,
+    )
+    try:
+        cookie_file.write(cookies_text)
+        if not cookies_text.endswith("\n"):
+            cookie_file.write("\n")
+        return cookie_file.name
+    finally:
+        cookie_file.close()
+        os.chmod(cookie_file.name, 0o600)
+
+
+def _get_youtube_cookiefile() -> tuple[str | None, bool]:
+    cookies_file = core.config.settings.YOUTUBE_COOKIES_FILE
+    if cookies_file:
+        return cookies_file, False
+
+    cookies_text = core.config.settings.YOUTUBE_COOKIES
+    if cookies_text:
+        return _write_youtube_cookies_tempfile(cookies_text), True
+
+    return None, False
+
+
+def _is_youtube_verification_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return (
+        "sign in to confirm" in message
+        or "not a bot" in message
+        or "use --cookies-from-browser or --cookies" in message
+    )
+
+
+def _youtube_verification_detail() -> str:
+    return (
+        "YouTube is requiring sign-in or bot verification for this video. "
+        "Configure YOUTUBE_COOKIES_FILE or YOUTUBE_COOKIES on the backend, "
+        "or upload the audio file directly."
+    )
 
 
 @router.post("/youtube", response_model=schemas.TranscriptionInDB)
@@ -1379,19 +1436,25 @@ async def extract_audio_from_youtube(
     ffmpeg_path = _find_ffmpeg_path()
 
     # Keep yt-dlp's template as a plain filename; paths.home carries the directory.
-    yt_dlp_opts = _build_youtube_download_options(unique_filename, ffmpeg_path)
+    cookiefile, cleanup_cookiefile = _get_youtube_cookiefile()
+    yt_dlp_opts = _build_youtube_download_options(unique_filename, ffmpeg_path, cookiefile)
 
     logger.info(f"yt-dlp output directory: {UPLOAD_DIR}")
     logger.info(f"yt-dlp output template: {yt_dlp_opts['outtmpl']}")
     logger.info(f"ffmpeg_path: {ffmpeg_path}")
+    logger.info("yt-dlp cookies configured: %s", bool(cookiefile))
 
     video_title = "YouTube Audio"
 
     try:
         # Download and extract audio in a single pass
-        with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
-            info_dict = ydl.extract_info(youtube_url, download=True)
-            video_title = info_dict.get('title', 'YouTube Audio') if info_dict else 'YouTube Audio'
+        try:
+            with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
+                info_dict = ydl.extract_info(youtube_url, download=True)
+                video_title = info_dict.get('title', 'YouTube Audio') if info_dict else 'YouTube Audio'
+        finally:
+            if cleanup_cookiefile and cookiefile:
+                _delete_local_file(cookiefile)
 
         # After download, the file should be at the resolved path
         audio_file_path = UPLOAD_DIR / f"{unique_filename}.wav"
@@ -1415,8 +1478,24 @@ async def extract_audio_from_youtube(
 
     except HTTPException:
         raise
+    except DownloadError as e:
+        logger.error(f"YouTube extraction failed: {traceback.format_exc()}")
+        if _is_youtube_verification_error(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_youtube_verification_detail(),
+            ) from e
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"YouTube download failed: {str(e)}",
+        ) from e
     except Exception as e:
         logger.error(f"YouTube extraction failed: {traceback.format_exc()}")
+        if _is_youtube_verification_error(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_youtube_verification_detail(),
+            ) from e
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error extracting audio from YouTube: {str(e)}"
