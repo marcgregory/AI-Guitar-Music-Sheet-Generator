@@ -17,13 +17,18 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg")
     .pip_install(
-        "fastapi[standard]==0.115.6",
-        "numpy==1.26.4",
-        "demucs==4.0.1",
-        "torch==2.1.0",
-        "torchaudio==2.1.0",
-        "cloudinary==1.44.1",
-        "requests==2.32.3",
+    "numpy==1.26.4",
+    )
+    .pip_install(
+    "torch==2.2.2",
+    "torchaudio==2.2.2",
+    )
+    .pip_install(
+    "demucs==4.0.1",
+    "librosa==0.10.1",
+    "fastapi[standard]==0.115.6",
+    "cloudinary==1.44.1",
+    "requests==2.32.3",
     )
 )
 
@@ -36,6 +41,9 @@ VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
 DEFAULT_DEMUCS_MODEL = "htdemucs"
 DEFAULT_TIMEOUT_SECONDS = 1800
 
+from demucs.pretrained import get_model
+
+MODEL = get_model(DEFAULT_DEMUCS_MODEL)
 
 def _worker_headers() -> dict[str, str]:
     token = os.environ.get("WORKER_API_TOKEN")

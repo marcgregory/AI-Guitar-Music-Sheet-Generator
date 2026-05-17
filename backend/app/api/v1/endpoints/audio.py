@@ -170,8 +170,8 @@ def _trigger_modal_worker(transcription_id: int) -> None:
             modal_trigger_url,
             json=_build_worker_payload_for_modal(transcription),
             headers=headers,
-            timeout=10.0,
-        )
+            timeout=120.0,
+)
         response.raise_for_status()
         logger.info("Triggered Modal worker for transcription %s", transcription_id)
     except Exception as exc:
