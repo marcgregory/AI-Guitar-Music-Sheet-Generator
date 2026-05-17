@@ -173,6 +173,11 @@ async def complete_worker_job(
             )
         elif not notes_available:
             warning_message = "No note events detected for this stem."
+    if warning_message and not transcription.notes_data:
+        transcription.notes_data = _json_or_text({
+            "notes": [],
+            "message": warning_message,
+        })
     transcription.warning_message = warning_message
     transcription.can_play_stem = bool(payload.separated_audio_url)
     transcription.can_generate_score = bool(notes_available and not warning_message)

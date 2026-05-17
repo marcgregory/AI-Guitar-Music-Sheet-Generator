@@ -1,4 +1,5 @@
 import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -623,6 +624,68 @@ def test_worker_complete_saves_cloudinary_outputs_and_track_metadata():
         assert track.instrument_type == "guitar"
         assert track.confidence_score == 84
         assert track.processing_status == "completed"
+    finally:
+        session.close()
+
+
+def test_worker_complete_persists_empty_notes_warning_for_modal_stem():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "modal-warning-owner", "modal-warning-owner@example.com")
+        transcription = models.Transcription(
+            title="Modal warning job",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "separated_audio_url": "https://res.cloudinary.com/demo/video/upload/stem.wav",
+                "separated_audio_public_id": "musicstudio/stem",
+                "confidence": 90,
+                "track_metadata": {
+                    "confidence_notes": "Selected stem separated by Modal/Demucs.",
+                },
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "completed_with_warning"
+    assert payload["warning_message"] == "No note events detected for this stem."
+    assert json.loads(payload["notes_data"]) == {
+        "notes": [],
+        "message": "No note events detected for this stem.",
+    }
+
+    session = TestingSessionLocal()
+    try:
+        track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription_id
+        ).one()
+        assert track.instrument_type == "guitar"
+        assert track.processing_status == "completed_with_warning"
+        assert json.loads(track.notes_json) == {
+            "notes": [],
+            "message": "No note events detected for this stem.",
+        }
+        assert track.confidence_notes == "Selected stem separated by Modal/Demucs."
     finally:
         session.close()
 

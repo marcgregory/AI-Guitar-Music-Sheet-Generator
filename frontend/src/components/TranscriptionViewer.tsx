@@ -220,6 +220,24 @@ const buildAsciiTab = (tablatureData: unknown, chordsData: unknown): string => {
 const hasUsableBlob = (value: unknown): boolean =>
   typeof value === "string" && value.trim().length > 0;
 
+const selectedStemInstrument = (selectedStem: string | null | undefined): string =>
+  ({
+    other: "guitar",
+    bass: "bass",
+    drums: "drums",
+    vocals: "vocals",
+  })[selectedStem || "other"] ?? "guitar";
+
+const trackHasStemAudio = (
+  transcription: Transcription | null,
+  track: InstrumentTrack,
+): boolean =>
+  hasUsableBlob(track.stem_audio_path) ||
+  (
+    hasUsableBlob(transcription?.separated_audio_url) &&
+    track.instrument_type === selectedStemInstrument(transcription?.selected_stem)
+  );
+
 const extractNoteEvents = (notesData: unknown): ScoreNote[] => {
   const parsed = parseJsonField(notesData);
   if (Array.isArray(parsed)) return parsed;
@@ -1438,7 +1456,7 @@ const TranscriptionViewer: React.FC = () => {
         processingStatus: selectedTrack.processing_status,
         confidenceScore: selectedTrack.confidence_score,
         confidenceNotes: selectedTrack.confidence_notes,
-        hasStemAudio: hasUsableBlob(selectedTrack.stem_audio_path),
+        hasStemAudio: trackHasStemAudio(transcription, selectedTrack),
         isGlobal: false,
       };
     }
