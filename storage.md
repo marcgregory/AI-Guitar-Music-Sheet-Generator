@@ -26,6 +26,8 @@ Railway local storage is temporary only. The backend/worker may use local paths 
 
 Temporary files should be cleaned after each job reaches `completed` or `failed`. A failed job should still attempt cleanup and record `processing_error`.
 
+Modal/serverless GPU and external workers should treat Cloudinary as the source of truth: download `original_audio_url`, upload the selected separated stem and supported exports, and report the resulting `secure_url`/`public_id` values back to the backend. No worker local filesystem should be treated as durable storage.
+
 Temporary files should also be cleaned when a user deletes or cancels a queued/processing record. If the active Celery task cannot be stopped reliably in the MVP, the UI record may be hidden/deleted while the worker finishes silently and cleanup still runs.
 
 For preview playback, prefer `separated_audio_url` and redirect to Cloudinary. Local stem paths are development/legacy fallback only and may be removed after durable upload.
@@ -62,4 +64,4 @@ Selective stem processing reduces:
 - processing time
 - repeated Cloudinary storage from duplicate jobs
 
-Phase 1 should recommend 3-5 minute songs and avoid full multi-stem processing. Longer songs and concurrent AI processing belong in later GPU or external-processing phases.
+Phase 1 should recommend 3-5 minute songs and avoid full multi-stem processing. Production-like selected-stem AI work should move to Modal/serverless GPU; Kaggle remains optional/manual testing only.

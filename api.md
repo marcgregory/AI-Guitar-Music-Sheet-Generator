@@ -29,7 +29,12 @@ Expected MVP endpoints:
 - `GET /api/v1/audio/{id}/tracks/{track_id}/preview` to preview the selected separated stem
 - `DELETE /api/v1/transcriptions/{id}` to delete or hide a record and cleanup Cloudinary assets when safe
 - `POST /api/v1/transcriptions/{id}/cancel` if cancellation is modeled separately from deletion
+- `GET /api/v1/worker/jobs/next` for authenticated external workers to pull the next queued job
+- `POST /api/v1/worker/jobs/{transcription_id}/complete` for workers to report Cloudinary output references and mark completion
+- `POST /api/v1/worker/jobs/{transcription_id}/failed` for workers to report failure and mark the job failed
 - Download/playback endpoints may redirect to, proxy, or return Cloudinary-hosted URLs
+
+Worker endpoints should require `WORKER_API_TOKEN`. They support `PROCESSING_MODE=external_worker` and may also be used by Modal callback flows.
 
 ## Duplicate Handling
 
@@ -59,7 +64,7 @@ Duplicate responses include `duplicate_reused: true` and `duplicate_message`. Du
 
 - `pending`: record created but not yet queued
 - `queued`: waiting because another job is active or ahead in the queue
-- `processing`: Celery worker is actively processing the selected stem
+- `processing`: local Celery, external worker, or Modal worker is actively processing the selected stem
 - `completed`: selected-stem outputs are available where supported
 - `failed`: processing ended with `processing_error`
 
@@ -99,6 +104,12 @@ Cloudinary URL fields may be `null` when an output is unsupported for the select
 ## Frontend Behavior
 
 The frontend must require one stem before submitting a processing request, display queue status, and show downloadable Cloudinary-hosted outputs only when the corresponding URL fields are present.
+
+## Processing Modes
+
+- `PROCESSING_MODE=local`: development fallback. Railway/Celery can process very short files only and should not be used as production Demucs infrastructure.
+- `PROCESSING_MODE=external_worker`: backend queues jobs for a manually running worker. Kaggle can be used here for manual/free GPU testing, but queued jobs wait until the notebook is running.
+- `PROCESSING_MODE=modal`: preferred production-like MVP mode. Backend triggers Modal/serverless GPU processing.
 
 ## Delete Semantics
 

@@ -1,23 +1,33 @@
 # Queue and Worker Policy
 
-## Phase 1 Behavior
+## Current Direction
 
-Only one processing job runs at a time.
+Railway is the API/controller. Modal/serverless GPU is the preferred production-like AI processing layer. Local Celery remains a development fallback and should not be described as the main Demucs worker for production.
 
-- Celery worker concurrency must be `1`
-- Redis is the broker/result backend for queued work
-- Other jobs remain queued until the active job finishes
-- The UI should clearly show queued jobs
+## Processing Modes
 
-Recommended worker command:
+`PROCESSING_MODE=local`
+
+- Development fallback.
+- Uses Redis/Celery when configured.
+- Railway/Celery can process very short files only.
+- Keep worker concurrency at `1`.
 
 ```sh
 celery -A app.celery worker --loglevel=info --concurrency=1
 ```
 
-## Why Concurrency Is One
+`PROCESSING_MODE=external_worker`
 
-Demucs and audio transcription are memory-heavy. Running multiple jobs at once on Railway can exhaust CPU/RAM, slow every job down, or crash the worker. The MVP intentionally trades throughput for stability and predictable cost.
+- Backend queues jobs.
+- External/manual worker pulls jobs from the backend.
+- Useful for Kaggle/manual GPU testing.
+
+`PROCESSING_MODE=modal`
+
+- Preferred MVP production-like mode.
+- Backend triggers Modal/serverless GPU worker.
+- Modal downloads from Cloudinary, runs selected-stem Demucs on GPU, uploads outputs, and calls back.
 
 ## Statuses
 
@@ -28,6 +38,16 @@ Demucs and audio transcription are memory-heavy. Running multiple jobs at once o
 - `failed`
 
 `processing_error` should contain a user-safe failure message when status is `failed`.
+
+## Worker Endpoints
+
+Planned worker endpoints:
+
+- `GET /api/v1/worker/jobs/next`
+- `POST /api/v1/worker/jobs/{transcription_id}/complete`
+- `POST /api/v1/worker/jobs/{transcription_id}/failed`
+
+They should require `WORKER_API_TOKEN`, keep full diagnostic logs in Modal/backend, and sanitize frontend-facing errors.
 
 ## Delete and Cancel Behavior
 
@@ -45,4 +65,4 @@ Before adding work to the queue, check for a completed record with the same uplo
 
 ## Future Scaling
 
-Phase 2 can allow multiple selected stems per user request. Phase 3 should move heavy AI work to a GPU worker or external AI processing service before increasing concurrency. Phase 4 can pursue full Songsterr-like multi-track tabs.
+Phase 2 should add Modal/serverless GPU worker integration and worker callbacks. Later phases can add multiple selected stems, better retry/recovery, and full Songsterr-like multi-track tabs.

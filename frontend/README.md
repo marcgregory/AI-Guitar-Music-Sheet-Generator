@@ -21,7 +21,7 @@ The frontend should show queue-aware processing states:
 - `completed`
 - `failed`
 
-If another job is active, show that the new job is queued or waiting because the Railway MVP intentionally processes one job at a time to reduce cost and prevent memory overload.
+If another job is active, show that the new job is queued or waiting. In production-like MVP mode, Railway coordinates the job while Modal/serverless GPU performs the selected-stem processing.
 
 Completed outputs should use the Cloudinary-hosted URLs returned by the backend:
 

@@ -4,7 +4,7 @@ An MVP/portfolio-friendly AI music transcription app for turning an uploaded son
 
 ## Current MVP Architecture
 
-The app now prioritizes selective Demucs processing instead of full multi-stem generation on every upload.
+The app prioritizes selected-stem processing instead of full multi-stem generation on every upload. Railway is the lightweight API/controller. Modal/serverless GPU is the recommended production-like AI processing layer. Railway/Celery Demucs is retained only as a local/dev fallback for very short files.
 
 ```txt
 Audio Upload / YouTube URL + selected stem
@@ -13,18 +13,17 @@ Audio Upload / YouTube URL + selected stem
 -> If duplicate exists, return existing result
 -> Upload original audio to Cloudinary
 -> Queue processing job
--> Celery worker downloads a temporary local file
--> Demucs selected stem separation
--> Upload separated stem to Cloudinary
--> MIDI conversion for selected stem if supported
--> TAB generation for selected stem if supported
--> Upload outputs to Cloudinary
--> Playback/export/download
+-> Trigger Modal/serverless GPU worker or expose worker pull endpoint
+-> Modal worker downloads original audio from Cloudinary
+-> Modal worker runs Demucs selected-stem separation on GPU
+-> Modal worker uploads selected separated stem to Cloudinary
+-> Modal worker optionally generates MIDI/TAB/MusicXML if supported
+-> Modal worker calls backend complete/failed endpoint
+-> Backend updates transcription status and output references
+-> Frontend polls status and shows playback/export/download
 ```
 
 Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar transcription, use the `other` stem as the target because guitar and piano are commonly grouped there by the default model. True separate guitar, rhythm guitar, lead guitar, and piano separation may require better specialist models later.
-
-Only one processing job should run at a time on Railway. The Celery worker is configured with `--concurrency=1` so jobs queue instead of running concurrently and exhausting CPU/RAM. This is intentional for cost control and memory stability, not a full-scale multi-user AI processing design.
 
 Recommended MVP limits:
 - Process one selected stem per job.
@@ -32,6 +31,8 @@ Recommended MVP limits:
 - Save Cloudinary `secure_url` and `public_id` references for original audio, separated audio, MIDI, and TAB outputs.
 - Treat Railway local storage as temporary worker scratch space only.
 - Treat full multi-instrument processing as a future premium or GPU-backed feature.
+- Do not rely on Railway free/trial resources for production Demucs processing.
+- Treat Kaggle as optional/manual GPU testing only, not 24/7 production infrastructure.
 
 Selective stem processing reduces CPU usage, RAM usage, storage costs, and processing time because the MVP does not separate and transcribe every stem for every upload.
 
@@ -47,11 +48,20 @@ Uploads now require `selected_stem`:
 - `GET /api/v1/audio/{id}/status` returns `pending`, `queued`, `processing`, `completed`, or `failed`.
 - `DELETE /api/v1/transcriptions/{id}` deletes or hides a processing record and safely cleans up related Cloudinary files where possible.
 - `POST /api/v1/transcriptions/{id}/cancel` may be used for explicit cancellation if separate cancel/delete semantics are needed.
+- `GET /api/v1/worker/jobs/next` lets an authenticated external worker pull queued work.
+- `POST /api/v1/worker/jobs/{transcription_id}/complete` lets a worker report Cloudinary output references.
+- `POST /api/v1/worker/jobs/{transcription_id}/failed` lets a worker report failure details.
 - Result payloads should expose Cloudinary-hosted output URLs where available: `original_audio_url`, `separated_audio_url`, `midi_file_url`, and `tab_file_url`.
 
 Users should be able to delete records in `completed`, `failed`, `queued`, and `processing` states. Queued jobs should be removed/cancelled when possible. Processing jobs should be marked cancelled/deleted in the database; if stopping the active Celery task is not reliable yet, the MVP may hide/delete the UI record while the worker finishes silently and cleanup still runs.
 
-Run the worker with one active job:
+## Processing Modes
+
+- `PROCESSING_MODE=local`: development fallback. Railway/Celery can process very short files only and should run with `--concurrency=1`.
+- `PROCESSING_MODE=external_worker`: backend queues jobs and a manual/external worker pulls them. Useful for Kaggle/manual GPU testing.
+- `PROCESSING_MODE=modal`: preferred MVP production-like architecture. Backend triggers Modal/serverless GPU processing.
+
+For local fallback only, run the Celery worker with one active job:
 
 ```sh
 celery -A app.celery worker --loglevel=info --concurrency=1
@@ -72,7 +82,7 @@ Record deletion should delete related Cloudinary assets when safe: original audi
 
 ## Backend Runtime Requirements
 
-The backend is supported on Python 3.11. The Docker-based Railway runtime uses Python 3.11, and selected-stem Demucs processing depends on the pinned PyTorch audio stack in `backend/requirements.txt`: `demucs`, `torch`, `torchaudio`, and `torchcodec`. `ffmpeg` must also be installed and available on `PATH`.
+The backend is supported on Python 3.11. The Docker-based Railway runtime uses Python 3.11. Local selected-stem Demucs fallback depends on the pinned PyTorch audio stack in `backend/requirements.txt`: `demucs`, `torch`, `torchaudio`, and `torchcodec`. `ffmpeg` must also be installed and available on `PATH`.
 
 The API validates these dependencies at startup and exposes their availability and versions from `GET /health`.
 
@@ -86,6 +96,10 @@ The API validates these dependencies at startup and exposes their availability a
 - Frontend uses `VITE_API_URL` to connect to the backend API.
 - For Vercel deployment, set `VITE_API_URL` in your Vercel project settings to your deployed backend URL, e.g. `https://your-backend-xxxxx.railway.app/api/v1`.
 - Do not deploy local-only values such as `VITE_FFMPEG_LOCATION=C:\ffmpeg\bin` to Vercel.
+- Backend processing uses `PROCESSING_MODE=local|external_worker|modal`.
+- External/Modal workers use `WORKER_API_TOKEN`.
+- Modal uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
+- Cloudinary uses `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`.
 - Use `frontend/.env.example` as a template for local development.
 
 ## Technology Stack
@@ -98,7 +112,7 @@ See [tech-stack.md](tech-stack.md) for detailed technology recommendations.
 - [api.md](api.md) - upload, status, output, and job field contract
 - [storage.md](storage.md) - Cloudinary storage rules and temporary file cleanup
 - [queue-worker.md](queue-worker.md) - Celery/Redis queue behavior and concurrency policy
-- [deployment.md](deployment.md) - Railway and environment variable notes
+- [deployment.md](deployment.md) - Railway, Cloudinary, Modal, and environment variable notes
 - [setup.md](setup.md) - local setup checklist
 - [roadmap.md](roadmap.md) - MVP-to-Songsterr-like phased roadmap
 

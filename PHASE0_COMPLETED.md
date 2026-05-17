@@ -140,7 +140,7 @@ Now that the SQLAlchemy compatibility issue is resolved, Phase 0 is fully comple
 2. Require one `selected_stem` value: `vocals`, `drums`, `bass`, or `other`
 3. Add duplicate detection with `audio_hash` or normalized YouTube/source ID plus `selected_stem`
 4. Use Demucs for selected-stem separation only; guitar transcription maps to `other`
-5. Queue work through Redis/Celery with worker concurrency set to `1`
+5. Queue work through backend job records; use Modal/serverless GPU as the preferred worker and Redis/Celery only for local fallback with concurrency `1`
 6. Upload separated stem audio, MIDI files, and TAB files to Cloudinary when generated
 7. Persist Cloudinary `secure_url` and `public_id` fields plus duplicate/deletion/status fields
 8. Let users delete completed, failed, queued, and processing records

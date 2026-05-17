@@ -4,14 +4,16 @@ The canonical implementation plan lives in [implementation-plan.md](implementati
 
 Current MVP priority:
 
-1. Selected stem only, one active processing job at a time, and Cloudinary storage integration.
-2. Multiple selected stems.
-3. GPU worker or external AI processing service.
-4. Full Songsterr-like multi-track tabs.
+1. Selected-stem MVP with Cloudinary persistence, duplicate detection, delete/cancel, and queue/status UX.
+2. Modal/serverless GPU worker integration with worker endpoints, external worker authentication, status callbacks, and selected-stem preview/export from Cloudinary outputs.
+3. Multiple selected stems, improved transcription quality, and better retry/recovery.
+4. Full Songsterr-like multi-track tabs with lead/rhythm guitar separation and piano/guitar specialist models.
 
 Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For guitar transcription, use `other` in the MVP and explain that guitar/piano may be grouped there depending on the model and mix.
 
 Durable files should live in Cloudinary, with both `secure_url` and `public_id` stored for original audio, selected separated stem audio, MIDI files, and TAB files. Railway local storage is temporary worker scratch space only.
+
+Railway should be documented as the FastAPI/PostgreSQL controller, not the main AI worker. `PROCESSING_MODE=local` keeps Celery as a development fallback for very short files, `PROCESSING_MODE=external_worker` supports manual/Kaggle testing, and `PROCESSING_MODE=modal` is the preferred production-like MVP path.
 
 Duplicate detection and deletion are also Phase 1 concerns:
 

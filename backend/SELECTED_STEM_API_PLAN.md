@@ -1,6 +1,6 @@
 # Selected-Stem API Plan
 
-This backend plan documents the MusicStudio MVP API contract for selective Demucs processing.
+This backend plan documents the MusicStudio MVP API contract for selective Demucs processing. Railway is the API/controller. Modal/serverless GPU is the preferred production-like AI processing layer. Railway/Celery Demucs remains local/dev fallback only.
 
 ## Request Contract
 
@@ -30,15 +30,17 @@ Audio Upload / YouTube URL + selected stem
 -> upload original audio to Cloudinary
 -> validate selected_stem
 -> create queued job
--> worker downloads temporary local file
+-> trigger Modal/serverless GPU worker or expose worker pull endpoint
+-> worker downloads original audio from Cloudinary
 -> run Demucs for selected output needed
 -> upload selected separated stem to Cloudinary
--> convert selected stem to MIDI/TAB/sheet output where supported
+-> convert selected stem to MIDI/TAB/MusicXML where supported
 -> upload generated outputs to Cloudinary
--> mark completed or failed
+-> worker calls backend complete/failed endpoint
+-> backend marks completed or failed
 ```
 
-Only save the selected stem output unless explicit caching is added. Selective processing reduces CPU/RAM usage, storage, and total processing time on Railway.
+Only save the selected stem output unless explicit caching is added. Selective processing reduces CPU/RAM usage, storage, and total processing time.
 
 Duplicate detection should happen before starting a new job. Uploaded files should be identified by `audio_hash`; YouTube submissions should use `source_type`, `source_url`, and a normalized YouTube/video ID in `normalized_source_id`. The lookup must include `selected_stem`. Same song plus same selected stem reuses an existing completed result. Same song plus a different selected stem may create a new job.
 
@@ -55,17 +57,30 @@ Cloudinary is the durable store for:
 
 Persist both `secure_url` and `public_id` for each Cloudinary asset so the API can serve downloads/playback and later delete or replace files.
 
+## Processing Modes
+
+- `PROCESSING_MODE=local`: development fallback. Uses Redis/Celery and should process very short files only. Keep Celery concurrency at `1`.
+- `PROCESSING_MODE=external_worker`: backend queues jobs and a manual/external worker pulls them. Useful for Kaggle/manual GPU testing.
+- `PROCESSING_MODE=modal`: preferred production-like MVP mode. Backend triggers Modal/serverless GPU processing.
+
 ## Queue Contract
 
-Only one active processing job should run at a time.
-
-- Run Celery workers with `--concurrency=1`.
-- Use Redis/Celery as the queue.
-- New work should become `queued` instead of running concurrently.
+- New work should become `queued` instead of running heavy AI work in request handlers.
 - Status responses should tell users when another job is active.
-- This is intentional MVP cost control, not a full-scale multi-user processing system.
+- Local Celery workers, when used, must run with `--concurrency=1`.
+- Modal/serverless GPU should handle preferred MVP Demucs processing.
 
 Queued records may be deleted by the user. The backend should remove or cancel the queued Celery task when possible.
+
+## Worker Endpoints
+
+Documented worker endpoints:
+
+- `GET /api/v1/worker/jobs/next`
+- `POST /api/v1/worker/jobs/{transcription_id}/complete`
+- `POST /api/v1/worker/jobs/{transcription_id}/failed`
+
+These endpoints should require `WORKER_API_TOKEN`. The worker should keep full logs in Modal/backend and report sanitized user-facing errors.
 
 ## Status Values
 
@@ -130,7 +145,7 @@ Behavior:
 
 ## Roadmap
 
-- Phase 1: selected stem only, one active job at a time, Cloudinary storage integration.
-- Phase 2: multiple selected stems.
-- Phase 3: GPU worker or external AI processing service.
-- Phase 4: full Songsterr-like multi-track tabs.
+- Phase 1: selected-stem MVP, Cloudinary persistence, duplicate detection, delete/cancel, queue/status UX.
+- Phase 2: Modal/serverless GPU worker integration, worker endpoints, external worker authentication, status callback flow, selected-stem preview/export from Cloudinary outputs.
+- Phase 3: multiple selected stems, improved transcription quality, better retry/recovery.
+- Phase 4: full Songsterr-like multi-track tabs, lead/rhythm guitar separation, piano/guitar specialist models.

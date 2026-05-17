@@ -1,48 +1,82 @@
 # Deployment Notes
 
-## Railway MVP
+## Recommended MVP Deployment
 
-Railway is the MVP backend target for:
+Railway should run the lightweight backend/controller, not the primary Demucs workload.
 
-- FastAPI API service
-- Celery worker service
-- Redis
-- PostgreSQL
+- Frontend: Vercel or the current frontend host
+- Backend/API: Railway FastAPI
+- Database: PostgreSQL
+- Durable storage: Cloudinary
+- AI processing: Modal/serverless GPU worker
+- Redis: only if needed for local fallback, queue metadata, or status coordination
 
-Railway local storage must not be used as durable file storage. It is temporary scratch space for uploads, worker downloads, Demucs output, and generated files before Cloudinary upload.
+Railway trial/free resources are not reliable for Demucs production processing. Railway local storage must not be used as durable file storage. It is temporary scratch space only.
 
-The backend runtime is Python 3.11. Both Dockerfiles use Python 3.11 images, and `railway.json` points to the root Dockerfile. Demucs selected-stem processing requires the PyTorch audio stack from `backend/requirements.txt` (`demucs`, `torch`, `torchaudio`, and `torchcodec`) plus an `ffmpeg` executable on `PATH`.
-
-The FastAPI service validates these audio dependencies during startup. `GET /health` returns the overall status and per-dependency availability/version details for `demucs`, `torch`, `torchaudio`, `torchcodec`, and `ffmpeg`.
+The backend runtime is Python 3.11. Both Dockerfiles use Python 3.11 images, and `railway.json` points to the root Dockerfile. Local selected-stem Demucs fallback requires the PyTorch audio stack from `backend/requirements.txt` (`demucs`, `torch`, `torchaudio`, and `torchcodec`) plus an `ffmpeg` executable on `PATH`.
 
 ## Required Environment Variables
 
-Backend/API and worker:
+Backend/API:
 
 - `DATABASE_URL`
-- `REDIS_URL`
-- `CELERY_BROKER_URL`
-- `CELERY_RESULT_BACKEND`
+- `PROCESSING_MODE=local|external_worker|modal`
+- `WORKER_API_TOKEN`
 - `CLOUDINARY_CLOUD_NAME`
 - `CLOUDINARY_API_KEY`
 - `CLOUDINARY_API_SECRET`
 - `SECRET_KEY`
 - `ALGORITHM`
 - `ACCESS_TOKEN_EXPIRE_MINUTES`
+- `REDIS_URL` if Redis is used for local fallback/status
+- `CELERY_BROKER_URL` if `PROCESSING_MODE=local`
+- `CELERY_RESULT_BACKEND` if `PROCESSING_MODE=local`
+
+Modal worker:
+
+- `MODAL_TOKEN_ID`
+- `MODAL_TOKEN_SECRET`
+- `WORKER_API_TOKEN`
+- `CLOUDINARY_CLOUD_NAME`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
 
 Frontend:
 
 - `VITE_API_URL`
 
-## Worker Configuration
+## Processing Modes
 
-Run one active job at a time:
+### `PROCESSING_MODE=local`
+
+Development fallback only. Railway/Celery may process very short files, but this is not recommended for production. If local mode is enabled, run one active job at a time:
+
 
 ```sh
 celery -A app.celery worker --loglevel=info --concurrency=1
 ```
 
-This keeps Railway CPU/RAM usage lower and avoids Demucs memory crashes. Large-scale concurrent AI processing is out of scope for Phase 1.
+### `PROCESSING_MODE=external_worker`
+
+The backend queues jobs and exposes worker endpoints for a manually running external worker. This is useful for Kaggle/manual GPU tests. Jobs wait until the worker is running.
+
+### `PROCESSING_MODE=modal`
+
+Preferred production-like MVP mode. The backend triggers Modal/serverless GPU processing. Modal downloads the original audio from Cloudinary, runs Demucs selected-stem separation on GPU, uploads outputs to Cloudinary, and reports completion/failure back to Railway.
+
+## Worker Endpoints
+
+Documented worker coordination endpoints:
+
+- `GET /api/v1/worker/jobs/next`
+- `POST /api/v1/worker/jobs/{transcription_id}/complete`
+- `POST /api/v1/worker/jobs/{transcription_id}/failed`
+
+These endpoints should require `WORKER_API_TOKEN`. Store detailed logs in Modal/backend and return sanitized errors to the frontend.
+
+## Kaggle Clarification
+
+Kaggle may be used for optional/manual free GPU testing. It is not 24/7, cannot be reliably auto-started for every upload, and should not be documented as production infrastructure.
 
 ## Cleanup Strategy
 

@@ -7,21 +7,25 @@ Local development needs:
 - FastAPI backend
 - React/Vite frontend
 - PostgreSQL or SQLite for development
-- Redis for Celery
-- Celery worker
+- Redis/Celery only for `PROCESSING_MODE=local`
 - Cloudinary account for durable media/output storage
+- Modal account for preferred production-like GPU processing, when testing `PROCESSING_MODE=modal`
 
 ## Backend Environment
 
 Set these values in the backend environment:
 
 - `DATABASE_URL`
-- `REDIS_URL`
-- `CELERY_BROKER_URL`
-- `CELERY_RESULT_BACKEND`
+- `PROCESSING_MODE=local|external_worker|modal`
+- `WORKER_API_TOKEN`
 - `CLOUDINARY_CLOUD_NAME`
 - `CLOUDINARY_API_KEY`
 - `CLOUDINARY_API_SECRET`
+- `REDIS_URL` if using local Celery/status coordination
+- `CELERY_BROKER_URL` if using `PROCESSING_MODE=local`
+- `CELERY_RESULT_BACKEND` if using `PROCESSING_MODE=local`
+- `MODAL_TOKEN_ID` if using `PROCESSING_MODE=modal`
+- `MODAL_TOKEN_SECRET` if using `PROCESSING_MODE=modal`
 
 ## Frontend Environment
 
@@ -31,11 +35,19 @@ Set:
 
 ## Worker
 
-Start the worker with one active processing slot:
+For local fallback only, start the Celery worker with one active processing slot:
 
 ```sh
 celery -A app.celery worker --loglevel=info --concurrency=1
 ```
+
+For `PROCESSING_MODE=external_worker`, run the external/manual worker and use:
+
+- `GET /api/v1/worker/jobs/next`
+- `POST /api/v1/worker/jobs/{transcription_id}/complete`
+- `POST /api/v1/worker/jobs/{transcription_id}/failed`
+
+For `PROCESSING_MODE=modal`, the Modal worker should use GPU, download `original_audio_url`, run Demucs for the selected stem, upload outputs to Cloudinary, and report completion/failure to the backend.
 
 ## MVP Test Flow
 

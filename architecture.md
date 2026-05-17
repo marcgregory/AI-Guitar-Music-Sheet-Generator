@@ -2,7 +2,7 @@
 
 ## Selected-Stem MVP
 
-MusicStudio is scoped as a Railway-friendly selected-stem transcription MVP. Phase 1 does not process every stem by default and does not attempt Songsterr-like full multi-track tabs.
+MusicStudio is scoped as a selected-stem transcription MVP. Railway is the lightweight API/controller layer; it should not be treated as the primary Demucs processing environment for production-like use. The recommended AI processing layer is a Modal/serverless GPU worker. Local Railway/Celery Demucs remains a development fallback for very short files only.
 
 ```txt
 User Upload / YouTube URL + selected stem
@@ -11,13 +11,14 @@ User Upload / YouTube URL + selected stem
 -> If found, return existing result
 -> Upload original audio to Cloudinary
 -> Queue processing job
--> Celery worker downloads temporary file
--> Demucs selected stem separation
--> Upload separated stem to Cloudinary
--> MIDI conversion for selected stem if supported
--> TAB generation for selected stem if supported
--> Upload outputs to Cloudinary
--> Playback/export/download
+-> Trigger Modal/serverless GPU worker or expose worker pull endpoint
+-> Modal worker downloads original audio from Cloudinary
+-> Modal worker runs Demucs selected-stem separation on GPU
+-> Modal worker uploads selected separated stem to Cloudinary
+-> Modal worker optionally generates MIDI/TAB/MusicXML if supported
+-> Modal worker calls backend complete/failed endpoint
+-> Backend updates status and output references
+-> Frontend polls status and shows playback/export/download
 ```
 
 The old architecture is replaced:
@@ -48,19 +49,72 @@ Cloudinary is the durable storage layer for:
 - selected separated stem audio
 - MIDI files
 - TAB files
+- MusicXML files where generated
 
 Persist both `secure_url` and `public_id` for every Cloudinary asset. Railway local storage is temporary only and should be used for worker downloads, Demucs scratch output, intermediate MIDI/TAB generation, and cleanup after `completed` or `failed`.
 
-## Queue
+## Backend/API
 
-Only one processing job runs at a time in Phase 1.
+Railway remains useful for:
 
-- Celery worker concurrency: `1`
-- Broker: Redis
-- Other jobs remain queued
-- Statuses: `pending`, `queued`, `processing`, `completed`, `failed`
+- FastAPI
+- PostgreSQL
+- authentication
+- project and transcription records
+- duplicate detection
+- queue/status orchestration
+- Cloudinary upload references
+- worker job coordination
 
-This is intentional to reduce Railway CPU/RAM usage and avoid memory crashes. Large-scale concurrent AI processing is out of scope for Phase 1.
+Redis is required for local Celery mode and may still be useful for status or queue coordination, but the production-like MVP should not rely on Railway free/trial CPU/RAM for Demucs.
+
+## Processing Modes
+
+`PROCESSING_MODE=local`
+
+- Development fallback.
+- Railway/Celery can process very short files only.
+- Not recommended for production Demucs processing.
+- If used, Celery worker concurrency should remain `1`.
+
+`PROCESSING_MODE=external_worker`
+
+- Backend queues jobs and exposes worker endpoints.
+- A manual worker, including a Kaggle notebook, pulls jobs and reports results.
+- Useful for free GPU experiments and manual testing.
+
+`PROCESSING_MODE=modal`
+
+- Preferred MVP production-like architecture.
+- Backend triggers Modal/serverless GPU processing.
+- Modal handles the selected-stem Demucs workload.
+
+## Worker Endpoints
+
+Planned worker coordination endpoints:
+
+- `GET /api/v1/worker/jobs/next`
+- `POST /api/v1/worker/jobs/{transcription_id}/complete`
+- `POST /api/v1/worker/jobs/{transcription_id}/failed`
+
+These endpoints should require `WORKER_API_TOKEN`, return only jobs the worker is allowed to process, store full backend logs, and expose sanitized errors to the frontend.
+
+## Modal Worker
+
+The Modal worker should:
+
+- process one selected stem per job
+- use GPU-backed Demucs
+- support `vocals`, `drums`, `bass`, and `other`
+- download `original_audio_url` from Cloudinary
+- upload the selected separated stem to Cloudinary
+- optionally generate MIDI, TAB, and MusicXML outputs when supported
+- report completion or failure to the backend
+- keep full logs in Modal/backend while returning user-safe errors to the UI
+
+## Kaggle
+
+Kaggle is optional/manual GPU testing only. It is not 24/7 infrastructure, cannot be reliably auto-started for each user upload, and queued jobs wait until the notebook is running. Do not describe Kaggle as production processing.
 
 ## Duplicate Detection
 
@@ -130,6 +184,6 @@ Recommended transcription/job fields:
 - `estimated_wait_time`
 - `celery_task_id`
 
-Legacy local path fields can remain temporarily during migration, but they should not be treated as durable storage in the Railway MVP.
+Legacy local path fields can remain temporarily during migration, but they should not be treated as durable storage.
 
 Current additive migration: `backend/migrations/20260517_selected_stem_persistence.sql`.

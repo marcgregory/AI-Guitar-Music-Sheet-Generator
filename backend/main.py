@@ -14,11 +14,14 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        app.state.audio_dependency_status = validate_audio_dependencies(raise_on_error=True)
-    except RuntimeError:
-        logger.exception("Audio dependency validation failed during startup")
-        raise
+    app.state.audio_dependency_status = validate_audio_dependencies()
+    if not app.state.audio_dependency_status.get("available"):
+        logger.warning(
+            "Audio dependency validation failed during startup; "
+            "selected-stem processing will remain unavailable until fixed. "
+            "Missing or failing checks: %s",
+            ", ".join(app.state.audio_dependency_status.get("missing", [])),
+        )
     yield
 
 

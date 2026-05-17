@@ -1,8 +1,8 @@
 # Implementation Plan for AI Guitar Music Sheet Generator / MusicStudio
 
-## 2026 Architecture Update: Selected-Stem MVP
+## 2026 Architecture Update: Selected-Stem MVP + Modal Worker
 
-The implementation target is now a Railway-friendly selected-stem MVP. Do not run full multi-stem transcription by default.
+The implementation target is a selected-stem MVP where Railway is the lightweight API/controller and Modal/serverless GPU is the preferred production-like AI processing layer. Do not run full multi-stem transcription by default, and do not treat Railway free/trial resources as reliable Demucs production infrastructure.
 
 Current target pipeline:
 
@@ -13,23 +13,24 @@ Audio Upload / YouTube URL + selected stem
 -> If duplicate exists, return existing result
 -> Upload original audio to Cloudinary
 -> Queue processing job
--> Celery worker downloads a temporary local file
--> Demucs selected stem separation
--> Upload separated stem to Cloudinary
--> MIDI conversion for selected stem if supported
--> TAB generation for selected stem if supported
--> Upload outputs to Cloudinary
--> Playback/export/download
+-> Trigger Modal/serverless GPU worker OR expose worker pull endpoint
+-> Modal/external worker downloads original audio from Cloudinary
+-> Worker runs Demucs selected-stem separation on GPU when available
+-> Worker uploads selected separated stem to Cloudinary
+-> Worker optionally generates MIDI/TAB/MusicXML if supported
+-> Worker calls backend complete/failed endpoint
+-> Backend updates transcription status and output references
+-> Frontend polls status and shows playback/export/download
 ```
 
 Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For guitar transcription, use `other` as the MVP target and clearly tell users that guitar/piano/accompaniment may be grouped inside `other` depending on the model and mix. True separate guitar, rhythm guitar, lead guitar, or piano stems require better specialist models later.
 
 Queue policy:
-- Only one processing job should run at a time.
-- Celery worker concurrency must be `1`.
-- New jobs should be queued instead of running concurrently.
+- New jobs should be queued instead of running heavy AI work in request handlers.
 - Status responses should distinguish `pending`, `queued`, `processing`, `completed`, and `failed`.
-- The app should explain this is intentional to reduce Railway CPU/RAM cost and prevent memory overload.
+- In `PROCESSING_MODE=local`, Celery worker concurrency must be `1` and should process very short files only.
+- In `PROCESSING_MODE=modal`, Modal/serverless GPU handles the Demucs workload.
+- In `PROCESSING_MODE=external_worker`, a manual worker pulls jobs and reports results.
 
 Cost policy:
 - Process one selected stem per job.
@@ -38,8 +39,41 @@ Cost policy:
 - Save only the selected separated stem and generated outputs unless caching is explicitly needed.
 - Recommend 3-5 minute songs for the MVP.
 - Treat full multi-instrument processing as a future premium or GPU-backed feature.
+- Treat Kaggle as optional/manual GPU testing only, not 24/7 infrastructure.
 - Selective stem processing reduces CPU usage, RAM usage, storage costs, and processing time.
 - Duplicate detection reduces repeated Demucs processing, repeated Cloudinary storage usage, unnecessary queue jobs, and Railway CPU/RAM cost.
+
+Processing modes:
+
+- `PROCESSING_MODE=local`: development fallback. Railway/Celery can process very short files only and is not recommended for production.
+- `PROCESSING_MODE=external_worker`: backend queues jobs and exposes worker endpoints for manual/Kaggle workers.
+- `PROCESSING_MODE=modal`: preferred MVP production-like architecture; backend triggers Modal/serverless GPU processing.
+
+Required worker/environment variables:
+
+- `PROCESSING_MODE=local|external_worker|modal`
+- `WORKER_API_TOKEN`
+- `MODAL_TOKEN_ID`
+- `MODAL_TOKEN_SECRET`
+- `CLOUDINARY_CLOUD_NAME`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
+
+Worker endpoints to add/document:
+
+- `GET /api/v1/worker/jobs/next`
+- `POST /api/v1/worker/jobs/{transcription_id}/complete`
+- `POST /api/v1/worker/jobs/{transcription_id}/failed`
+
+Modal worker rules:
+
+- Process selected-stem only.
+- Use GPU.
+- Download `original_audio_url` from Cloudinary.
+- Run Demucs with `vocals`, `drums`, `bass`, or `other`.
+- Upload separated stem and supported outputs to Cloudinary.
+- Report completion/failure to the backend.
+- Keep full logs in Modal/backend and sanitize frontend errors.
 
 Deletion policy:
 - Users can delete records in `completed`, `failed`, `queued`, and `processing` states.
@@ -94,7 +128,7 @@ User Upload / YouTube URL + selected stem
 - [x] Create basic chord recognition using librosa chroma + template matching
 - [x] Design data structure for transcription results (notes, chords, timing)
 - [x] Create async processing pipeline with Celery (handle long-running tasks)
-- [x] Enforce one active processing job at a time with Celery worker concurrency set to `1`
+- [x] Enforce one active local fallback processing job at a time with Celery worker concurrency set to `1`
 - [x] Add queue-aware backend status/validation so users know when another job is active
 - [x] Add delete/cancel handling for `queued` and `processing` records
 - [x] Add confidence scoring for detected elements - note events include per-note confidence/velocity, chord segments include averaged template confidence, tempo uses beat consistency, and key detection returns chroma-template confidence; task storage now persists key confidence from the correct result field
@@ -112,7 +146,7 @@ User Upload / YouTube URL + selected stem
 - [x] Generate drum onset/rhythm data only when `drums` is selected
 - [ ] Allow users to reprocess the selected stem without rerunning unrelated stems
 
-## Phase 2: Basic Transcription Output & Storage
+## Phase 2: Basic Transcription Output, Storage & Worker Integration
 
 - [x] Convert pitch detection output to MIDI notes (using music21 or mido)
 - [x] Generate fretted-instrument tablature from MIDI notes (guitar/bass fret position mapping)
@@ -127,6 +161,16 @@ User Upload / YouTube URL + selected stem
 - [x] Implement automatic cleanup of temporary audio files after processing - uploaded, preprocessed, and separated audio files are deleted at terminal task state while persisted analysis and export data remain available
 - [x] Ensure Railway local files are treated as temporary only after Cloudinary upload
 - [x] Delete Cloudinary assets when a record is deleted and log cleanup failures safely
+- [ ] Add `PROCESSING_MODE=local|external_worker|modal`
+- [ ] Add authenticated worker endpoint: `GET /api/v1/worker/jobs/next`
+- [ ] Add authenticated worker endpoint: `POST /api/v1/worker/jobs/{transcription_id}/complete`
+- [ ] Add authenticated worker endpoint: `POST /api/v1/worker/jobs/{transcription_id}/failed`
+- [ ] Add `WORKER_API_TOKEN` validation for external worker endpoints
+- [ ] Add Modal/serverless GPU worker trigger path for `PROCESSING_MODE=modal`
+- [ ] Add Modal worker selected-stem Demucs implementation
+- [ ] Add status callback flow from Modal/external worker to backend
+- [ ] Ensure worker failures store full logs internally and sanitized `processing_error` for users
+- [x] Document Kaggle as manual testing only, not production infrastructure
 
 ### Selected-Stem Output & Storage
 
@@ -213,7 +257,7 @@ Transcription
 - [x] Mark `other` as the MVP guitar target and explain that guitar/piano may be grouped there
 - [x] Create processing status page (progress bar, estimated time) - route wired at `/processing/:transcriptionId`
 - [x] Show queue-aware statuses: pending, queued, processing, completed, failed
-- [x] Explain when a job is queued because another Railway MVP job is processing
+- [x] Explain when a job is queued because another job is processing
 - [ ] Show duplicate reuse message: "This song and stem were already processed. Existing result was loaded."
 - [ ] Add delete button for completed, failed, queued, and processing items
 - [ ] Show confirmation before deleting a processing record
@@ -337,10 +381,10 @@ MVP scope recommendation:
 
 The selected-stem architecture grows in four steps:
 
-- **Phase 1**: selected stem only, one active processing job at a time, Cloudinary storage integration
-- **Phase 2**: multiple selected stems
-- **Phase 3**: GPU worker or external AI processing service
-- **Phase 4**: full Songsterr-like multi-track tabs
+- **Phase 1**: selected-stem MVP, Cloudinary persistence, duplicate detection, delete/cancel, queue/status UX
+- **Phase 2**: Modal/serverless GPU worker integration, worker endpoints, external worker authentication, status callback flow, selected-stem preview/export from Cloudinary outputs
+- **Phase 3**: multiple selected stems, improved transcription quality, better retry/recovery
+- **Phase 4**: full Songsterr-like multi-track tabs, lead/rhythm guitar separation, piano/guitar specialist models
 
 For MVP, prioritize Demucs default stems first: vocals, drums, bass, and other. Lead guitar versus rhythm guitar, true isolated guitar, and true isolated piano should be treated as advanced features because they are harder than default broad stem separation.
 

@@ -1,8 +1,8 @@
 # AI Guitar Music Sheet Generator / MusicStudio
 
-## 2026 MVP Scope Update: Selected-Stem Demucs Processing
+## 2026 MVP Scope Update: Selected-Stem Demucs Processing + Modal Worker
 
-This project is now scoped as an MVP/portfolio-friendly selected-stem transcription app, not a full-scale multi-user AI processing system yet.
+This project is now scoped as an MVP/portfolio-friendly selected-stem transcription app, not a full-scale multi-user AI processing system yet. Railway is the lightweight API/controller layer. Modal/serverless GPU is the preferred production-like AI processing layer. Railway/Celery Demucs remains fallback/dev only.
 
 The old pipeline:
 
@@ -22,20 +22,21 @@ Audio Upload / YouTube URL + selected stem
 -> If duplicate exists, return existing result
 -> Upload original audio to Cloudinary
 -> Queue processing job
--> Celery worker downloads a temporary local file
--> Demucs selected stem separation
--> Upload separated stem to Cloudinary
--> MIDI conversion for selected stem if supported
--> TAB generation for selected stem if supported
--> Upload outputs to Cloudinary
--> Playback/export/download
+-> Trigger Modal/serverless GPU worker OR expose worker pull endpoint
+-> Modal/external worker downloads original audio from Cloudinary
+-> Worker runs Demucs selected-stem separation on GPU when available
+-> Worker uploads selected separated stem to Cloudinary
+-> Worker optionally generates MIDI/TAB/MusicXML if supported
+-> Worker calls backend complete/failed endpoint
+-> Backend updates transcription status and output references
+-> Frontend polls status and shows playback/export/download
 ```
 
 Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar transcription, the app should use the `other` stem as the target because default Demucs models commonly group guitar, piano, synths, and accompaniment there. The UI must make this clear: guitar and piano may be inside `other` depending on the mix and model.
 
 The backend should accept `selected_stem` or `selected_instrument` in upload/process requests, upload the original source audio to Cloudinary, run Demucs only for the selected output needed, convert only that selected stem to MIDI/TAB/sheet output when applicable, upload durable outputs to Cloudinary, and save only the selected stem output unless explicit caching is needed.
 
-Only one active processing job should run at a time. Celery worker concurrency should be `1`, new jobs should be queued instead of running concurrently, and status responses should explain when another job is currently active. This is intentional to reduce Railway/server cost, prevent memory overload, and keep the MVP realistic.
+Jobs should be queued and status responses should explain when work is waiting. In `PROCESSING_MODE=local`, Celery worker concurrency should be `1` and local processing should be limited to very short development files. Production-like MVP processing should use `PROCESSING_MODE=modal`.
 
 Recommended MVP limits:
 - Process one selected stem per job.
@@ -45,13 +46,15 @@ Recommended MVP limits:
 - Store Cloudinary `secure_url` and `public_id` references for original audio, selected separated stem audio, MIDI files, and TAB files.
 - Detect duplicate same-song/same-stem requests before queueing work and reuse completed output.
 - Let users delete completed, failed, queued, and processing records.
+- Do not rely on Railway free/trial resources for Demucs production processing.
+- Use Kaggle only for optional/manual free GPU testing.
 - Treat full multi-instrument processing as a future premium or GPU-backed feature.
 
 Future roadmap:
-- Phase 1: selected stem only, one active job at a time, Cloudinary storage integration.
-- Phase 2: multiple selected stems.
-- Phase 3: GPU worker or external AI processing service.
-- Phase 4: full Songsterr-like multi-track tabs.
+- Phase 1: selected-stem MVP, Cloudinary persistence, duplicate detection, delete/cancel, queue/status UX.
+- Phase 2: Modal/serverless GPU worker integration, worker endpoints, external worker authentication, status callback flow, selected-stem preview/export from Cloudinary outputs.
+- Phase 3: multiple selected stems, improved transcription quality, better retry/recovery.
+- Phase 4: full Songsterr-like multi-track tabs, lead/rhythm guitar separation, piano/guitar specialist models.
 
 ## Problem
 
@@ -383,7 +386,7 @@ The platform only processes data necessary for transcription and practice functi
 
 Expected processing speed:
 - 1-3 minutes for a typical 3-minute song, depending on model choice and hardware
-- 3-5 minute songs are recommended for the Railway MVP
+- 3-5 minute songs are recommended for the selected-stem MVP
 - Longer songs should be rejected, warned, or reserved for later premium/GPU processing
 
 Real-time transcription may be explored using:
@@ -525,7 +528,9 @@ User corrections may help improve future transcription models.
 ### Operational Cost Management
 
 To manage AI processing costs, the platform may use:
-- A queue with one active Celery worker process at a time
+- Modal/serverless GPU for preferred production-like selected-stem processing
+- `PROCESSING_MODE=local` with one active Celery worker only as a development fallback
+- `PROCESSING_MODE=external_worker` for manual external workers such as Kaggle notebooks
 - Duplicate detection before queueing work
 - Usage limits
 - Prioritized processing
@@ -534,7 +539,7 @@ To manage AI processing costs, the platform may use:
 
 Selective processing reduces CPU/RAM usage, storage requirements, and processing time because the app does not create and transcribe every stem for every song. Full multi-instrument processing should be treated as a future premium capability, especially if GPU workers or external AI processing services are added.
 
-Railway is the MVP backend target, not the long-term heavy AI processing platform. Large-scale concurrent AI processing is out of scope for Phase 1.
+Railway is the MVP backend/API target, not the heavy AI processing platform. Railway trial/free resources are not reliable for Demucs production processing. Kaggle is optional/manual testing only, not 24/7 production infrastructure and not reliably auto-started per user upload.
 
 Duplicate detection reduces repeated Demucs processing, repeated Cloudinary storage usage, unnecessary queue jobs, and Railway CPU/RAM cost.
 
@@ -616,7 +621,7 @@ Recommended persisted fields:
 - `processing_error`
 - `queue_position`
 
-Legacy local path fields such as `separated_audio_file_path`, `midi_file_path`, and `tab_file_path` may exist during migration, but they should not be treated as durable storage fields in the Railway MVP.
+Legacy local path fields such as `separated_audio_file_path`, `midi_file_path`, and `tab_file_path` may exist during migration, but they should not be treated as durable storage fields.
 
 Supported processing statuses:
 - `pending`
@@ -624,6 +629,18 @@ Supported processing statuses:
 - `processing`
 - `completed`
 - `failed`
+
+Recommended processing modes:
+
+- `PROCESSING_MODE=local`: development fallback; Railway/Celery can process very short files only.
+- `PROCESSING_MODE=external_worker`: backend queues jobs for a manual/external worker. Kaggle jobs wait until the notebook is running.
+- `PROCESSING_MODE=modal`: preferred MVP production-like architecture with Modal/serverless GPU processing.
+
+Worker endpoints:
+
+- `GET /api/v1/worker/jobs/next`
+- `POST /api/v1/worker/jobs/{transcription_id}/complete`
+- `POST /api/v1/worker/jobs/{transcription_id}/failed`
 
 ---
 
