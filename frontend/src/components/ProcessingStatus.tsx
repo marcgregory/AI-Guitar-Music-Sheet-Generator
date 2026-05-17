@@ -13,6 +13,7 @@ const ProcessingStatus: React.FC = () => {
   const [warning, setWarning] = useState<string | null>(null);
   const [canPlayStem, setCanPlayStem] = useState(false);
   const [canGenerateScore, setCanGenerateScore] = useState(true);
+  const [isDemo, setIsDemo] = useState(false);
   const [selectedStem, setSelectedStem] = useState<string | null>(null);
   const [transcriptionIdNum, setTranscriptionIdNum] = useState<number | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -77,6 +78,7 @@ const ProcessingStatus: React.FC = () => {
       setWarning(response.warning ?? null);
       setCanPlayStem(Boolean(response.can_play_stem));
       setCanGenerateScore(response.can_generate_score !== false);
+      setIsDemo(Boolean(response.is_demo));
       if (response.status === 'completed') {
         setStatus('completed');
         setProgress(100);
@@ -137,17 +139,30 @@ const ProcessingStatus: React.FC = () => {
     }
   };
 
+  const handleViewExampleTab = async () => {
+    if (!token) return;
+    try {
+      const demo = await audioService.getDemoTranscription(token);
+      navigate(`/transcription/${demo.id}`);
+    } catch (err: any) {
+      showToast('error', err.response?.data?.detail || 'Demo transcription is not available.');
+    }
+  };
+
   const statusActionLabel = status === 'queued' || status === 'pending'
     ? 'View queue status'
     : 'View progress';
 
   const canShowProcessingMenu =
-    status === 'pending' ||
-    status === 'queued' ||
-    status === 'processing' ||
-    status === 'completed' ||
-    status === 'completed_with_warning' ||
-    status === 'failed';
+    !isDemo &&
+    (
+      status === 'pending' ||
+      status === 'queued' ||
+      status === 'processing' ||
+      status === 'completed' ||
+      status === 'completed_with_warning' ||
+      status === 'failed'
+    );
 
   if (status === 'idle') {
     return (
@@ -298,12 +313,20 @@ const ProcessingStatus: React.FC = () => {
             </button>
             {!canGenerateScore && (
               <>
+                {!isDemo && (
+                  <button
+                    className="button-secondary"
+                    disabled={isRetrying}
+                    onClick={handleRetry}
+                  >
+                    {isRetrying ? 'Queuing retry...' : 'Retry transcription'}
+                  </button>
+                )}
                 <button
                   className="button-secondary"
-                  disabled={isRetrying}
-                  onClick={handleRetry}
+                  onClick={handleViewExampleTab}
                 >
-                  {isRetrying ? 'Queuing retry...' : 'Retry transcription'}
+                  View example TAB
                 </button>
                 <button
                   className="button-secondary"

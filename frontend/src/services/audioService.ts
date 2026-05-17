@@ -18,11 +18,12 @@ export interface Transcription {
   midi_file_path?: string | null;
   tab_file_path?: string | null;
   youtube_url?: string | null;
-  source_type?: "upload" | "youtube" | string | null;
+  source_type?: "upload" | "youtube" | "demo" | string | null;
   source_url?: string | null;
   normalized_source_id?: string | null;
   audio_hash?: string | null;
   duplicate_of_id?: number | null;
+  is_demo?: boolean | null;
   is_deleted?: boolean | null;
   deleted_at?: string | null;
   original_audio_url?: string | null;
@@ -84,6 +85,7 @@ export interface TranscriptionStatus {
   selected_stem?: StemSelection | null;
   can_play_stem?: boolean;
   can_generate_score?: boolean;
+  is_demo?: boolean;
   queue_position?: number | null;
   estimated_wait_time?: number | null;
   duplicate_reused?: boolean;
@@ -153,6 +155,15 @@ const audioService = {
     });
 
     return rememberTranscriptions(token, response.data);
+  },
+
+  getDemoTranscription: async (token: string): Promise<Transcription> => {
+    const response = await axios.get(`${API_BASE_URL}/audio/demo`, {
+      headers: getAuthHeader(token),
+    });
+
+    rememberTranscription(token, response.data);
+    return response.data;
   },
 
   /**

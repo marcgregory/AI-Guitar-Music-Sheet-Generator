@@ -643,6 +643,12 @@ def _soft_delete_transcription(
     transcription: models.Transcription,
     db_session: Session,
 ) -> models.Transcription:
+    if transcription.is_demo:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Demo transcriptions are shared examples and cannot be deleted.",
+        )
+
     previous_status = transcription.processing_status or "pending"
     if previous_status in {"queued", "pending", "processing"}:
         _revoke_transcription_task(transcription)
@@ -814,6 +820,7 @@ def _status_payload(
         "selected_stem": selected_stem,
         "can_play_stem": can_play_stem,
         "can_generate_score": can_generate_score,
+        "is_demo": transcription.is_demo,
         "queue_position": None,
         "estimated_wait_time": None,
     }
@@ -827,6 +834,8 @@ def _ensure_transcription_access(
     db_session: Session,
     current_user: schemas.User,
 ) -> None:
+    if transcription.is_demo:
+        return
     if transcription.user_id == current_user.id:
         return
     if transcription.project_id:
@@ -1570,10 +1579,49 @@ async def list_transcriptions(
     """
     return (
         db_session.query(models.Transcription)
-        .filter(models.Transcription.user_id == current_user.id)
+        .filter(or_(
+            models.Transcription.user_id == current_user.id,
+            models.Transcription.is_demo == True,
+        ))
         .filter(models.Transcription.is_deleted == False)
+        .order_by(models.Transcription.is_demo.desc())
         .order_by(models.Transcription.created_at.desc(), models.Transcription.id.desc())
         .all()
+    )
+
+
+@router.get("/demo", response_model=schemas.TranscriptionInDB)
+async def get_demo_transcription(
+    db_session: Session = Depends(db.get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    demo = (
+        db_session.query(models.Transcription)
+        .filter(models.Transcription.is_demo == True)
+        .filter(models.Transcription.is_deleted == False)
+        .order_by(models.Transcription.id.asc())
+        .first()
+    )
+    if not demo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Demo transcription is not available.",
+        )
+    return demo
+
+
+@router.get("/demo-guitar-riff.wav")
+async def get_demo_guitar_riff_audio():
+    demo_path = Path(__file__).resolve().parents[3] / "static" / "demo_guitar_riff.wav"
+    if not demo_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Demo audio file not available",
+        )
+    return FileResponse(
+        path=str(demo_path),
+        media_type="audio/wav",
+        filename=demo_path.name,
     )
 
 
@@ -1625,6 +1673,7 @@ async def get_transcription_status(
             "warning": transcription.warning_message,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
+            "is_demo": transcription.is_demo,
             "deleted_at": transcription.deleted_at,
             "message": "This transcription record was deleted.",
             "queue_position": None,
@@ -1641,6 +1690,7 @@ async def get_transcription_status(
             "warning": transcription.warning_message,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
+            "is_demo": transcription.is_demo,
             "queue_position": None,
             "estimated_wait_time": None,
         }
@@ -1684,6 +1734,7 @@ async def get_transcription_status(
             "warning": transcription.warning_message,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
+            "is_demo": transcription.is_demo,
             "message": message,
             "queue_position": transcription.queue_position,
             "estimated_wait_time": transcription.estimated_wait_time,
@@ -1756,24 +1807,7 @@ async def get_transcription_result(
             detail="Transcription not found"
         )
 
-    # Check if the user owns this transcription (or has access via project)
-    if transcription.user_id != current_user.id:
-        # Check if it's in a project the user owns
-        if transcription.project_id:
-            project = db_session.query(models.Project).filter(
-                models.Project.id == transcription.project_id
-            ).first()
-            if not project or project.owner_id != current_user.id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to access this transcription"
-                )
-        else:
-            # Not in a project and not owned by user
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to access this transcription"
-            )
+    _ensure_transcription_access(transcription, db_session, current_user)
 
     # Check if processing is complete
     if not transcription.is_processed:
@@ -1818,6 +1852,11 @@ async def retry_transcription(
     accepted when the original/preprocessed source is still available.
     """
     transcription = _get_accessible_transcription(transcription_id, db_session, current_user)
+    if transcription.is_demo:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Demo transcriptions are shared examples and cannot be retried.",
+        )
     if transcription.is_deleted:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1882,6 +1921,7 @@ async def retry_transcription(
         "selected_stem": selected_stem,
         "can_play_stem": _can_play_stem(transcription),
         "can_generate_score": transcription.can_generate_score,
+        "is_demo": transcription.is_demo,
         "message": "Retry transcription queued with alternate detection settings.",
     }
 

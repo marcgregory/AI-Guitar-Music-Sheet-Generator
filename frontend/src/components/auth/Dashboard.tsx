@@ -14,6 +14,7 @@ interface Project {
   duration: number;
   difficulty: "beginner" | "intermediate" | "advanced";
   processingError?: string | null;
+  isDemo?: boolean;
 }
 
 const filenameFromPath = (path?: string | null): string =>
@@ -52,13 +53,17 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
   const status = getTranscriptionStatus(transcription);
   const audioFileName = transcription.youtube_url
     ? "YouTube audio"
+    : transcription.is_demo
+      ? "Bundled demo stem"
     : filenameFromPath(transcription.audio_file_path);
 
   return {
     id: transcription.id,
     title: transcription.title || `Transcription ${transcription.id}`,
     description:
-      status === "failed"
+      transcription.is_demo
+        ? "Try the demo transcription with playable stem audio, TAB, and notation."
+      : status === "failed"
         ? transcription.processing_error || "Processing failed"
         : status === "warning"
           ? "Stem isolated successfully. Notation unavailable for this stem."
@@ -77,6 +82,7 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
     duration: transcription.duration || 0,
     difficulty: getDifficulty(transcription.duration),
     processingError: transcription.processing_error,
+    isDemo: Boolean(transcription.is_demo),
   };
 };
 
@@ -156,12 +162,14 @@ const getProjectActionMenuItems = (project: Project): ProjectActionMenuItem[] =>
     items.push({ action: "error", label: "View processing error", icon: "alert" });
   }
 
-  items.push({
-    action: "delete",
-    label: "Delete project",
-    icon: "trash",
-    dangerous: true,
-  });
+  if (!project.isDemo) {
+    items.push({
+      action: "delete",
+      label: "Delete project",
+      icon: "trash",
+      dangerous: true,
+    });
+  }
 
   return items;
 };
@@ -284,6 +292,10 @@ const Dashboard: React.FC = () => {
     }
 
     if (action === "delete") {
+      if (project.isDemo) {
+        showToast({ tone: "error", message: "Demo transcriptions are shared examples." });
+        return;
+      }
       setDeleteCandidate(project);
       return;
     }
@@ -440,6 +452,7 @@ const Dashboard: React.FC = () => {
   ).length;
   const totalMinutes = Math.floor(projects.reduce((sum, project) => sum + project.duration, 0) / 60);
   const featuredProject = projects[0];
+  const sectionTitle = featuredProject?.isDemo ? "Try the demo transcription" : "Recent project";
   const statCards = [
     { label: "Total projects", value: projects.length, icon: "folder" as const, tone: "amber" },
     { label: "Completed", value: completedCount, icon: "check" as const, tone: "green" },
@@ -534,7 +547,7 @@ const Dashboard: React.FC = () => {
           </div>
 
           <section className="projects-section">
-            <h2 className="section-title">Recent project</h2>
+            <h2 className="section-title">{sectionTitle}</h2>
             {loadError && <div className="alert alert-error">{loadError}</div>}
 
             {loading ? (
@@ -606,7 +619,9 @@ const Dashboard: React.FC = () => {
                     {(featuredProject.status === "completed" || featuredProject.status === "warning") && (
                       <span className="quality-badge">
                         <Icon name="check" />
-                        {featuredProject.status === "warning" ? "Stem Ready" : "export ready"}
+                        {featuredProject.isDemo
+                          ? "example"
+                          : featuredProject.status === "warning" ? "Stem Ready" : "export ready"}
                       </span>
                     )}
                   </div>
@@ -677,7 +692,7 @@ const Dashboard: React.FC = () => {
                             {(project.status === "completed" || project.status === "warning") && (
                               <span className="quality-badge">
                                 <Icon name="check" />
-                                {project.status === "warning" ? "Stem Ready" : "export ready"}
+                                {project.isDemo ? "example" : project.status === "warning" ? "Stem Ready" : "export ready"}
                               </span>
                             )}
                           </div>
@@ -844,7 +859,11 @@ const Dashboard: React.FC = () => {
             aria-labelledby="delete-transcription-title"
           >
             <h3 id="delete-transcription-title">Delete transcription</h3>
-            <p>Are you sure you want to delete this transcription?</p>
+            <p>
+              {deleteCandidate.isDemo
+                ? "This is a shared demo transcription and cannot be deleted."
+                : "Are you sure you want to delete this transcription?"}
+            </p>
             {deleteCandidate.status === "processing" && (
               <p className="studio-dialog-warning">
                 Active processing cancellation is best-effort and may finish silently.
@@ -863,7 +882,7 @@ const Dashboard: React.FC = () => {
                 type="button"
                 className="button-danger"
                 onClick={confirmDeleteProject}
-                disabled={isDeleting}
+                disabled={isDeleting || deleteCandidate.isDemo}
               >
                 <Icon name="trash" />
                 <span>{isDeleting ? "Deleting..." : "Delete project"}</span>

@@ -56,6 +56,7 @@ class Transcription(Base):
     normalized_source_id = Column(String, nullable=True, index=True)
     audio_hash = Column(String, nullable=True, index=True)
     duplicate_of_id = Column(Integer, ForeignKey("transcriptions.id"), nullable=True)
+    is_demo = Column(Boolean, default=False, nullable=False)
     is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     original_audio_url = Column(Text, nullable=True)

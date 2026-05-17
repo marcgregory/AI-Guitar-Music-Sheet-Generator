@@ -738,6 +738,7 @@ def test_status_no_note_warning_is_completed_and_playable(tmp_path):
         "selected_stem": "other",
         "can_play_stem": True,
         "can_generate_score": False,
+        "is_demo": False,
         "queue_position": None,
         "estimated_wait_time": None,
     }

@@ -86,6 +86,7 @@ class TranscriptionBase(BaseModel):
     normalized_source_id: Optional[str] = None
     audio_hash: Optional[str] = None
     duplicate_of_id: Optional[int] = None
+    is_demo: Optional[bool] = False
     is_deleted: Optional[bool] = False
     deleted_at: Optional[datetime] = None
     original_audio_url: Optional[str] = None

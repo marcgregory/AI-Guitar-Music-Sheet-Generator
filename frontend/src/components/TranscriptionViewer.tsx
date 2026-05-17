@@ -1747,7 +1747,7 @@ const TranscriptionViewer: React.FC = () => {
   };
 
   const handleRetryTranscription = async () => {
-    if (!token || !transcription?.id) return;
+    if (!token || !transcription?.id || transcription.is_demo) return;
 
     try {
       setError(null);
@@ -1766,6 +1766,16 @@ const TranscriptionViewer: React.FC = () => {
       setError(errorMessageOf(err, "Failed to retry transcription"));
     } finally {
       setIsRetryingTranscription(false);
+    }
+  };
+
+  const handleViewExampleTab = async () => {
+    if (!token) return;
+    try {
+      const demo = await audioService.getDemoTranscription(token);
+      navigate(`/transcription/${demo.id}`);
+    } catch (err: unknown) {
+      setError(errorMessageOf(err, "Demo transcription is not available."));
     }
   };
 
@@ -1895,6 +1905,7 @@ const TranscriptionViewer: React.FC = () => {
   const playbackProgress =
     playbackDuration > 0 ? Math.min(1, Math.max(0, currentPlaybackTime / playbackDuration)) : 0;
   const rawProjectTitle = transcription.title || "Untitled transcription";
+  const isDemoTranscription = Boolean(transcription.is_demo);
   const titleWithoutExtension = rawProjectTitle.replace(/\.(mp3|wav|m4a|aac|flac)$/i, "");
   const subtitleMatch = titleWithoutExtension.match(/\(([^)]+)\)\s*$/);
   const displayProjectTitle = (subtitleMatch
@@ -1909,11 +1920,15 @@ const TranscriptionViewer: React.FC = () => {
   const completedAt = formatCompletedAt(transcription.updated_at ?? transcription.created_at);
   const sourceFileName = transcription.audio_file_path?.split(/[\\/]/).pop();
   const sourceLabel = transcription.audio_file_path
-    ? "Loaded from upload"
+    ? isDemoTranscription ? "Bundled example stem" : "Loaded from upload"
     : transcription.youtube_url
       ? "Loaded from YouTube"
-      : "Source not attached";
-  const sourceSummary = sourceFileName || (transcription.youtube_url ? "YouTube audio" : "No audio file");
+      : isDemoTranscription
+        ? "Bundled example stem"
+        : "Source not attached";
+  const sourceSummary = isDemoTranscription
+    ? "Example guitar riff"
+    : sourceFileName || (transcription.youtube_url ? "YouTube audio" : "No audio file");
 
   return (
     <div className="transcription-viewer-container transcription-premium-page">
@@ -1959,7 +1974,7 @@ const TranscriptionViewer: React.FC = () => {
                 {formatPlaybackTime(currentPlaybackTime)} / {formatPlaybackTime(playbackDuration)}
               </span>
               <span>{sourceSummary}</span>
-              <button type="button" onClick={() => navigate("/upload")}>Change source</button>
+              {!isDemoTranscription && <button type="button" onClick={() => navigate("/upload")}>Change source</button>}
             </div>
             <div className="premium-hero-audio-controls">
               <label>
@@ -1998,7 +2013,10 @@ const TranscriptionViewer: React.FC = () => {
                 <strong>Full Mix</strong>
                 <span>{sourceLabel}</span>
               </div>
-              <button type="button" className="premium-light-button" onClick={() => navigate("/upload")}><FolderOpen aria-hidden="true" /> Change file</button>
+              {isDemoTranscription && <span className="premium-completed-badge premium-confidence-badge">Example</span>}
+              {!isDemoTranscription && (
+                <button type="button" className="premium-light-button" onClick={() => navigate("/upload")}><FolderOpen aria-hidden="true" /> Change file</button>
+              )}
             </div>
           </section>
 
@@ -2114,7 +2132,7 @@ const TranscriptionViewer: React.FC = () => {
                   </label>
                 </>
               )}
-              {selectedTrack && selectedTrackReprocessSupported && (
+              {selectedTrack && selectedTrackReprocessSupported && !isDemoTranscription && (
                 <button
                   type="button"
                   className="premium-reprocess-link"
@@ -2181,14 +2199,25 @@ const TranscriptionViewer: React.FC = () => {
                     <strong>No notation generated for this stem.</strong>
                     <p>Stem playback is available.</p>
                     <div className="premium-inline-empty-actions">
-                      <button
-                        type="button"
-                        className="button-primary"
-                        onClick={handleRetryTranscription}
-                        disabled={isRetryingTranscription}
-                      >
-                        {isRetryingTranscription ? "Retrying..." : "Retry"}
-                      </button>
+                      {!isDemoTranscription && (
+                        <button
+                          type="button"
+                          className="button-primary"
+                          onClick={handleRetryTranscription}
+                          disabled={isRetryingTranscription}
+                        >
+                          {isRetryingTranscription ? "Retrying..." : "Retry"}
+                        </button>
+                      )}
+                      {!isDemoTranscription && (
+                        <button
+                          type="button"
+                          className="button-secondary"
+                          onClick={handleViewExampleTab}
+                        >
+                          View example TAB
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="button-secondary"
