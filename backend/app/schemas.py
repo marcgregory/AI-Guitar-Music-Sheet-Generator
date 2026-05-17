@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime
 
 # User schemas
@@ -186,3 +186,42 @@ class InstrumentTrack(InstrumentTrackBase):
 
     class Config:
         orm_mode = True
+
+
+class WorkerJob(BaseModel):
+    transcription_id: int
+    selected_stem: str
+    demucs_stem: str
+    original_audio_url: str
+    source_type: Optional[str] = None
+    source_url: Optional[str] = None
+    normalized_source_id: Optional[str] = None
+    audio_hash: Optional[str] = None
+    callback_complete_url: str
+    callback_failed_url: str
+
+
+class WorkerCompleteRequest(BaseModel):
+    separated_audio_url: Optional[str] = None
+    separated_audio_public_id: Optional[str] = None
+    midi_file_url: Optional[str] = None
+    midi_file_public_id: Optional[str] = None
+    tab_file_url: Optional[str] = None
+    tab_file_public_id: Optional[str] = None
+    confidence: Optional[int] = None
+    duration: Optional[int] = None
+    detected_tempo: Optional[int] = None
+    tempo_confidence: Optional[int] = None
+    detected_key: Optional[str] = None
+    key_confidence: Optional[int] = None
+    notes_data: Optional[Any] = None
+    chords_data: Optional[Any] = None
+    tablature_data: Optional[Any] = None
+    notation_data: Optional[Any] = None
+    chord_chart_data: Optional[Any] = None
+    track_metadata: Optional[dict[str, Any]] = None
+
+
+class WorkerFailedRequest(BaseModel):
+    error: str = Field(..., min_length=1, max_length=500)
+    internal_logs: Optional[str] = None

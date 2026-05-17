@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import db, models
+from app.core import config
 from app.core.security import create_access_token, get_password_hash
 from main import app
 
@@ -294,6 +295,228 @@ def test_upload_audio_reuses_completed_duplicate_same_hash_and_stem():
     send_task_mock.assert_not_called()
 
 
+def test_upload_audio_external_worker_mode_queues_without_celery():
+    reset_database()
+    session = TestingSessionLocal()
+    original_mode = config.settings.PROCESSING_MODE
+    try:
+        create_user(session, "external-mode-owner", "external-mode@example.com")
+        config.settings.PROCESSING_MODE = "external_worker"
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+            response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("external-mode-owner"),
+                data={"selected_stem": "other"},
+                files={"file": ("external.wav", b"RIFF external", "audio/wav")},
+            )
+    finally:
+        config.settings.PROCESSING_MODE = original_mode
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] in {"pending", "queued"}
+    assert payload["selected_stem"] == "other"
+    send_task_mock.assert_not_called()
+
+
+def test_upload_audio_modal_mode_triggers_modal_path_without_celery():
+    reset_database()
+    session = TestingSessionLocal()
+    original_mode = config.settings.PROCESSING_MODE
+    try:
+        create_user(session, "modal-mode-owner", "modal-mode@example.com")
+        config.settings.PROCESSING_MODE = "modal"
+    finally:
+        session.close()
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock,
+            patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
+        ):
+            response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("modal-mode-owner"),
+                data={"selected_stem": "bass"},
+                files={"file": ("modal.wav", b"RIFF modal", "audio/wav")},
+            )
+    finally:
+        config.settings.PROCESSING_MODE = original_mode
+
+    assert response.status_code == 200
+    assert response.json()["selected_stem"] == "bass"
+    modal_trigger_mock.assert_called_once()
+    send_task_mock.assert_not_called()
+
+
+def test_worker_endpoints_require_worker_token():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    try:
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+        response = client.get("/api/v1/worker/jobs/next")
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 401
+
+
+def test_worker_next_marks_oldest_queued_job_processing():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "worker-owner", "worker-owner@example.com")
+        transcription = models.Transcription(
+            title="Worker job",
+            user_id=owner.id,
+            selected_stem="other",
+            source_type="upload",
+            source_url="worker.wav",
+            audio_hash="hash-worker",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="queued",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.get(
+            "/api/v1/worker/jobs/next",
+            headers={"Authorization": "Bearer test-worker-token"},
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["transcription_id"] == transcription_id
+    assert payload["selected_stem"] == "other"
+    assert payload["demucs_stem"] == "other"
+    assert payload["original_audio_url"].startswith("https://res.cloudinary.com")
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        assert refreshed.processing_status == "processing"
+        assert refreshed.queue_position == 0
+    finally:
+        session.close()
+
+
+def test_worker_complete_saves_cloudinary_outputs_and_track_metadata():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "complete-owner", "complete-owner@example.com")
+        transcription = models.Transcription(
+            title="Complete job",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "separated_audio_url": "https://res.cloudinary.com/demo/video/upload/stem.wav",
+                "separated_audio_public_id": "musicstudio/stem",
+                "midi_file_url": "https://res.cloudinary.com/demo/raw/upload/out.mid",
+                "midi_file_public_id": "musicstudio/out-midi",
+                "tab_file_url": "https://res.cloudinary.com/demo/raw/upload/out.txt",
+                "tab_file_public_id": "musicstudio/out-tab",
+                "confidence": 84,
+                "notes_data": {"notes": [{"pitch": 64, "onset": 0.0, "offset": 0.5}]},
+                "tablature_data": {"instrument": "guitar", "tablature": []},
+                "detected_tempo": 120,
+                "detected_key": "E minor",
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "completed"
+    assert payload["is_processed"] is True
+    assert payload["separated_audio_public_id"] == "musicstudio/stem"
+    assert payload["processing_error"] is None
+
+    session = TestingSessionLocal()
+    try:
+        track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription_id
+        ).one()
+        assert track.instrument_type == "guitar"
+        assert track.confidence_score == 84
+        assert track.processing_status == "completed"
+    finally:
+        session.close()
+
+
+def test_worker_failed_saves_sanitized_error_without_internal_logs():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "failed-owner", "failed-owner@example.com")
+        transcription = models.Transcription(
+            title="Failed job",
+            user_id=owner.id,
+            selected_stem="bass",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/failed",
+            headers={"Authorization": "Bearer test-worker-token"},
+            json={
+                "error": "Could not isolate the selected stem.",
+                "internal_logs": "stack trace with modal internals and secrets",
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "failed"
+    assert payload["is_processed"] is False
+    assert payload["processing_error"] == "Could not isolate the selected stem."
+    assert "stack trace" not in payload["processing_error"]
+
+
 def test_extract_audio_from_youtube_requires_selected_stem():
     reset_database()
     session = TestingSessionLocal()
@@ -441,6 +664,38 @@ def test_delete_transcription_cancels_queued_job_and_hides_record(tmp_path):
     list_response = client.get("/api/v1/audio/", headers=auth_headers("delete-owner"))
     assert list_response.status_code == 200
     assert list_response.json() == []
+
+
+def test_delete_transcription_marks_processing_job_best_effort_cancelled():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "processing-delete-owner", "processing-delete@example.com")
+        transcription = models.Transcription(
+            title="Processing song",
+            user_id=owner.id,
+            is_processed=False,
+            processing_status="processing",
+            celery_task_id="task-processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio.celery_app.control.revoke") as revoke_mock:
+        response = client.delete(
+            f"/api/v1/transcriptions/{transcription_id}",
+            headers=auth_headers("processing-delete-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_deleted"] is True
+    assert payload["processing_status"] == "cancelled"
+    assert "best-effort" in payload["processing_error"]
+    revoke_mock.assert_called_once_with("task-processing", terminate=True)
 
 
 def test_update_instrument_track_metadata_only_changes_user_editable_fields():

@@ -161,15 +161,15 @@ User Upload / YouTube URL + selected stem
 - [x] Implement automatic cleanup of temporary audio files after processing - uploaded, preprocessed, and separated audio files are deleted at terminal task state while persisted analysis and export data remain available
 - [x] Ensure Railway local files are treated as temporary only after Cloudinary upload
 - [x] Delete Cloudinary assets when a record is deleted and log cleanup failures safely
-- [ ] Add `PROCESSING_MODE=local|external_worker|modal`
-- [ ] Add authenticated worker endpoint: `GET /api/v1/worker/jobs/next`
-- [ ] Add authenticated worker endpoint: `POST /api/v1/worker/jobs/{transcription_id}/complete`
-- [ ] Add authenticated worker endpoint: `POST /api/v1/worker/jobs/{transcription_id}/failed`
-- [ ] Add `WORKER_API_TOKEN` validation for external worker endpoints
-- [ ] Add Modal/serverless GPU worker trigger path for `PROCESSING_MODE=modal`
-- [ ] Add Modal worker selected-stem Demucs implementation
-- [ ] Add status callback flow from Modal/external worker to backend
-- [ ] Ensure worker failures store full logs internally and sanitized `processing_error` for users
+- [x] Add `PROCESSING_MODE=local|external_worker|modal`
+- [x] Add authenticated worker endpoint: `GET /api/v1/worker/jobs/next`
+- [x] Add authenticated worker endpoint: `POST /api/v1/worker/jobs/{transcription_id}/complete`
+- [x] Add authenticated worker endpoint: `POST /api/v1/worker/jobs/{transcription_id}/failed`
+- [x] Add `WORKER_API_TOKEN` validation for external worker endpoints
+- [x] Add Modal/serverless GPU worker trigger path for `PROCESSING_MODE=modal`
+- [x] Add Modal worker selected-stem Demucs implementation
+- [x] Add status callback flow from Modal/external worker to backend
+- [x] Ensure worker failures store full logs internally and sanitized `processing_error` for users
 - [x] Document Kaggle as manual testing only, not production infrastructure
 
 ### Selected-Stem Output & Storage
@@ -258,10 +258,10 @@ Transcription
 - [x] Create processing status page (progress bar, estimated time) - route wired at `/processing/:transcriptionId`
 - [x] Show queue-aware statuses: pending, queued, processing, completed, failed
 - [x] Explain when a job is queued because another job is processing
-- [ ] Show duplicate reuse message: "This song and stem were already processed. Existing result was loaded."
-- [ ] Add delete button for completed, failed, queued, and processing items
-- [ ] Show confirmation before deleting a processing record
-- [ ] Explain active processing deletion as best-effort cancellation when the worker cannot be stopped reliably
+- [x] Show duplicate reuse message: "This song and stem were already processed. Existing result was loaded."
+- [x] Add delete button for completed, failed, queued, and processing items
+- [x] Show confirmation before deleting a processing record
+- [x] Explain active processing deletion as best-effort cancellation when the worker cannot be stopped reliably
 - [x] Design basic transcription viewer (tabs + notation side-by-side) - guitar/bass score views now prefer alphaTab rendering from generated AlphaTex and fall back to the existing custom SVG viewer when needed
 - [x] Implement audio playback controls (play/pause, seek, volume)
 - [x] Add synchronized playback highlighting (current position in tab/notation)

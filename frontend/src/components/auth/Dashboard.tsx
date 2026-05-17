@@ -316,7 +316,11 @@ const Dashboard: React.FC = () => {
     let refreshTimer: ReturnType<typeof window.setInterval> | undefined;
 
     const hasProcessingProject = (projectList: Project[]) =>
-      projectList.some((project) => project.status === "processing");
+      projectList.some((project) =>
+        project.status === "pending" ||
+        project.status === "queued" ||
+        project.status === "processing",
+      );
 
     const stopAutoRefresh = () => {
       if (refreshTimer) {

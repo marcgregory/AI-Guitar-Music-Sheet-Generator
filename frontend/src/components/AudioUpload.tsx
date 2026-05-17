@@ -283,6 +283,16 @@ const AudioUpload: React.FC = () => {
         },
       );
       setUploadProgress(100);
+      if (response.duplicate_reused) {
+        setSuccess(
+          response.duplicate_message ||
+            "This song and stem were already processed. Existing result was loaded.",
+        );
+        setTimeout(() => {
+          navigate(`/transcription/${response.id}`);
+        }, 1200);
+        return;
+      }
       setSuccess(
         `File uploaded successfully. Transcription ID: ${response.id}`,
       );
@@ -341,6 +351,16 @@ const AudioUpload: React.FC = () => {
         selectedStem,
       );
       setUploadProgress(100);
+      if (response.duplicate_reused) {
+        setSuccess(
+          response.duplicate_message ||
+            "This song and stem were already processed. Existing result was loaded.",
+        );
+        setTimeout(() => {
+          navigate(`/transcription/${response.id}`);
+        }, 1200);
+        return;
+      }
       setSuccess(
         `YouTube audio extracted successfully. Transcription ID: ${response.id}`,
       );

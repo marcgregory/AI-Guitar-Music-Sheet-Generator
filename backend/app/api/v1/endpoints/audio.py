@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import tempfile
 import yt_dlp
+import httpx
 from pydantic import BaseModel
 from urllib.parse import parse_qs, urlsplit
 from datetime import datetime, timezone
@@ -112,6 +113,95 @@ def _start_transcription_processing(
         )
         background_tasks.add_task(_run_transcription_locally, transcription_id)
         return None
+
+
+def _processing_mode() -> str:
+    mode = (core.config.settings.PROCESSING_MODE or "local").strip().lower()
+    if mode not in {"local", "external_worker", "modal"}:
+        logger.warning("Unknown PROCESSING_MODE=%s; falling back to local", mode)
+        return "local"
+    return mode
+
+
+def _build_worker_payload_for_modal(transcription: models.Transcription) -> dict[str, str | int | None]:
+    selected_stem = transcription.selected_stem or "other"
+    return {
+        "transcription_id": transcription.id,
+        "selected_stem": selected_stem,
+        "demucs_stem": selected_stem,
+        "original_audio_url": transcription.original_audio_url,
+        "source_type": transcription.source_type,
+        "source_url": transcription.source_url or transcription.youtube_url,
+        "normalized_source_id": transcription.normalized_source_id,
+        "audio_hash": transcription.audio_hash,
+    }
+
+
+def _trigger_modal_worker(transcription_id: int) -> None:
+    modal_trigger_url = core.config.settings.MODAL_TRIGGER_URL
+    if not modal_trigger_url:
+        logger.info(
+            "PROCESSING_MODE=modal but MODAL_TRIGGER_URL is not configured; "
+            "transcription %s remains queued for worker polling.",
+            transcription_id,
+        )
+        return
+
+    session = db.SessionLocal()
+    try:
+        transcription = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        if not transcription or transcription.is_deleted:
+            return
+
+        headers = {}
+        if core.config.settings.WORKER_API_TOKEN:
+            headers["Authorization"] = f"Bearer {core.config.settings.WORKER_API_TOKEN}"
+
+        response = httpx.post(
+            modal_trigger_url,
+            json=_build_worker_payload_for_modal(transcription),
+            headers=headers,
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        transcription.processing_status = "processing"
+        transcription.queue_position = 0
+        transcription.estimated_wait_time = 0
+        session.add(transcription)
+        session.commit()
+    except Exception as exc:
+        logger.error(
+            "Modal trigger failed for transcription %s; leaving job queued: %s",
+            transcription_id,
+            exc,
+        )
+    finally:
+        session.close()
+
+
+def _dispatch_transcription_processing(
+    transcription: models.Transcription,
+    background_tasks: BackgroundTasks,
+    db_session: Session,
+) -> str | None:
+    mode = _processing_mode()
+    if mode == "local":
+        return _start_transcription_processing(
+            transcription.id,
+            background_tasks,
+            db_session,
+        )
+    if mode == "modal":
+        background_tasks.add_task(_trigger_modal_worker, transcription.id)
+        return None
+
+    logger.info(
+        "Queued transcription %s for an external selected-stem worker",
+        transcription.id,
+    )
+    return None
 
 
 def _start_instrument_track_reprocess(
@@ -831,7 +921,7 @@ async def upload_audio_file(
             detail="Original audio could not be uploaded to durable storage.",
         ) from exc
 
-    task_id = _start_transcription_processing(db_transcription.id, background_tasks, db_session)
+    task_id = _dispatch_transcription_processing(db_transcription, background_tasks, db_session)
     if task_id:
         db_transcription.celery_task_id = task_id
         db_session.add(db_transcription)
@@ -1028,7 +1118,7 @@ async def extract_audio_from_youtube(
             detail="Original audio could not be uploaded to durable storage.",
         ) from exc
 
-    task_id = _start_transcription_processing(db_transcription.id, background_tasks, db_session)
+    task_id = _dispatch_transcription_processing(db_transcription, background_tasks, db_session)
     if task_id:
         db_transcription.celery_task_id = task_id
         db_session.add(db_transcription)
