@@ -12,6 +12,7 @@ const ProcessingStatus: React.FC = () => {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [canPlayStem, setCanPlayStem] = useState(false);
+  const [canGenerateScore, setCanGenerateScore] = useState(true);
   const [selectedStem, setSelectedStem] = useState<string | null>(null);
   const [transcriptionIdNum, setTranscriptionIdNum] = useState<number | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -75,6 +76,7 @@ const ProcessingStatus: React.FC = () => {
       setStatusMessage(response.message ?? null);
       setWarning(response.warning ?? null);
       setCanPlayStem(Boolean(response.can_play_stem));
+      setCanGenerateScore(response.can_generate_score !== false);
       if (response.status === 'completed') {
         setStatus('completed');
         setProgress(100);
@@ -83,10 +85,6 @@ const ProcessingStatus: React.FC = () => {
             navigate(`/transcription/${id}`);
           }, 1500);
         }
-      } else if (response.status === 'completed_with_warning') {
-        setStatus('completed_with_warning');
-        setProgress(100);
-        setError(null);
       } else if (response.status === 'failed') {
         setStatus('failed');
         setError(response.error || 'Processing failed');
@@ -279,52 +277,42 @@ const ProcessingStatus: React.FC = () => {
         </div>
       )}
 
-      {status === 'completed' && (
-        <div className="processing-status-content processing-success">
-          <div className="success-icon" aria-hidden="true"></div>
-          <h3>Processing complete</h3>
-          <p>Your audio has been successfully processed and transcribed into guitar tabs.</p>
+      {(status === 'completed' || status === 'completed_with_warning') && (
+        <div className={`processing-status-content ${canGenerateScore ? 'processing-success' : 'processing-warning'}`}>
+          <div className={canGenerateScore ? 'success-icon' : 'warning-icon'} aria-hidden="true"></div>
+          <h3>{canGenerateScore ? 'Processing complete' : 'Stem preview ready'}</h3>
+          {canGenerateScore ? (
+            <p>Your audio has been successfully processed and transcribed into guitar tabs.</p>
+          ) : (
+            <>
+              <p>{warning || 'Stem separated successfully, but no playable notes were detected for notation generation.'}</p>
+              <p>You can still preview the isolated stem audio.</p>
+            </>
+          )}
           <div className="processing-actions">
             <button
               className="button-primary"
               onClick={() => navigate(`/transcription/${transcriptionIdNum}`)}
             >
-              View Transcription
+              {canGenerateScore ? 'View Transcription' : canPlayStem ? 'Preview isolated stem' : 'Open result'}
             </button>
-          </div>
-        </div>
-      )}
-
-      {status === 'completed_with_warning' && (
-        <div className="processing-status-content processing-warning processing-playback-ready">
-          <div className="warning-icon" aria-hidden="true"></div>
-          <h3>Stem isolated successfully</h3>
-          <p>No notation generated for this stem.</p>
-          <p>
-            {warning ||
-              'The isolated stem is available, but no playable notes were confidently detected for score generation.'}
-          </p>
-          <p>{canPlayStem ? 'Stem playback is ready in the result view.' : 'Open the result to check stem playback availability.'}</p>
-          <div className="processing-actions">
-            <button
-              className="button-primary"
-              onClick={() => navigate(`/transcription/${transcriptionIdNum}`)}
-            >
-              Preview isolated stem
-            </button>
-            <button
-              className="button-secondary"
-              disabled={isRetrying}
-              onClick={handleRetry}
-            >
-              {isRetrying ? 'Queuing retry...' : 'Retry with high sensitivity'}
-            </button>
-            <button
-              className="button-secondary"
-              onClick={() => navigate('/upload')}
-            >
-              Retry another stem
-            </button>
+            {!canGenerateScore && (
+              <>
+                <button
+                  className="button-secondary"
+                  disabled={isRetrying}
+                  onClick={handleRetry}
+                >
+                  {isRetrying ? 'Queuing retry...' : 'Retry transcription'}
+                </button>
+                <button
+                  className="button-secondary"
+                  onClick={() => navigate('/upload')}
+                >
+                  Choose another stem
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
