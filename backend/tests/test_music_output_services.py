@@ -91,7 +91,7 @@ def test_midi_generation_accepts_enhanced_pitch_info_shape(tmp_path):
 
     result = midi.notes_to_midi(notes_data, str(output_path))
 
-    assert result == str(output_path)
+    assert result == output_path.as_posix()
     assert output_path.exists()
     assert output_path.stat().st_size > 0
 
@@ -143,22 +143,22 @@ def test_analyze_drum_rhythm_returns_hit_timing_and_confidence(tmp_path):
     assert result["rhythm_analysis"]["source"] == "drum_stem_onset_detection"
 
 
-def test_source_separation_prefers_demucs_guitar_stem(tmp_path):
+def test_source_separation_prefers_demucs_other_stem(tmp_path):
     input_path = tmp_path / "song.wav"
     input_path.write_bytes(b"audio")
     output_dir = tmp_path / "separated"
-    guitar_path = output_dir / audio.DEMUCS_GUITAR_MODEL / "song" / "guitar.wav"
+    other_path = output_dir / audio.DEMUCS_GUITAR_MODEL / "song" / "other.wav"
 
     def fake_run(cmd, capture_output, text, **kwargs):
-        guitar_path.parent.mkdir(parents=True, exist_ok=True)
-        guitar_path.write_bytes(b"guitar")
+        other_path.parent.mkdir(parents=True, exist_ok=True)
+        other_path.write_bytes(b"other")
         return Mock(returncode=0, stderr="", stdout="")
 
     with patch("app.services.audio.importlib.util.find_spec", return_value=object()):
         with patch("app.services.audio.subprocess.run", side_effect=fake_run) as run_mock:
             result = audio.separate_sources(str(input_path), str(output_dir))
 
-    assert result == str(guitar_path)
+    assert result == other_path.as_posix()
     assert audio.DEMUCS_GUITAR_MODEL in run_mock.call_args.args[0]
 
 
@@ -178,8 +178,8 @@ def test_multi_source_separation_returns_available_six_stem_outputs(tmp_path):
         with patch("app.services.audio.subprocess.run", side_effect=fake_run):
             result = audio.separate_sources_multi(str(input_path), str(output_dir))
 
-    assert set(result) == {"guitar", "bass", "drums", "vocals", "piano", "other"}
-    assert result["guitar"] == str(stem_dir / "guitar.wav")
+    assert set(result) == {"bass", "drums", "vocals", "other"}
+    assert result["other"] == (stem_dir / "other.wav").as_posix()
 
 
 def test_multi_source_separation_skips_missing_optional_six_stems(tmp_path):
@@ -190,7 +190,7 @@ def test_multi_source_separation_skips_missing_optional_six_stems(tmp_path):
 
     def fake_run(cmd, capture_output, text, **kwargs):
         stem_dir.mkdir(parents=True, exist_ok=True)
-        (stem_dir / "guitar.wav").write_bytes(b"guitar")
+        (stem_dir / "other.wav").write_bytes(b"other")
         (stem_dir / "bass.wav").write_bytes(b"bass")
         return Mock(returncode=0, stderr="", stdout="")
 
@@ -199,8 +199,8 @@ def test_multi_source_separation_skips_missing_optional_six_stems(tmp_path):
             result = audio.separate_sources_multi(str(input_path), str(output_dir))
 
     assert result == {
-        "guitar": str(stem_dir / "guitar.wav"),
-        "bass": str(stem_dir / "bass.wav"),
+        "other": (stem_dir / "other.wav").as_posix(),
+        "bass": (stem_dir / "bass.wav").as_posix(),
     }
 
 
@@ -211,7 +211,7 @@ def test_source_separation_falls_back_to_accompaniment(tmp_path):
     accompaniment_path = output_dir / audio.DEMUCS_FALLBACK_MODEL / "song" / "accompaniment.wav"
 
     def fake_run(cmd, capture_output, text, **kwargs):
-        if audio.DEMUCS_GUITAR_MODEL in cmd:
+        if "--two-stems" not in cmd:
             return Mock(returncode=1, stderr="model failed", stdout="")
         accompaniment_path.parent.mkdir(parents=True, exist_ok=True)
         accompaniment_path.write_bytes(b"accompaniment")
@@ -221,7 +221,7 @@ def test_source_separation_falls_back_to_accompaniment(tmp_path):
         with patch("app.services.audio.subprocess.run", side_effect=fake_run) as run_mock:
             result = audio.separate_sources(str(input_path), str(output_dir))
 
-    assert result == str(accompaniment_path)
+    assert result == accompaniment_path.as_posix()
     assert run_mock.call_count == 2
 
 
@@ -234,7 +234,7 @@ def test_multi_source_separation_falls_back_to_vocals_and_accompaniment(tmp_path
     accompaniment_path = fallback_dir / "accompaniment.wav"
 
     def fake_run(cmd, capture_output, text, **kwargs):
-        if audio.DEMUCS_GUITAR_MODEL in cmd:
+        if "--two-stems" not in cmd:
             return Mock(returncode=1, stderr="model failed", stdout="")
         fallback_dir.mkdir(parents=True, exist_ok=True)
         vocals_path.write_bytes(b"vocals")
@@ -246,8 +246,8 @@ def test_multi_source_separation_falls_back_to_vocals_and_accompaniment(tmp_path
             result = audio.separate_sources_multi(str(input_path), str(output_dir))
 
     assert result == {
-        "vocals": str(vocals_path),
-        "other": str(accompaniment_path),
+        "vocals": vocals_path.as_posix(),
+        "other": accompaniment_path.as_posix(),
     }
     assert run_mock.call_count == 2
 
@@ -722,9 +722,9 @@ def test_reprocess_instrument_track_task_uses_selected_piano_stem(tmp_path):
         session.close()
 
 
-def test_select_analysis_source_prefers_guitar_then_other_and_requires_stems():
-    assert select_analysis_source({"guitar": "guitar.wav", "other": "other.wav"}, "mix.wav") == "guitar.wav"
+def test_select_analysis_source_prefers_other_then_default_stems():
     assert select_analysis_source({"other": "other.wav"}, "mix.wav") == "other.wav"
+    assert select_analysis_source({"bass": "bass.wav"}, "mix.wav") == "bass.wav"
     assert select_analysis_source({}, "mix.wav") == "mix.wav"
 
 
@@ -736,21 +736,22 @@ def test_estimate_stem_confidence_uses_non_empty_duration(tmp_path):
         assert estimate_stem_confidence(str(stem_path)) == 90
 
 
-def test_process_audio_transcription_persists_tracks_and_analyzes_guitar(tmp_path):
+def test_process_audio_transcription_persists_selected_other_stem_and_analyzes_as_guitar(tmp_path):
     session = create_test_session()
     try:
         upload_path = tmp_path / "upload.wav"
         preprocessed_path = tmp_path / "upload_preprocessed.wav"
-        guitar_stem = tmp_path / "guitar.wav"
+        other_stem = tmp_path / "other.wav"
         bass_stem = tmp_path / "bass.wav"
         upload_path.write_bytes(b"upload")
         preprocessed_path.write_bytes(b"preprocessed")
-        guitar_stem.write_bytes(b"guitar")
+        other_stem.write_bytes(b"other")
         bass_stem.write_bytes(b"bass")
 
         transcription = models.Transcription(
             title="Task flow",
             audio_file_path=str(upload_path),
+            selected_stem="other",
             user_id=1,
             is_processed=False,
         )
@@ -771,8 +772,8 @@ def test_process_audio_transcription_persists_tracks_and_analyzes_guitar(tmp_pat
                 settings_mock.UPLOAD_DIR = str(upload_dir)
                 with patch("app.tasks.audio.preprocess_audio", return_value=str(preprocessed_path)):
                     with patch(
-                        "app.tasks.audio.separate_sources_multi",
-                        return_value={"guitar": str(guitar_stem), "bass": str(bass_stem)},
+                        "app.tasks.audio.separate_selected_stem",
+                        return_value=str(other_stem),
                     ):
                         with patch("app.tasks.audio.detect_pitch", pitch_mock):
                             with patch("app.tasks.midi.save_midi_from_transcription", return_value=str(tmp_path / "out.mid")):
@@ -799,11 +800,12 @@ def test_process_audio_transcription_persists_tracks_and_analyzes_guitar(tmp_pat
         analyzed_path = pitch_mock.call_args.args[0]
 
         assert result["status"] == "completed"
-        assert [track.instrument_type for track in tracks] == ["bass", "guitar"]
+        assert [track.instrument_type for track in tracks] == ["guitar"]
         assert all(track.processing_status == "completed" for track in tracks)
         assert all(track.stem_audio_path and Path(track.stem_audio_path).exists() for track in tracks)
-        assert analyzed_path.endswith("guitar.wav")
+        assert analyzed_path.endswith("other.wav")
         assert refreshed.is_processed is True
+        assert refreshed.processing_status == "completed"
         assert refreshed.audio_file_path is None
         assert refreshed.preprocessed_audio_file_path is None
         assert refreshed.separated_audio_file_path == analyzed_path
@@ -811,7 +813,7 @@ def test_process_audio_transcription_persists_tracks_and_analyzes_guitar(tmp_pat
         session.close()
 
 
-def test_process_audio_transcription_falls_back_to_full_mix_when_separation_fails(tmp_path):
+def test_process_audio_transcription_fails_clearly_when_selected_stem_separation_fails(tmp_path):
     session = create_test_session()
     try:
         upload_path = tmp_path / "upload.wav"
@@ -822,6 +824,7 @@ def test_process_audio_transcription_falls_back_to_full_mix_when_separation_fail
         transcription = models.Transcription(
             title="Task fallback",
             audio_file_path=str(upload_path),
+            selected_stem="other",
             user_id=1,
             is_processed=False,
         )
@@ -841,7 +844,7 @@ def test_process_audio_transcription_falls_back_to_full_mix_when_separation_fail
             with patch("app.tasks.settings") as settings_mock:
                 settings_mock.UPLOAD_DIR = str(upload_dir)
                 with patch("app.tasks.audio.preprocess_audio", return_value=str(preprocessed_path)):
-                    with patch("app.tasks.audio.separate_sources_multi", side_effect=RuntimeError("separation failed")):
+                    with patch("app.tasks.audio.separate_selected_stem", side_effect=RuntimeError("separation failed")):
                         with patch("app.tasks.audio.detect_pitch", pitch_mock):
                             with patch("app.tasks.midi.save_midi_from_transcription", return_value=str(tmp_path / "out.mid")):
                                 with patch("app.tasks.midi.midi_to_musicxml", return_value="<score />"):
@@ -852,21 +855,21 @@ def test_process_audio_transcription_falls_back_to_full_mix_when_separation_fail
                                                     with patch("app.tasks.audio.detect_rhythm", return_value={"total_duration": 1.0}):
                                                         with patch("app.tasks.audio.detect_chords", return_value={"chords": []}):
                                                             with patch("app.tasks.chord_chart.chord_data_to_chord_chart_json", return_value="[]"):
-                                                                result = process_audio_transcription.run(transcription_id)
+                                                                with pytest.raises(RuntimeError):
+                                                                    process_audio_transcription.run(transcription_id)
 
         tracks = session.query(models.InstrumentTrack).filter(
             models.InstrumentTrack.transcription_id == transcription_id
         ).all()
 
         assert tracks == []
-        assert result["status"] == "completed"
-        assert pitch_mock.call_count >= 1
-        assert pitch_mock.call_args.args[0] == str(preprocessed_path)
+        assert pitch_mock.call_count == 0
         refreshed = session.query(models.Transcription).filter(
             models.Transcription.id == transcription_id
         ).first()
-        assert refreshed.is_processed is True
-        assert refreshed.processing_error is None
+        assert refreshed.is_processed is False
+        assert refreshed.processing_status == "failed"
+        assert "Could not isolate the selected stem" in refreshed.processing_error
         assert refreshed.separated_audio_file_path is None
     finally:
         session.close()

@@ -10,9 +10,31 @@ export interface Transcription {
   title: string;
   audio_file_path?: string | null;
   preprocessed_audio_file_path?: string | null;
+  selected_stem?: StemSelection | null;
+  processing_status?: ProcessingStatusValue | null;
+  queue_position?: number | null;
+  estimated_wait_time?: number | null;
   separated_audio_file_path?: string | null;
   midi_file_path?: string | null;
+  tab_file_path?: string | null;
   youtube_url?: string | null;
+  source_type?: "upload" | "youtube" | string | null;
+  source_url?: string | null;
+  normalized_source_id?: string | null;
+  audio_hash?: string | null;
+  duplicate_of_id?: number | null;
+  is_deleted?: boolean | null;
+  deleted_at?: string | null;
+  original_audio_url?: string | null;
+  original_audio_public_id?: string | null;
+  separated_audio_url?: string | null;
+  separated_audio_public_id?: string | null;
+  midi_file_url?: string | null;
+  midi_file_public_id?: string | null;
+  tab_file_url?: string | null;
+  tab_file_public_id?: string | null;
+  duplicate_reused?: boolean | null;
+  duplicate_message?: string | null;
   duration?: number | null;
   detected_tempo?: number | null;
   tempo_confidence?: number | null;
@@ -49,11 +71,27 @@ export interface InstrumentTrack {
 }
 
 export interface TranscriptionStatus {
-  status: "processing" | "completed" | "failed";
+  status: ProcessingStatusValue;
   transcription_id: number;
   progress?: number;
   error?: string;
+  message?: string;
+  selected_stem?: StemSelection | null;
+  queue_position?: number | null;
+  estimated_wait_time?: number | null;
+  duplicate_reused?: boolean;
+  duplicate_message?: string | null;
 }
+
+export type StemSelection = "vocals" | "drums" | "bass" | "other";
+export type ProcessingStatusValue =
+  | "pending"
+  | "queued"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "deleted";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -115,11 +153,13 @@ const audioService = {
   uploadAudioFile: async (
     file: File,
     token: string,
+    selectedStem: StemSelection,
     projectId?: number,
     onUploadProgress?: (progress: number) => void,
   ): Promise<Transcription> => {
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("selected_stem", selectedStem);
     if (projectId !== undefined) {
       formData.append("project_id", projectId.toString());
     }
@@ -149,12 +189,14 @@ const audioService = {
   extractAudioFromYouTube: async (
     youtubeUrl: string,
     token: string,
+    selectedStem: StemSelection,
     projectId?: number,
   ): Promise<Transcription> => {
     const response = await axios.post(
       `${API_BASE_URL}/audio/youtube`,
       {
         youtube_url: youtubeUrl,
+        selected_stem: selectedStem,
         project_id: projectId,
       },
       {
@@ -245,6 +287,43 @@ const audioService = {
       },
     );
 
+    return response.data;
+  },
+
+  getInstrumentTrackPreview: async (
+    transcriptionId: number,
+    trackId: number,
+    token: string,
+  ): Promise<Blob> => {
+    const response = await axios.get(
+      `${API_BASE_URL}/audio/${transcriptionId}/tracks/${trackId}/preview`,
+      {
+        headers: getAuthHeader(token),
+        responseType: "blob",
+      },
+    );
+
+    return response.data;
+  },
+
+  deleteTranscription: async (
+    transcriptionId: number,
+    token: string,
+  ): Promise<Transcription> => {
+    const response = await axios.delete(
+      `${API_BASE_URL}/transcriptions/${transcriptionId}`,
+      {
+        headers: getAuthHeader(token),
+      },
+    );
+
+    const cached = transcriptionListCache.get(token);
+    if (cached) {
+      transcriptionListCache.set(
+        token,
+        cached.filter((item) => item.id !== transcriptionId),
+      );
+    }
     return response.data;
   },
 

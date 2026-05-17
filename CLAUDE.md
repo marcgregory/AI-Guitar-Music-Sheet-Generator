@@ -1,6 +1,14 @@
 # AI Guitar Music Sheet Generator - Project Overview
 
 ## Project Status
+- **Current MVP Architecture** - Selected-stem Railway MVP with Cloudinary durable storage
+  - Upload or YouTube audio is stored in Cloudinary first
+  - User selects one Demucs stem: `vocals`, `drums`, `bass`, or `other`
+  - Duplicate same-song/same-stem requests reuse completed results before queueing
+  - Guitar transcription uses `other`; guitar/piano/melody may be grouped there depending on model and mix
+  - Redis/Celery queues processing and the worker runs with concurrency `1`
+  - Worker downloads temporary audio, separates only the selected stem, uploads outputs to Cloudinary, then cleans local files
+  - Users can delete completed, failed, queued, and processing records; active cancellation is best-effort in the MVP
 - **Phase 0: Project Setup & Infrastructure** - COMPLETED ✅
   - Git repository initialized
   - Backend: FastAPI with modular structure
@@ -12,22 +20,19 @@
   - Authentication framework (JWT with bcrypt) implemented
 
 ## Current Blockers
-- None - Phase 0 is complete and ready for Phase 1
+- None documented. Keep Phase 1 focused on selected-stem processing, one active job at a time, and Cloudinary storage integration.
 
 ## Next Steps (Phase 1: Core Audio Processing Pipeline)
-1. Implement file upload endpoint (MP3/WAV) with size validation
-2. Integrate yt-dlp for YouTube audio extraction
-3. Add audio preprocessing using librosa (normalization, resampling)
-4. Implement source separation for guitar isolation (Demucs or Spleeter)
-5. Implement pitch detection (Spotify Basic Pitch or CREPE)
-6. Implement beat/tempo detection using librosa.beat
-7. Implement key detection using Essentia or librosa chroma features
-8. Implement rhythm analysis (onset detection, duration estimation)
-9. Create basic chord recognition using librosa chroma + template matching
-10. Design data structure for transcription results
-11. Create async processing pipeline with Celery
-12. Add confidence scoring for detected elements
-13. Implement error handling and fallback for low-confidence sections
+1. Upload original audio to Cloudinary after file upload or YouTube extraction
+2. Require `selected_stem` before queueing processing
+3. Check duplicates with `audio_hash` or normalized YouTube/source ID plus `selected_stem`
+4. Use Redis/Celery with worker concurrency `1`
+5. Run Demucs only for the selected stem
+6. Upload selected separated stem, MIDI output, and TAB output to Cloudinary when generated
+7. Store Cloudinary `secure_url` and `public_id` fields plus duplicate/deletion/status fields
+8. Add delete/cancel behavior and Cloudinary cleanup for processing records
+9. Clean temporary Railway worker files after `completed`, `failed`, or deleted/cancelled status
+10. Keep larger multi-stem and concurrent AI processing out of Phase 1
 
 ## Technology Stack
 - **Frontend**: React + TypeScript + Vite
@@ -35,6 +40,7 @@
 - **Database**: PostgreSQL + SQLAlchemy ORM
 - **Authentication**: JWT with bcrypt password hashing
 - **Task Queue**: Celery with Redis
+- **Storage**: Cloudinary for durable audio/output files; Railway local disk for temporary processing only
 - **Audio Processing**: Librosa, Essentia, Demucs/Spleeter, Spotify Basic Pitch
 - **Music Notation**: music21 or VexFlow
 - **DevOps**: Docker, Docker Compose, GitHub Actions
@@ -64,7 +70,14 @@ This ensured implementation followed current best practices and API standards.
 ├── .github/                  # GitHub Actions CI/CD
 ├── docker-compose.yml        # Multi-service orchestration
 ├── CLAUDE.md                 # This file
+├── architecture.md           # Selected-stem MVP architecture
+├── api.md                    # API and data contract
+├── deployment.md             # Railway/Cloudinary deployment notes
 ├── implementation-plan.md    # Detailed phased implementation plan
+├── queue-worker.md           # Celery queue and worker policy
+├── roadmap.md                # MVP roadmap
+├── setup.md                  # Local setup checklist
+├── storage.md                # Cloudinary storage strategy
 ├── PHASE0_COMPLETED.md       # Documentation of completed Phase 0 work
 ├── tech-stack.md             # Recommended open-source tech stack
 └── README.md                 # Project overview

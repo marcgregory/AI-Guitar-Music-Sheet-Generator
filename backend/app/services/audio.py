@@ -12,16 +12,15 @@ import csv
 import shutil
 
 from app.core.config import settings
+from app.services import storage
 
 DEMUCS_GUITAR_MODEL = settings.DEMUCS_GUITAR_MODEL
 DEMUCS_FALLBACK_MODEL = settings.DEMUCS_FALLBACK_MODEL
 DEMUCS_CMD_TIMEOUT_SECONDS = settings.DEMUCS_CMD_TIMEOUT_SECONDS
 DEMUCS_MULTI_STEMS = {
-    "guitar": "guitar",
     "bass": "bass",
     "drums": "drums",
     "vocals": "vocals",
-    "piano": "piano",
     "other": "other",
 }
 DEMUCS_VENDOR_PATH = Path(os.environ.get("DEMUCS_VENDOR_PATH", r"C:\tmp\demucs_py313"))
@@ -120,14 +119,14 @@ def preprocess_audio(input_file_path: str, output_file_path: str = None, target_
     Returns:
         Path to the preprocessed audio file.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     # Determine output file path
     if output_file_path is None:
         output_file_path = str(input_path.parent / f"{input_path.stem}_preprocessed{input_path.suffix}")
-    output_path = Path(output_file_path)
+    output_path = Path(storage.normalize_local_path(output_file_path))
 
     # Load the audio file
     try:
@@ -152,7 +151,7 @@ def preprocess_audio(input_file_path: str, output_file_path: str = None, target_
     except Exception as e:
         raise RuntimeError(f"Failed to save preprocessed audio: {str(e)}")
 
-    return str(output_path)
+    return output_path.as_posix()
 
 
 def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict[str, str]:
@@ -171,14 +170,14 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
     Returns:
         Dictionary mapping instrument type to separated stem path.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     # Determine output directory
     if output_dir is None:
         output_dir = tempfile.mkdtemp()
-    output_path = Path(output_dir)
+    output_path = Path(storage.normalize_local_path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
 
     _ensure_demucs_available()
@@ -197,7 +196,7 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
                     stem_name,
                 )
                 if stem_path:
-                    stems[instrument_type] = str(stem_path)
+                    stems[instrument_type] = storage.normalize_local_path(stem_path)
 
             if stems:
                 return stems
@@ -216,9 +215,9 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
             "accompaniment",
         )
         if vocals_path:
-            fallback_stems["vocals"] = str(vocals_path)
+            fallback_stems["vocals"] = storage.normalize_local_path(vocals_path)
         if accompaniment_path:
-            fallback_stems["other"] = str(accompaniment_path)
+            fallback_stems["other"] = storage.normalize_local_path(accompaniment_path)
         if fallback_stems:
             return fallback_stems
         raise FileNotFoundError("No stems found after Demucs fallback separation")
@@ -233,6 +232,33 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
         raise RuntimeError(f"Failed to separate audio sources: {str(e)}")
 
 
+def separate_selected_stem(
+    input_file_path: str,
+    selected_stem: str,
+    output_dir: str = None,
+) -> str:
+    """
+    Separate one Demucs MVP stem and return only that stem path.
+
+    Demucs may write temporary files for all default stems while separating, but
+    callers should persist only the requested output. This keeps the Railway MVP
+    storage and transcription cost focused on one selected target per job.
+    """
+    if selected_stem not in DEMUCS_MULTI_STEMS:
+        raise ValueError(
+            f"selected_stem must be one of: {', '.join(sorted(DEMUCS_MULTI_STEMS))}"
+        )
+
+    stems = separate_sources_multi(input_file_path, output_dir)
+    stem_path = stems.get(selected_stem)
+    if stem_path:
+        return stem_path
+
+    raise FileNotFoundError(
+        f"Demucs did not produce the selected '{selected_stem}' stem for this audio."
+    )
+
+
 def separate_sources(input_file_path: str, output_dir: str = None) -> str:
     """
     Separate audio sources using Demucs and return the preferred analysis stem.
@@ -241,7 +267,7 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
     preferred, then other/accompaniment, then any available separated stem.
     """
     stems = separate_sources_multi(input_file_path, output_dir)
-    for preferred_stem in ("guitar", "other", "bass", "piano", "vocals", "drums"):
+    for preferred_stem in ("other", "bass", "vocals", "drums"):
         if preferred_stem in stems:
             return stems[preferred_stem]
     raise RuntimeError("Source separation completed without usable stems")
@@ -259,14 +285,14 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
     Returns:
         Dictionary containing note data with onset, offset, pitch, velocity, and confidence.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     # Determine output directory
     if output_dir is None:
         output_dir = tempfile.mkdtemp()
-    output_path = Path(output_dir)
+    output_path = Path(storage.normalize_local_path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
 
     # First, try Basic Pitch
@@ -384,14 +410,14 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
     Returns:
         Dictionary containing note data with onset, offset, pitch, velocity, and confidence.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     # Determine output directory
     if output_dir is None:
         output_dir = tempfile.mkdtemp()
-    output_path = Path(output_dir)
+    output_path = Path(storage.normalize_local_path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -405,7 +431,7 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
 
         # Load the audio file
         sr = 16000  # CREPE expects 16kHz audio
-        audio, _ = librosa.load(input_file_path, sr=sr, mono=True)
+        audio, _ = librosa.load(input_path, sr=sr, mono=True)
 
         # Run CREPE
         time, frequency, confidence, activation = crepe.predict(
@@ -493,7 +519,8 @@ def _detect_pitch_librosa(input_file_path: str) -> dict:
     local development usable on Python versions where TensorFlow-backed pitch
     detectors are unavailable.
     """
-    y, sr = librosa.load(input_file_path, sr=22050, mono=True)
+    input_path = Path(storage.normalize_local_path(input_file_path))
+    y, sr = librosa.load(input_path, sr=22050, mono=True)
     if y.size == 0:
         raise RuntimeError("Audio file is empty")
 
@@ -581,7 +608,7 @@ def detect_beat_and_tempo(input_file_path: str) -> dict:
     Returns:
         Dictionary containing tempo (BPM), confidence, and beat frames/times.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
@@ -633,7 +660,7 @@ def detect_key(input_file_path: str) -> dict:
     Returns:
         Dictionary containing key information (key name, scale, confidence).
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
@@ -725,7 +752,7 @@ def detect_rhythm(input_file_path: str) -> dict:
     Returns:
         Dictionary containing onset times, duration estimates, and rhythm parameters.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
@@ -791,7 +818,7 @@ def analyze_drum_rhythm(input_file_path: str, grid_size: float = 0.125) -> dict:
     This intentionally avoids kit-piece classification. The output is a compact
     rhythm-lane representation for playback-synced UI rendering.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
@@ -871,7 +898,7 @@ def detect_chords(input_file_path: str) -> dict:
     Returns:
         Dictionary containing chord sequence with timestamps.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 

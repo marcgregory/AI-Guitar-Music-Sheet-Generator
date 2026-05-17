@@ -72,9 +72,32 @@ class TranscriptionBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     audio_file_path: Optional[str] = None
     preprocessed_audio_file_path: Optional[str] = None
+    selected_stem: Optional[str] = None
+    processing_status: Optional[str] = None
+    queue_position: Optional[int] = None
+    estimated_wait_time: Optional[int] = None
+    celery_task_id: Optional[str] = None
     separated_audio_file_path: Optional[str] = None
     midi_file_path: Optional[str] = None
+    tab_file_path: Optional[str] = None
     youtube_url: Optional[str] = None
+    source_type: Optional[str] = None
+    source_url: Optional[str] = None
+    normalized_source_id: Optional[str] = None
+    audio_hash: Optional[str] = None
+    duplicate_of_id: Optional[int] = None
+    is_deleted: Optional[bool] = False
+    deleted_at: Optional[datetime] = None
+    original_audio_url: Optional[str] = None
+    original_audio_public_id: Optional[str] = None
+    separated_audio_url: Optional[str] = None
+    separated_audio_public_id: Optional[str] = None
+    midi_file_url: Optional[str] = None
+    midi_file_public_id: Optional[str] = None
+    tab_file_url: Optional[str] = None
+    tab_file_public_id: Optional[str] = None
+    duplicate_reused: Optional[bool] = False
+    duplicate_message: Optional[str] = None
     duration: Optional[int] = None
     detected_tempo: Optional[int] = None
     tempo_confidence: Optional[int] = None
@@ -92,6 +115,7 @@ class TranscriptionUpdate(BaseModel):
     detected_tempo: Optional[int] = None
     detected_key: Optional[str] = None
     is_processed: Optional[bool] = None
+    processing_status: Optional[str] = None
     processing_error: Optional[str] = None
 
 class TranscriptionInDBBase(TranscriptionBase):

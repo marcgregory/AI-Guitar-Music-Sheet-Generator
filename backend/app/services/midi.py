@@ -92,7 +92,7 @@ def notes_to_midi(notes_data: Dict[str, Any], output_path: Optional[str] = None,
     output_dir.mkdir(parents=True, exist_ok=True)
 
     mid.save(output_path)
-    return output_path
+    return Path(output_path).as_posix()
 
 
 def _extract_notes(notes_data: Any) -> List[Dict[str, Any]]:
@@ -140,7 +140,7 @@ def save_midi_from_transcription(notes_data: str, transcription_id: int,
     notes_to_midi(notes_data, str(midi_file_path))
 
     # Return relative path for storage in database
-    return str(midi_file_path)
+    return midi_file_path.as_posix()
 
 
 def midi_to_notes(midi_file_path: str) -> Dict[str, Any]:

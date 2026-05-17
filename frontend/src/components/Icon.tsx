@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 export type IconName =
   | "archive"
+  | "alert"
   | "arrow"
   | "check"
   | "clock"
@@ -25,6 +26,7 @@ export type IconName =
   | "plus"
   | "score"
   | "spark"
+  | "trash"
   | "upload"
   | "user"
   | "waveform";
@@ -36,6 +38,13 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M5 7l1 13h12l1-13" />
       <path d="M8 7V4h8v3" />
       <path d="M10 12h4" />
+    </>
+  ),
+  alert: (
+    <>
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+      <path d="M10.3 3.9 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
     </>
   ),
   arrow: (
@@ -195,6 +204,15 @@ const paths: Record<IconName, ReactNode> = {
     <>
       <path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2Z" />
       <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z" />
+    </>
+  ),
+  trash: (
+    <>
+      <path d="M4 7h16" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M5 7l1 14h12l1-14" />
+      <path d="M9 7V4h6v3" />
     </>
   ),
   upload: (

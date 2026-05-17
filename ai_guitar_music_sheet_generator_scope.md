@@ -1,4 +1,57 @@
-# AI Multi-Instrument Sheet and Stem Studio
+# AI Guitar Music Sheet Generator / MusicStudio
+
+## 2026 MVP Scope Update: Selected-Stem Demucs Processing
+
+This project is now scoped as an MVP/portfolio-friendly selected-stem transcription app, not a full-scale multi-user AI processing system yet.
+
+The old pipeline:
+
+```txt
+Audio Upload
+-> Separate all stems
+-> Convert all stems to MIDI
+-> Generate all tabs
+```
+
+is replaced with:
+
+```txt
+Audio Upload / YouTube URL + selected stem
+-> Generate audio hash or normalize YouTube ID
+-> Check existing completed record with same source + selected stem
+-> If duplicate exists, return existing result
+-> Upload original audio to Cloudinary
+-> Queue processing job
+-> Celery worker downloads a temporary local file
+-> Demucs selected stem separation
+-> Upload separated stem to Cloudinary
+-> MIDI conversion for selected stem if supported
+-> TAB generation for selected stem if supported
+-> Upload outputs to Cloudinary
+-> Playback/export/download
+```
+
+Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar transcription, the app should use the `other` stem as the target because default Demucs models commonly group guitar, piano, synths, and accompaniment there. The UI must make this clear: guitar and piano may be inside `other` depending on the mix and model.
+
+The backend should accept `selected_stem` or `selected_instrument` in upload/process requests, upload the original source audio to Cloudinary, run Demucs only for the selected output needed, convert only that selected stem to MIDI/TAB/sheet output when applicable, upload durable outputs to Cloudinary, and save only the selected stem output unless explicit caching is needed.
+
+Only one active processing job should run at a time. Celery worker concurrency should be `1`, new jobs should be queued instead of running concurrently, and status responses should explain when another job is currently active. This is intentional to reduce Railway/server cost, prevent memory overload, and keep the MVP realistic.
+
+Recommended MVP limits:
+- Process one selected stem per job.
+- Prefer 3-5 minute songs.
+- Avoid full multi-stem transcription by default.
+- Treat Railway local storage as temporary worker scratch space only.
+- Store Cloudinary `secure_url` and `public_id` references for original audio, selected separated stem audio, MIDI files, and TAB files.
+- Detect duplicate same-song/same-stem requests before queueing work and reuse completed output.
+- Let users delete completed, failed, queued, and processing records.
+- Treat full multi-instrument processing as a future premium or GPU-backed feature.
+
+Future roadmap:
+- Phase 1: selected stem only, one active job at a time, Cloudinary storage integration.
+- Phase 2: multiple selected stems.
+- Phase 3: GPU worker or external AI processing service.
+- Phase 4: full Songsterr-like multi-track tabs.
 
 ## Problem
 
@@ -10,20 +63,21 @@ Existing tools tend to solve only part of the workflow. Stem splitters can isola
 
 ## Solution
 
-Develop an AI-powered web application that combines Moises-style stem separation with Songsterr-style synchronized notation and playback.
+Develop an AI-powered web application that combines selective Demucs stem separation with Songsterr-style synchronized notation and playback for one selected target stem.
 
-The system will analyze audio from MP3/WAV uploads or YouTube links, separate broad instrument stems, detect notes, chords, tempo, key, rhythm, and confidence levels, then generate track-specific musical outputs where supported.
+The system will analyze audio from MP3/WAV uploads or YouTube links, let the user choose a target stem, separate only the selected output needed, detect notes, chords, tempo, key, rhythm, and confidence levels for that selected stem where supported, then generate track-specific musical outputs.
 
 The application will provide:
-- Multi-stem playback for vocals, drums, bass, guitar, piano, and other/accompaniment
-- Per-instrument transcription tracks
-- Guitar and bass tablature
-- Piano, vocal, and melodic staff notation where supported
-- Drum rhythm lanes and future drum notation
+- Selected-stem playback for vocals, drums, bass, or other/accompaniment
+- Per-job selected-stem transcription tracks
+- Guitar-oriented tablature from the `other` stem for the MVP
+- Bass tablature when `bass` is selected
+- Drum rhythm lanes when `drums` is selected
+- Piano, vocal, and melodic staff notation where supported later
 - Chord progressions and chord charts
 - Synchronized playback, looping, speed control, and export options
 
-The goal is a multi-instrument transcription and practice studio, not a guitar-only tab generator.
+The goal is a practical selected-stem transcription and practice studio first, with full multi-track Songsterr-like tabs as a later expansion.
 
 ---
 
@@ -43,19 +97,21 @@ The goal is a multi-instrument transcription and practice studio, not a guitar-o
 - Rhythm and onset analysis
 - Per-track confidence scoring
 
-### Multi-Instrument Stem Separation
-- Generate and persist separate stems for vocals, drums, bass, guitar, piano, and other/accompaniment
-- Provide stem preview and playback
-- Support mute, solo, and volume controls per stem
-- Allow selected-track reprocessing without rerunning the whole song
+### Selected-Stem Source Separation
+- Require the user to choose a target stem before processing
+- Support Demucs default stems first: vocals, drums, bass, and other
+- Use `other` as the MVP target for guitar transcription
+- Explain that guitar and piano may be grouped inside `other`
+- Run Demucs only for the selected output needed
+- Persist the selected separated stem, not every stem by default
+- Allow selected-stem reprocessing without rerunning unrelated outputs
 
-### Multi-Track Transcription
-- Store transcription data per instrument track
-- Generate guitar tablature from guitar stems
-- Generate bass tablature from bass stems
-- Generate piano note/staff notation from piano stems
-- Generate vocal melody notation from vocal stems
-- Generate drum rhythm data from drum stems
+### Selected-Track Transcription
+- Store transcription data for the selected instrument/stem
+- Generate guitar-oriented tablature from the `other` stem in the MVP
+- Generate bass tablature from the `bass` stem where supported
+- Generate drum rhythm data from the `drums` stem
+- Generate piano/vocal notation only when model support and transcription quality are adequate
 - Keep full-mix transcription as a fallback or summary view
 
 ### Notation and Track Viewer
@@ -101,9 +157,8 @@ The goal is a multi-instrument transcription and practice studio, not a guitar-o
 The platform may use the following AI and audio processing technologies:
 
 #### Source Separation
-- Demucs
-- Spleeter
-- Future specialist models for instrument-specific separation
+- Demucs using default stems: vocals, drums, bass, and other
+- Future specialist models for true guitar, piano, lead/rhythm guitar, and other instrument-specific separation
 
 #### Pitch Detection
 - Spotify Basic Pitch
@@ -166,9 +221,9 @@ The system will support songs containing:
 - Other melodic and accompaniment instruments
 
 The application will:
-- Separate broad stems before transcription
-- Analyze each supported stem separately
-- Store results as instrument tracks
+- Ask the user for one selected target stem before transcription
+- Separate and analyze only the selected stem in the MVP
+- Store results against the selected stem/instrument
 - Use full-mix processing only as a fallback or overview
 
 Complex mixes may reduce accuracy, especially when multiple similar instruments overlap.
@@ -297,7 +352,11 @@ Generated exports may include:
 
 The platform will:
 - Automatically delete temporary uploaded and preprocessed audio after processing
-- Retain separated stems only when needed for playback, reprocessing, or user projects
+- Retain durable audio/output assets in Cloudinary only when needed for playback, reprocessing, downloads, or user projects
+- Store Cloudinary `public_id` values so retained assets can be deleted or replaced later
+- Treat Railway local files as temporary processing artifacts and clean them up after terminal job status
+- Allow users to delete processing records and clean related Cloudinary files when safe
+- Keep database deletion safe and log cleanup errors if Cloudinary deletion fails
 - Allow users to manage saved projects
 - Minimize storage of copyrighted material
 
@@ -324,6 +383,8 @@ The platform only processes data necessary for transcription and practice functi
 
 Expected processing speed:
 - 1-3 minutes for a typical 3-minute song, depending on model choice and hardware
+- 3-5 minute songs are recommended for the Railway MVP
+- Longer songs should be rejected, warned, or reserved for later premium/GPU processing
 
 Real-time transcription may be explored using:
 - WebAssembly
@@ -338,7 +399,8 @@ The platform will use:
 - Server-side AI processing
 - Browser-based playback/editing
 - Per-track transcription storage
-- Cloud or local storage for saved projects
+- Cloudinary durable storage for saved audio/output assets
+- Railway local storage only for temporary processing files
 
 Benefits include:
 - Better AI performance
@@ -352,7 +414,7 @@ Benefits include:
 
 Initial limitations:
 - Maximum file size: 100MB
-- Maximum duration: 10 minutes
+- Recommended maximum duration: 3-5 minutes for MVP cost and memory stability
 
 Premium plans may support larger uploads.
 
@@ -361,12 +423,11 @@ Premium plans may support larger uploads.
 ### Instrument Support
 
 MVP support:
-- Vocals stem playback
-- Drum stem playback and rhythm lane
-- Bass stem playback and bass tab
-- Guitar stem playback and guitar tab
-- Piano stem playback
-- Other/accompaniment stem playback
+- User-selected `vocals` stem playback
+- User-selected `drums` stem playback and rhythm lane
+- User-selected `bass` stem playback and bass tab
+- User-selected `other` stem playback and guitar-oriented tab attempt
+- Clear messaging that guitar/piano may live inside `other`
 
 Near-term expansion:
 - Piano note and staff notation
@@ -464,11 +525,105 @@ User corrections may help improve future transcription models.
 ### Operational Cost Management
 
 To manage AI processing costs, the platform may use:
-- Queue systems
+- A queue with one active Celery worker process at a time
+- Duplicate detection before queueing work
 - Usage limits
 - Prioritized processing
 - Subscription-based premium access
 - Caching for repeated audio or stem processing
+
+Selective processing reduces CPU/RAM usage, storage requirements, and processing time because the app does not create and transcribe every stem for every song. Full multi-instrument processing should be treated as a future premium capability, especially if GPU workers or external AI processing services are added.
+
+Railway is the MVP backend target, not the long-term heavy AI processing platform. Large-scale concurrent AI processing is out of scope for Phase 1.
+
+Duplicate detection reduces repeated Demucs processing, repeated Cloudinary storage usage, unnecessary queue jobs, and Railway CPU/RAM cost.
+
+### Duplicate Song Handling
+
+Before starting a new processing job:
+
+```txt
+User Upload / YouTube URL + selected stem
+-> Generate audio hash or normalize YouTube ID
+-> Check existing completed record with same source + selected_stem
+-> If found, return existing result
+-> If not found, upload/process normally
+-> Save result for future reuse
+```
+
+Duplicate detection should consider:
+
+- `audio_hash` for uploaded files
+- `source_type`
+- `source_url`
+- `normalized_source_id` for YouTube URLs
+- `selected_stem`
+
+Same song plus same selected stem should reuse existing output. Same song plus a different selected stem may create a new job because output will be different.
+
+### Delete Processing Records
+
+Users should be allowed to delete processing records from the UI for these statuses:
+
+- `completed`
+- `failed`
+- `queued`
+- `processing`
+
+If the job is queued, remove or cancel it if possible. If the job is processing, mark it as cancelled/deleted in the database and stop it if cancellation is supported.
+
+MVP limitation: stopping an active Celery task may not be reliable yet. In that case, the UI record can be hidden/deleted, temporary files should still be cleaned up, and the active worker may finish silently.
+
+Deleting a record should also delete related Cloudinary files when safe:
+
+- original audio
+- separated stem audio
+- MIDI file
+- TAB file
+
+If Cloudinary deletion fails, keep the database deletion safe and log the cleanup error.
+
+### Data Model and API Scope
+
+Upload and YouTube processing requests should include one of:
+- `selected_stem`
+- `selected_instrument`
+
+Valid MVP stem values:
+- `vocals`
+- `drums`
+- `bass`
+- `other`
+
+Recommended persisted fields:
+- `selected_stem`
+- `audio_hash`
+- `source_type`
+- `source_url`
+- `normalized_source_id`
+- `duplicate_of_id`
+- `is_deleted`
+- `deleted_at`
+- `original_audio_url`
+- `original_audio_public_id`
+- `separated_audio_url`
+- `separated_audio_public_id`
+- `midi_file_url`
+- `midi_file_public_id`
+- `tab_file_url`
+- `tab_file_public_id`
+- `processing_status`
+- `processing_error`
+- `queue_position`
+
+Legacy local path fields such as `separated_audio_file_path`, `midi_file_path`, and `tab_file_path` may exist during migration, but they should not be treated as durable storage fields in the Railway MVP.
+
+Supported processing statuses:
+- `pending`
+- `queued`
+- `processing`
+- `completed`
+- `failed`
 
 ---
 

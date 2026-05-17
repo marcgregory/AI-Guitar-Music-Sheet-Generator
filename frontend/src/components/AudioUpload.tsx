@@ -6,11 +6,15 @@ import {
   CloudUpload,
   Folder,
   Guitar,
+  Mic2,
   ShieldCheck,
   SlidersHorizontal,
   Video,
 } from "lucide-react";
-import audioService, { type Transcription } from "../services/audioService";
+import audioService, {
+  type StemSelection,
+  type Transcription,
+} from "../services/audioService";
 import { useAuth } from "./auth/AuthContext";
 
 const AudioUpload: React.FC = () => {
@@ -25,6 +29,7 @@ const AudioUpload: React.FC = () => {
   const [activeTab, setActiveTab] = useState<"file" | "youtube">("file");
   const [file, setFile] = useState<File | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [selectedStem, setSelectedStem] = useState<StemSelection | "">("");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(0);
   const [hasActiveTranscription, setHasActiveTranscription] = useState(false);
@@ -177,6 +182,7 @@ const AudioUpload: React.FC = () => {
         const active = transcriptions.some(
           (transcription: Transcription) =>
             !transcription.is_processed &&
+            transcription.processing_status !== "failed" &&
             (!transcription.processing_error ||
               isNonBlockingProcessingWarning(transcription.processing_error)),
         );
@@ -249,16 +255,14 @@ const AudioUpload: React.FC = () => {
       return;
     }
 
-    if (isActiveTranscriptionLoading) {
-      setError(
-        "Checking transcription status. Please wait a moment before uploading.",
-      );
+    if (!selectedStem) {
+      setError("Please choose one target stem before processing.");
       return;
     }
 
-    if (hasActiveTranscription) {
+    if (isActiveTranscriptionLoading) {
       setError(
-        "A transcription is already processing. Please wait until it finishes before uploading another audio file.",
+        "Checking transcription status. Please wait a moment before uploading.",
       );
       return;
     }
@@ -272,6 +276,7 @@ const AudioUpload: React.FC = () => {
       const response = await audioService.uploadAudioFile(
         file,
         token,
+        selectedStem,
         undefined,
         (progress) => {
           setUploadProgress(Math.min(progress, 95));
@@ -306,16 +311,14 @@ const AudioUpload: React.FC = () => {
       return;
     }
 
-    if (isActiveTranscriptionLoading) {
-      setError(
-        "Checking transcription status. Please wait a moment before extracting audio.",
-      );
+    if (!selectedStem) {
+      setError("Please choose one target stem before processing.");
       return;
     }
 
-    if (hasActiveTranscription) {
+    if (isActiveTranscriptionLoading) {
       setError(
-        "A transcription is already processing. Please wait until it finishes before uploading another audio file.",
+        "Checking transcription status. Please wait a moment before extracting audio.",
       );
       return;
     }
@@ -335,6 +338,7 @@ const AudioUpload: React.FC = () => {
       const response = await audioService.extractAudioFromYouTube(
         youtubeUrl,
         token,
+        selectedStem,
       );
       setUploadProgress(100);
       setSuccess(
@@ -358,6 +362,7 @@ const AudioUpload: React.FC = () => {
   const resetForm = () => {
     setFile(null);
     setYoutubeUrl("");
+    setSelectedStem("");
     setUploadProgress(0);
     setError(null);
     setSuccess(null);
@@ -376,12 +381,12 @@ const AudioUpload: React.FC = () => {
       : null;
   const fileUploadStatusDetail = uploadPercentLabel ?? "We'll handle the rest";
   const fileUploadDisabled =
-    isUploading || hasActiveTranscription || isActiveTranscriptionLoading;
+    isUploading || isActiveTranscriptionLoading || !selectedStem;
   const youtubeSubmitDisabled =
     isUploading ||
     !youtubeUrl.trim() ||
-    hasActiveTranscription ||
-    isActiveTranscriptionLoading;
+    isActiveTranscriptionLoading ||
+    !selectedStem;
 
   return (
     <div className="audio-upload-container" ref={rootRef}>
@@ -444,11 +449,19 @@ const AudioUpload: React.FC = () => {
               {hasActiveTranscription && !isUploading && (
                 <div className="upload-lock-banner">
                   <p>
-                    A transcription is already processing. Please wait until it
-                    finishes before uploading another audio file.
+                    Another selected-stem job is processing. New uploads will
+                    be queued and will start when the single Railway worker is
+                    free.
                   </p>
                 </div>
               )}
+              <StemSelector
+                selectedStem={selectedStem}
+                onSelect={(stem) => {
+                  setSelectedStem(stem);
+                  setError(null);
+                }}
+              />
               {activeTab === "file" ? (
                 <div
                   ref={dropzoneRef}
@@ -489,6 +502,7 @@ const AudioUpload: React.FC = () => {
                   />
                   <p className="file-limits">
                     Supported formats: MP3, WAV &bull; Maximum size: 100MB
+                    &bull; Best under 5 minutes
                   </p>
 
                   {file && (
@@ -635,6 +649,75 @@ const HelpItem = ({
       <small>{body}</small>
     </span>
   </div>
+);
+
+const stemOptions: Array<{
+  value: StemSelection;
+  label: string;
+  detail: string;
+  icon: React.ReactNode;
+}> = [
+  {
+    value: "vocals",
+    label: "Vocals",
+    detail: "Save the isolated vocal stem",
+    icon: <Mic2 aria-hidden="true" />,
+  },
+  {
+    value: "drums",
+    label: "Drums",
+    detail: "Save drums and rhythm timing",
+    icon: <AudioWaveform aria-hidden="true" />,
+  },
+  {
+    value: "bass",
+    label: "Bass",
+    detail: "Bass MIDI/TAB where detected",
+    icon: <SlidersHorizontal aria-hidden="true" />,
+  },
+  {
+    value: "other",
+    label: "Other / Guitar / Piano / Melody",
+    detail: "MVP guitar target; piano may be grouped here",
+    icon: <Guitar aria-hidden="true" />,
+  },
+];
+
+const StemSelector = ({
+  selectedStem,
+  onSelect,
+}: {
+  selectedStem: StemSelection | "";
+  onSelect: (stem: StemSelection) => void;
+}) => (
+  <section className="stem-selector" aria-labelledby="stem-selector-title">
+    <div className="stem-selector-heading">
+      <span id="stem-selector-title">Choose one target stem</span>
+      <small>Demucs default stems: vocals, drums, bass, other.</small>
+    </div>
+    <div className="stem-option-grid" role="radiogroup" aria-label="Target stem">
+      {stemOptions.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={`stem-option ${selectedStem === option.value ? "active" : ""}`}
+          role="radio"
+          aria-checked={selectedStem === option.value}
+          onClick={() => onSelect(option.value)}
+        >
+          <span className="stem-option-icon">{option.icon}</span>
+          <span>
+            <strong>{option.label}</strong>
+            <small>{option.detail}</small>
+          </span>
+        </button>
+      ))}
+    </div>
+    <p className="stem-selector-note">
+      For guitar transcription, choose Other. Guitar and piano may be grouped
+      there depending on the model and mix.
+    </p>
+  </section>
 );
 
 export default AudioUpload;

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import audioService, { type Transcription } from "../../services/audioService";
 import { Icon } from "../Icon";
@@ -10,9 +10,10 @@ interface Project {
   description: string;
   createdAt: string;
   audioFileName: string;
-  status: "processing" | "completed" | "failed";
+  status: "pending" | "queued" | "processing" | "completed" | "failed";
   duration: number;
   difficulty: "beginner" | "intermediate" | "advanced";
+  processingError?: string | null;
 }
 
 const filenameFromPath = (path?: string | null): string =>
@@ -22,6 +23,15 @@ const isNonBlockingProcessingWarning = (error?: string | null): boolean =>
   Boolean(error?.startsWith("Source separation unavailable; processed the full mix instead."));
 
 const getTranscriptionStatus = (transcription: Transcription): Project["status"] => {
+  if (
+    transcription.processing_status === "pending" ||
+    transcription.processing_status === "queued" ||
+    transcription.processing_status === "processing" ||
+    transcription.processing_status === "completed" ||
+    transcription.processing_status === "failed"
+  ) {
+    return transcription.processing_status;
+  }
   if (transcription.processing_error && !isNonBlockingProcessingWarning(transcription.processing_error)) {
     return "failed";
   }
@@ -46,7 +56,11 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
     description:
       status === "failed"
         ? transcription.processing_error || "Processing failed"
-        : status === "completed"
+        : status === "queued"
+          ? "Queued because another Railway MVP job is processing"
+          : status === "pending"
+            ? "Waiting for the selected-stem job to start"
+            : status === "completed"
           ? transcription.processing_error && isNonBlockingProcessingWarning(transcription.processing_error)
             ? "Score and exports are ready from the full mix"
             : "Score, tab, and exports are ready"
@@ -56,6 +70,7 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
     status,
     duration: transcription.duration || 0,
     difficulty: getDifficulty(transcription.duration),
+    processingError: transcription.processing_error,
   };
 };
 
@@ -81,6 +96,9 @@ const getStatusGradient = (status: Project["status"]) => {
   switch (status) {
     case "completed":
       return "linear-gradient(135deg, #42755f, #244c69)";
+    case "queued":
+    case "pending":
+      return "linear-gradient(135deg, #7a6331, #5a4321)";
     case "processing":
       return "linear-gradient(135deg, #bf8d31, #a8481d)";
     case "failed":
@@ -89,6 +107,109 @@ const getStatusGradient = (status: Project["status"]) => {
       return "linear-gradient(135deg, #4e4a44, #171513)";
   }
 };
+
+type ToastState = {
+  tone: "success" | "error";
+  message: string;
+} | null;
+
+type ProjectAction =
+  | "open"
+  | "source"
+  | "delete"
+  | "error";
+
+type ProjectActionMenuItem = {
+  action: ProjectAction;
+  label: string;
+  icon: React.ComponentProps<typeof Icon>["name"];
+  dangerous?: boolean;
+};
+
+const getProjectActionMenuItems = (project: Project): ProjectActionMenuItem[] => {
+  const items: ProjectActionMenuItem[] = [];
+
+  if (project.status === "completed") {
+    items.push({ action: "source", label: "Open source audio", icon: "music" });
+  }
+
+  if (project.status === "processing") {
+    items.push({ action: "open", label: "View progress", icon: "eye" });
+  }
+
+  if (project.status === "queued" || project.status === "pending") {
+    items.push({ action: "open", label: "View queue status", icon: "clock" });
+  }
+
+  if (project.status === "failed") {
+    items.push({ action: "error", label: "View processing error", icon: "alert" });
+  }
+
+  items.push({
+    action: "delete",
+    label: "Delete project",
+    icon: "trash",
+    dangerous: true,
+  });
+
+  return items;
+};
+
+interface ProjectActionMenuProps {
+  project: Project;
+  isOpen: boolean;
+  onToggle: () => void;
+  onAction: (project: Project, action: ProjectAction) => void;
+}
+
+const ProjectActionMenu: React.FC<ProjectActionMenuProps> = ({
+  project,
+  isOpen,
+  onToggle,
+  onAction,
+}) => (
+  <div className="project-menu-shell">
+    <button
+      type="button"
+      className={`project-more-button ${isOpen ? "active" : ""}`}
+      aria-label={`${project.title} actions`}
+      aria-haspopup="menu"
+      aria-expanded={isOpen}
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && isOpen) {
+          event.stopPropagation();
+          onToggle();
+        }
+      }}
+    >
+      <Icon name="more" />
+    </button>
+
+    {isOpen && (
+      <div className="project-action-menu" role="menu">
+        {getProjectActionMenuItems(project).map((item) => (
+          <button
+            key={item.action}
+            type="button"
+            role="menuitem"
+            className={`project-action-menu-item ${item.dangerous ? "danger" : ""}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onAction(project, item.action);
+            }}
+          >
+            <Icon name={item.icon} />
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </div>
+    )}
+  </div>
+);
 
 const getDifficultyColor = (difficulty: Project["difficulty"]) => {
   switch (difficulty) {
@@ -113,6 +234,12 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(!cachedTranscriptions);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [openMenuProjectId, setOpenMenuProjectId] = useState<number | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<Project | null>(null);
+  const [errorCandidate, setErrorCandidate] = useState<Project | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [toast, setToast] = useState<ToastState>(null);
+  const dashboardRef = useRef<HTMLDivElement | null>(null);
 
   const handleNewTranscription = () => {
     navigate("/upload");
@@ -122,6 +249,67 @@ const Dashboard: React.FC = () => {
     project.status === "completed"
       ? `/transcription/${project.id}`
       : `/processing/${project.id}`;
+
+  const showToast = (nextToast: ToastState) => {
+    setToast(nextToast);
+    if (nextToast) {
+      window.setTimeout(() => setToast(null), 3600);
+    }
+  };
+
+  const handleProjectAction = async (project: Project, action: ProjectAction) => {
+    setOpenMenuProjectId(null);
+
+    if (action === "open") {
+      navigate(getProjectRoute(project));
+      return;
+    }
+
+    if (action === "error") {
+      setErrorCandidate(project);
+      return;
+    }
+
+    if (action === "delete") {
+      setDeleteCandidate(project);
+      return;
+    }
+
+    if (action === "source") {
+      if (!token) return;
+      try {
+        const blob = await audioService.getSourceAudio(project.id, token);
+        const sourceUrl = URL.createObjectURL(blob);
+        window.open(sourceUrl, "_blank", "noopener,noreferrer");
+        window.setTimeout(() => URL.revokeObjectURL(sourceUrl), 60000);
+      } catch (error: any) {
+        showToast({
+          tone: "error",
+          message: error.response?.data?.detail || "Source audio could not be opened.",
+        });
+      }
+    }
+  };
+
+  const confirmDeleteProject = async () => {
+    if (!deleteCandidate || !token) return;
+    setIsDeleting(true);
+    try {
+      await audioService.deleteTranscription(deleteCandidate.id, token);
+      setProjects((currentProjects) =>
+        currentProjects.filter((project) => project.id !== deleteCandidate.id),
+      );
+      setDeleteCandidate(null);
+      showToast({ tone: "success", message: "Transcription deleted." });
+    } catch (error: any) {
+      showToast({
+        tone: "error",
+        message: error.response?.data?.detail || "Could not delete transcription.",
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -198,13 +386,39 @@ const Dashboard: React.FC = () => {
     };
   }, [token]);
 
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!dashboardRef.current?.contains(event.target as Node)) {
+        setOpenMenuProjectId(null);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenMenuProjectId(null);
+        setDeleteCandidate(null);
+        setErrorCandidate(null);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, []);
+
   if (!user) {
     navigate("/login");
     return null;
   }
 
   const completedCount = projects.filter((project) => project.status === "completed").length;
-  const processingCount = projects.filter((project) => project.status === "processing").length;
+  const processingCount = projects.filter((project) =>
+    project.status === "pending" || project.status === "queued" || project.status === "processing",
+  ).length;
   const totalMinutes = Math.floor(projects.reduce((sum, project) => sum + project.duration, 0) / 60);
   const featuredProject = projects[0];
   const statCards = [
@@ -249,7 +463,8 @@ const Dashboard: React.FC = () => {
   );
 
   return (
-    <div className="dashboard-page">
+    <div className="dashboard-page" ref={dashboardRef}>
+      {toast && <div className={`studio-toast studio-toast-${toast.tone}`}>{toast.message}</div>}
       <div className="dashboard-content">
         <header className="dashboard-header cinematic-dashboard-hero">
           <div className="dashboard-hero-art" aria-hidden="true">
@@ -330,9 +545,16 @@ const Dashboard: React.FC = () => {
                     <div className="project-status-badge" style={{ background: getStatusGradient(featuredProject.status) }}>
                       {featuredProject.status}
                     </div>
-                    <button type="button" className="project-more-button" aria-label="More project actions">
-                      <Icon name="more" />
-                    </button>
+                    <ProjectActionMenu
+                      project={featuredProject}
+                      isOpen={openMenuProjectId === featuredProject.id}
+                      onToggle={() =>
+                        setOpenMenuProjectId((currentId) =>
+                          currentId === featuredProject.id ? null : featuredProject.id,
+                        )
+                      }
+                      onAction={handleProjectAction}
+                    />
                   </div>
 
                   <p className="project-description">{featuredProject.description}</p>
@@ -376,10 +598,6 @@ const Dashboard: React.FC = () => {
                     <Icon name="eye" />
                     <span>View</span>
                   </button>
-                  <button onClick={() => navigate(getProjectRoute(featuredProject))} className="action-button export-button">
-                    <Icon name="download" />
-                    <span>Exports</span>
-                  </button>
                 </div>
               </article>
             ) : (
@@ -399,6 +617,16 @@ const Dashboard: React.FC = () => {
                             <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
                               {project.status}
                             </div>
+                            <ProjectActionMenu
+                              project={project}
+                              isOpen={openMenuProjectId === project.id}
+                              onToggle={() =>
+                                setOpenMenuProjectId((currentId) =>
+                                  currentId === project.id ? null : project.id,
+                                )
+                              }
+                              onAction={handleProjectAction}
+                            />
                           </div>
                           <p className="project-description">{project.description}</p>
 
@@ -441,12 +669,6 @@ const Dashboard: React.FC = () => {
                             <Icon name="eye" />
                             <span>View</span>
                           </button>
-                          {project.status === "completed" && (
-                            <button onClick={() => navigate(getProjectRoute(project))} className="action-button export-button">
-                              <Icon name="download" />
-                              <span>Exports</span>
-                            </button>
-                          )}
                         </div>
                       </article>
                     ))}
@@ -462,6 +684,16 @@ const Dashboard: React.FC = () => {
                             <div className="project-list-status" style={{ background: getStatusGradient(project.status) }}>
                               {project.status}
                             </div>
+                            <ProjectActionMenu
+                              project={project}
+                              isOpen={openMenuProjectId === project.id}
+                              onToggle={() =>
+                                setOpenMenuProjectId((currentId) =>
+                                  currentId === project.id ? null : project.id,
+                                )
+                              }
+                              onAction={handleProjectAction}
+                            />
                           </div>
 
                           <div className="project-list-body">
@@ -522,6 +754,16 @@ const Dashboard: React.FC = () => {
                           <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
                             {project.status}
                           </div>
+                          <ProjectActionMenu
+                            project={project}
+                            isOpen={openMenuProjectId === project.id}
+                            onToggle={() =>
+                              setOpenMenuProjectId((currentId) =>
+                                currentId === project.id ? null : project.id,
+                              )
+                            }
+                            onAction={handleProjectAction}
+                          />
                         </div>
                         <p className="project-description">{project.description}</p>
                         <div className="project-meta">
@@ -545,12 +787,6 @@ const Dashboard: React.FC = () => {
                           <Icon name="eye" />
                           <span>View</span>
                         </button>
-                        {project.status === "completed" && (
-                          <button onClick={() => navigate(getProjectRoute(project))} className="action-button export-button">
-                            <Icon name="download" />
-                            <span>Exports</span>
-                          </button>
-                        )}
                       </div>
                     </article>
                   ))}
@@ -579,6 +815,67 @@ const Dashboard: React.FC = () => {
           </section>
         </main>
       </div>
+
+      {deleteCandidate && (
+        <div className="studio-modal-backdrop" role="presentation">
+          <div
+            className="studio-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-transcription-title"
+          >
+            <h3 id="delete-transcription-title">Delete transcription</h3>
+            <p>Are you sure you want to delete this transcription?</p>
+            {deleteCandidate.status === "processing" && (
+              <p className="studio-dialog-warning">
+                Active processing cancellation is best-effort and may finish silently.
+              </p>
+            )}
+            <div className="studio-dialog-actions">
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => setDeleteCandidate(null)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button-danger"
+                onClick={confirmDeleteProject}
+                disabled={isDeleting}
+              >
+                <Icon name="trash" />
+                <span>{isDeleting ? "Deleting..." : "Delete project"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {errorCandidate && (
+        <div className="studio-modal-backdrop" role="presentation">
+          <div
+            className="studio-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="processing-error-title"
+          >
+            <h3 id="processing-error-title">Processing error</h3>
+            <p>{errorCandidate.processingError || "No detailed processing error was returned."}</p>
+            <div className="studio-dialog-actions">
+              <button
+                type="button"
+                className="button-primary"
+                onClick={() => setErrorCandidate(null)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

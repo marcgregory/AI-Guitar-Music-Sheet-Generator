@@ -1,4 +1,6 @@
+import hashlib
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -80,6 +82,39 @@ def test_list_transcriptions_requires_authentication():
     response = client.get("/api/v1/audio/")
 
     assert response.status_code == 401
+
+
+def test_get_transcription_source_audio_normalizes_windows_style_uploaded_path(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "winpath-user", "winpath@example.com")
+        local_audio = tmp_path / "uploaded.wav"
+        local_audio.write_bytes(b"wave data")
+        windows_path = str(local_audio).replace("/", "\\")
+
+        transcription = models.Transcription(
+            title="Windows path upload",
+            audio_file_path=windows_path,
+            user_id=owner.id,
+            is_processed=True,
+            created_at=datetime.utcnow(),
+            duration=10,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription.id}/source",
+        headers=auth_headers("winpath-user"),
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"wave data"
+    assert response.headers["content-type"].startswith("audio/wav")
 
 
 def test_list_transcriptions_returns_only_current_users_items_newest_first():
@@ -167,11 +202,28 @@ def test_status_returns_processing_for_unfinished_warning_only_job():
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "processing"
+    assert response.json()["status"] == "pending"
     assert response.json().get("error") is None
 
 
-def test_upload_audio_fails_when_active_transcription_exists():
+def test_upload_audio_requires_selected_stem():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "missing-stem-owner", "missing-stem-owner@example.com")
+    finally:
+        session.close()
+
+    response = client.post(
+        "/api/v1/audio/upload",
+        headers=auth_headers("missing-stem-owner"),
+        files={"file": ("sample.wav", b"RIFF....", "audio/wav")},
+    )
+
+    assert response.status_code == 422
+
+
+def test_upload_audio_queues_when_active_transcription_exists():
     reset_database()
     session = TestingSessionLocal()
     try:
@@ -181,35 +233,72 @@ def test_upload_audio_fails_when_active_transcription_exists():
             audio_file_path="uploads/processing.wav",
             user_id=owner.id,
             is_processed=False,
+            processing_status="processing",
         )
         session.add(transcription)
         session.commit()
     finally:
         session.close()
 
-    response = client.post(
-        "/api/v1/audio/upload",
-        headers=auth_headers("active-owner"),
-        files={"file": ("sample.wav", b"RIFF....", "audio/wav")},
-    )
+    with (
+        patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=True),
+        patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
+    ):
+        response = client.post(
+            "/api/v1/audio/upload",
+            headers=auth_headers("active-owner"),
+            data={"selected_stem": "other"},
+            files={"file": ("sample.wav", b"RIFF....", "audio/wav")},
+        )
 
-    assert response.status_code == 409
-    assert "already being processed" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["selected_stem"] == "other"
+    assert response.json()["processing_status"] == "queued"
+    send_task_mock.assert_called_once()
 
 
-def test_extract_audio_from_youtube_fails_when_active_transcription_exists():
+def test_upload_audio_reuses_completed_duplicate_same_hash_and_stem():
+    reset_database()
+    contents = b"RIFF duplicate upload"
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "duplicate-owner", "duplicate-owner@example.com")
+        existing = models.Transcription(
+            title="Already processed",
+            audio_file_path="uploads/existing.wav",
+            user_id=owner.id,
+            selected_stem="other",
+            audio_hash=hashlib.sha256(contents).hexdigest(),
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add(existing)
+        session.commit()
+        existing_id = existing.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+        response = client.post(
+            "/api/v1/audio/upload",
+            headers=auth_headers("duplicate-owner"),
+            data={"selected_stem": "other"},
+            files={"file": ("same.wav", contents, "audio/wav")},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == existing_id
+    assert payload["duplicate_reused"] is True
+    assert "already processed" in payload["duplicate_message"]
+    send_task_mock.assert_not_called()
+
+
+def test_extract_audio_from_youtube_requires_selected_stem():
     reset_database()
     session = TestingSessionLocal()
     try:
-        owner = create_user(session, "youtube-owner", "youtube-owner@example.com")
-        transcription = models.Transcription(
-            title="Processing track",
-            audio_file_path="uploads/processing.wav",
-            user_id=owner.id,
-            is_processed=False,
-        )
-        session.add(transcription)
-        session.commit()
+        create_user(session, "youtube-owner", "youtube-owner@example.com")
     finally:
         session.close()
 
@@ -219,8 +308,7 @@ def test_extract_audio_from_youtube_fails_when_active_transcription_exists():
         json={"youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
     )
 
-    assert response.status_code == 409
-    assert "already being processed" in response.json()["detail"]
+    assert response.status_code == 422
 
 
 def test_list_instrument_tracks_requires_transcription_access():
@@ -306,6 +394,53 @@ def test_list_and_get_instrument_tracks_for_owner():
     track_payload = get_response.json()
     assert track_payload["display_name"] == "Guitar"
     assert track_payload["tab_json"] == '{"strings": []}'
+
+
+def test_delete_transcription_cancels_queued_job_and_hides_record(tmp_path):
+    reset_database()
+    local_audio = tmp_path / "source.wav"
+    local_audio.write_bytes(b"audio")
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "delete-owner", "delete-owner@example.com")
+        transcription = models.Transcription(
+            title="Queued song",
+            audio_file_path=str(local_audio),
+            original_audio_public_id="musicstudio/original",
+            separated_audio_public_id="musicstudio/stem",
+            midi_file_public_id="musicstudio/midi",
+            tab_file_public_id="musicstudio/tab",
+            celery_task_id="task-123",
+            user_id=owner.id,
+            is_processed=False,
+            processing_status="queued",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with (
+        patch("app.api.v1.endpoints.audio.celery_app.control.revoke") as revoke_mock,
+        patch("app.api.v1.endpoints.audio.storage.delete_asset", return_value=True) as delete_mock,
+    ):
+        response = client.delete(
+            f"/api/v1/transcriptions/{transcription_id}",
+            headers=auth_headers("delete-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_deleted"] is True
+    assert payload["processing_status"] == "cancelled"
+    revoke_mock.assert_called_once_with("task-123", terminate=False)
+    assert delete_mock.call_count == 4
+    assert not local_audio.exists()
+
+    list_response = client.get("/api/v1/audio/", headers=auth_headers("delete-owner"))
+    assert list_response.status_code == 200
+    assert list_response.json() == []
 
 
 def test_update_instrument_track_metadata_only_changes_user_editable_fields():

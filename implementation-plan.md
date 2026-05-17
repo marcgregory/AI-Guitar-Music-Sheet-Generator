@@ -1,4 +1,64 @@
-# Implementation Plan for AI Multi-Instrument Sheet and Stem Studio
+# Implementation Plan for AI Guitar Music Sheet Generator / MusicStudio
+
+## 2026 Architecture Update: Selected-Stem MVP
+
+The implementation target is now a Railway-friendly selected-stem MVP. Do not run full multi-stem transcription by default.
+
+Current target pipeline:
+
+```txt
+Audio Upload / YouTube URL + selected stem
+-> Generate audio hash or normalize YouTube ID
+-> Check existing completed record with same source + selected stem
+-> If duplicate exists, return existing result
+-> Upload original audio to Cloudinary
+-> Queue processing job
+-> Celery worker downloads a temporary local file
+-> Demucs selected stem separation
+-> Upload separated stem to Cloudinary
+-> MIDI conversion for selected stem if supported
+-> TAB generation for selected stem if supported
+-> Upload outputs to Cloudinary
+-> Playback/export/download
+```
+
+Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For guitar transcription, use `other` as the MVP target and clearly tell users that guitar/piano/accompaniment may be grouped inside `other` depending on the model and mix. True separate guitar, rhythm guitar, lead guitar, or piano stems require better specialist models later.
+
+Queue policy:
+- Only one processing job should run at a time.
+- Celery worker concurrency must be `1`.
+- New jobs should be queued instead of running concurrently.
+- Status responses should distinguish `pending`, `queued`, `processing`, `completed`, and `failed`.
+- The app should explain this is intentional to reduce Railway CPU/RAM cost and prevent memory overload.
+
+Cost policy:
+- Process one selected stem per job.
+- Upload durable files to Cloudinary and save both `secure_url` and `public_id` references.
+- Treat Railway local storage as temporary scratch space only.
+- Save only the selected separated stem and generated outputs unless caching is explicitly needed.
+- Recommend 3-5 minute songs for the MVP.
+- Treat full multi-instrument processing as a future premium or GPU-backed feature.
+- Selective stem processing reduces CPU usage, RAM usage, storage costs, and processing time.
+- Duplicate detection reduces repeated Demucs processing, repeated Cloudinary storage usage, unnecessary queue jobs, and Railway CPU/RAM cost.
+
+Deletion policy:
+- Users can delete records in `completed`, `failed`, `queued`, and `processing` states.
+- Queued jobs should be removed/cancelled when possible.
+- Processing jobs should be marked cancelled/deleted in the database and stopped if cancellation is supported.
+- MVP limitation: stopping an active Celery task may not be reliable; the UI record can be hidden/deleted, temporary files should still be cleaned up, and the active worker may finish silently.
+- Delete related Cloudinary files when safe: original audio, separated stem audio, MIDI file, and TAB file.
+- If Cloudinary deletion fails, keep database deletion safe and log the cleanup error.
+
+Duplicate flow:
+
+```txt
+User Upload / YouTube URL + selected stem
+-> Generate audio hash or normalize YouTube ID
+-> Check existing completed record with same source + selected_stem
+-> If found, return existing result
+-> If not found, upload/process normally
+-> Save result for future reuse
+```
 
 ## Phase 0: Project Setup & Infrastructure
 
@@ -16,8 +76,17 @@
 
 - [x] Implement file upload endpoint (MP3/WAV) with size validation
 - [x] Integrate yt-dlp for YouTube audio extraction (temporary storage)
+- [x] Upload original audio to Cloudinary and persist `original_audio_url` plus `original_audio_public_id`
+- [x] Generate and persist `audio_hash` for uploaded files
+- [x] Normalize YouTube URLs to `normalized_source_id` before duplicate checks
+- [x] Check existing completed records by source identity plus `selected_stem` before queueing work
+- [x] Return existing result instead of processing duplicate same-song/same-stem requests
 - [x] Add audio preprocessing (normalization, resampling) using librosa
-- [x] Implement source separation using Demucs or Spleeter - Demucs dependency enabled; processing now uses the multi-stem `htdemucs_6s` model when available and falls back to vocals/accompaniment or full-mix processing when needed
+- [x] Update upload and YouTube processing requests to require `selected_stem` or `selected_instrument`
+- [x] Validate selected stems against Demucs MVP outputs: `vocals`, `drums`, `bass`, `other`
+- [x] Implement selected-stem Demucs processing - run separation only for the requested output needed instead of processing every stem by default
+- [x] Upload selected separated stem to Cloudinary and persist `separated_audio_url` plus `separated_audio_public_id`
+- [x] Persist only the selected separated stem unless caching is explicitly needed
 - [x] Implement pitch detection using Spotify Basic Pitch (or CREPE as fallback)
 - [x] Implement beat/tempo detection using librosa.beat
 - [x] Implement key detection using Essentia or librosa chroma features
@@ -25,19 +94,23 @@
 - [x] Create basic chord recognition using librosa chroma + template matching
 - [x] Design data structure for transcription results (notes, chords, timing)
 - [x] Create async processing pipeline with Celery (handle long-running tasks)
+- [x] Enforce one active processing job at a time with Celery worker concurrency set to `1`
+- [x] Add queue-aware backend status/validation so users know when another job is active
+- [x] Add delete/cancel handling for `queued` and `processing` records
 - [x] Add confidence scoring for detected elements - note events include per-note confidence/velocity, chord segments include averaged template confidence, tempo uses beat consistency, and key detection returns chroma-template confidence; task storage now persists key confidence from the correct result field
-- [x] Implement error handling and fallback for low-confidence sections - Basic Pitch falls back to CLI, then CREPE, then librosa pYIN; source separation falls back from selected stems to accompaniment or preprocessed audio
+- [x] Implement error handling and fallback for low-confidence sections - Basic Pitch falls back to CLI, then CREPE, then librosa pYIN; selected-stem source separation should fail clearly or fall back only when doing so does not contradict the user-selected target
 
-### Multi-Instrument Separation Foundation (Moises-style Backend)
+### Selected-Stem Separation Foundation
 
-- [x] Upgrade source separation from single guitar isolation to multi-stem extraction using Demucs `htdemucs_6s` or equivalent model
-- [x] Generate and persist separate stems for vocals, drums, bass, guitar, piano, and other/accompaniment
-- [x] Add fallback behavior when a specific stem is unavailable or low quality
+- [x] Replace full multi-stem default behavior with selected-stem processing
+- [x] Map guitar MVP requests to Demucs `other`
+- [x] Add helper text/API metadata explaining that guitar and piano may be inside `other`
+- [x] Add fallback behavior when the selected stem is unavailable or low quality
 - [x] Add per-stem confidence scoring so users know which instrument tracks are reliable
-- [x] Add optional stem preview endpoint so users can listen before generating tabs
-- [ ] Run pitch detection separately for melodic stems such as guitar, bass, piano, and vocals - guitar and bass stems now generate per-track notes/tabs; piano stems now generate per-track notes/staff notation; vocals remain stem-only for now
-- [x] Generate drum onset/rhythm data from the drum stem instead of standard pitch-based tabs - drum tracks now store `drum_hits` rhythm-lane data in `notes_json` while leaving tab/notation empty for this MVP slice
-- [x] Allow users to reprocess only one selected instrument track instead of reprocessing the whole song - guitar, bass, and drum tracks can now be reprocessed from retained stems without rerunning full-song separation/transcription
+- [x] Add selected-stem preview endpoint so users can listen to the processed target
+- [x] Run pitch detection only for the selected melodic stem when needed
+- [x] Generate drum onset/rhythm data only when `drums` is selected
+- [ ] Allow users to reprocess the selected stem without rerunning unrelated stems
 
 ## Phase 2: Basic Transcription Output & Storage
 
@@ -48,32 +121,68 @@
 - [x] Implement export as MIDI file
 - [x] Implement export as MusicXML file (using music21)
 - [x] Implement export as plain text tabs for tab-capable tracks
+- [x] Upload MIDI and TAB outputs to Cloudinary and persist URL/public ID fields
 - [x] Store transcription results in database linked to user/project
 - [x] Create API endpoints to retrieve transcription data
 - [x] Implement automatic cleanup of temporary audio files after processing - uploaded, preprocessed, and separated audio files are deleted at terminal task state while persisted analysis and export data remain available
+- [x] Ensure Railway local files are treated as temporary only after Cloudinary upload
+- [x] Delete Cloudinary assets when a record is deleted and log cleanup failures safely
 
-### Multi-Track Transcription Output & Storage
+### Selected-Stem Output & Storage
 
 - [x] Design database schema for multi-track instrument transcriptions using an `InstrumentTrack` model
-- [x] Store separated stem audio paths, notes, chords, tabs, notation, confidence scores, and processing status per instrument track - stem path, confidence, status, guitar/bass per-track notes/tabs, piano notes/notation, and drum rhythm hits are persisted; vocals/other remain stem-only for now
-- [x] Generate guitar tablature from the guitar stem
-- [x] Generate bass tablature from the bass stem
-- [x] Generate piano note data or staff notation from the piano stem
-- [ ] Store transcription results per instrument track instead of only one global transcription
+- [x] Add/confirm top-level selected job fields: `selected_stem`, `processing_status`, legacy local path fields, and output references
+- [x] Add Cloudinary fields: `original_audio_url`, `original_audio_public_id`, `separated_audio_url`, `separated_audio_public_id`, `midi_file_url`, `midi_file_public_id`, `tab_file_url`, `tab_file_public_id`, and `processing_error`
+- [x] Add duplicate/deletion fields: `audio_hash`, `source_type`, `source_url`, `normalized_source_id`, `duplicate_of_id`, `is_deleted`, and `deleted_at`
+- [x] Store separated stem audio path, notes, chords, tabs, notation, confidence scores, and processing status for the selected stem
+- [x] Generate guitar-oriented tablature from Demucs `other` for the MVP
+- [x] Generate bass tablature when `bass` is selected
+- [x] Generate drum rhythm data when `drums` is selected
+- [x] Store transcription results for the selected stem instead of creating all track outputs by default
 - [x] Create API endpoint to list available instrument tracks for a transcription
 - [x] Create API endpoint to retrieve one instrument track result
 - [x] Create API endpoint to stream/play one separated stem
-- [x] Create API endpoint to reprocess one selected instrument track
-- [x] Create API endpoint to export one selected instrument as TXT tab, MIDI, MusicXML, or future Guitar Pro format - guitar/bass track exports are available for TXT tab, MIDI, and MusicXML; future Guitar Pro remains post-MVP
+- [ ] Create API endpoint or request path to process/reprocess one selected stem
+- [ ] Create API endpoint to export one selected stem as TXT tab, MIDI, MusicXML, or future Guitar Pro format where supported
+- [x] Create `DELETE /transcriptions/{id}` for completed, failed, queued, and processing records
+- [ ] Create `POST /transcriptions/{id}/cancel` if explicit cancellation is needed separately from delete
 - [x] Create API endpoint to update/correct track metadata such as display name, instrument type, and confidence notes
 
-Suggested new table/model:
+Suggested selected-stem fields:
+
+```txt
+Transcription
+- id
+- selected_stem: vocals | drums | bass | other
+- audio_hash
+- source_type: upload | youtube
+- source_url
+- normalized_source_id
+- duplicate_of_id
+- is_deleted
+- deleted_at
+- processing_status: pending | queued | processing | completed | failed
+- processing_error
+- queue_position
+- original_audio_url
+- original_audio_public_id
+- separated_audio_url
+- separated_audio_public_id
+- midi_file_url
+- midi_file_public_id
+- tab_file_url
+- tab_file_public_id
+```
+
+Legacy local path fields such as `separated_audio_file_path`, `midi_file_path`, and `tab_file_path` may remain during migration, but they should not be treated as durable Railway storage.
+
+Existing/new track table can remain for future multi-track expansion:
 
 ```txt
 InstrumentTrack
 - id
 - transcription_id
-- instrument_type: guitar | bass | piano | drums | vocals | other
+- instrument_type: vocals | drums | bass | other | guitar_alias_for_other
 - display_name
 - stem_audio_path
 - notes_json
@@ -98,7 +207,17 @@ Transcription
 - [x] Create login/logout/register pages
 - [x] Design dashboard layout (projects list, new transcription button) - UI exists and now loads authenticated transcription data from the backend
 - [x] Build audio upload component (file drag&drop, YouTube URL input)
+- [x] Add required target stem selector before upload/YouTube processing
+- [x] Submit `selected_stem` or `selected_instrument` with the upload/process request
+- [x] Use Demucs-supported options first: vocals, drums, bass, other
+- [x] Mark `other` as the MVP guitar target and explain that guitar/piano may be grouped there
 - [x] Create processing status page (progress bar, estimated time) - route wired at `/processing/:transcriptionId`
+- [x] Show queue-aware statuses: pending, queued, processing, completed, failed
+- [x] Explain when a job is queued because another Railway MVP job is processing
+- [ ] Show duplicate reuse message: "This song and stem were already processed. Existing result was loaded."
+- [ ] Add delete button for completed, failed, queued, and processing items
+- [ ] Show confirmation before deleting a processing record
+- [ ] Explain active processing deletion as best-effort cancellation when the worker cannot be stopped reliably
 - [x] Design basic transcription viewer (tabs + notation side-by-side) - guitar/bass score views now prefer alphaTab rendering from generated AlphaTex and fall back to the existing custom SVG viewer when needed
 - [x] Implement audio playback controls (play/pause, seek, volume)
 - [x] Add synchronized playback highlighting (current position in tab/notation)
@@ -107,23 +226,22 @@ Transcription
 - [x] Implement dark/light mode toggle
 - [x] Add download buttons for each export format (MIDI, MusicXML, TXT, PDF later) - MIDI, MusicXML, and TAB buttons are wired; PDF remains Phase 6
 
-### Multi-Instrument Track Interface (Moises/Songsterr-style UI)
+### Selected-Stem Track Interface
 
-- [x] Add instrument selector for Guitar, Bass, Piano, Drums, Vocals, and Other - viewer now lists available `InstrumentTrack` rows plus a global Full Mix fallback
-- [x] Add mute, solo, and volume controls for each separated stem - transcription viewer now loads available stem audio into a compact mixer with per-track mute/solo/volume controls and synchronized transport
-- [x] Add tab/notation viewer that changes based on the selected instrument - guitar/bass tracks use per-track notes/tab JSON, drum tracks show a rhythm lane when `drum_hits` exist, and stem-only tracks show a pending-score state
-- [x] Add synchronized playback for separated stems - selected tracks stream their stem audio and drive the existing score playhead when tab data exists
+- [x] Prioritize a selected-stem result view over a full multi-stem mixer
+- [ ] Add tab/notation/rhythm viewer that changes based on the selected stem
+- [ ] Add synchronized playback for the selected separated stem
 - [x] Add confidence indicators per instrument track
 - [x] Add loading/progress state per instrument, not only per full transcription - selected track status and confidence notes are shown in the viewer
-- [x] Add UX message explaining that lead/rhythm guitar separation may require manual correction - guitar-track transcriptions now show a non-blocking notice that the MVP produces one broad guitar stem and lead/rhythm parts may be blended
+- [ ] Add UX message explaining that lead/rhythm guitar separation and true piano/guitar splitting may require future models
 
 MVP scope recommendation:
 
-1. Multi-stem separation: vocals, drums, bass, guitar, piano, other
-2. Track-specific outputs: guitar/bass tabs, drum rhythm lanes, then piano/vocal notation
-3. Stem playback with mute/solo controls
-4. Instrument selector in the transcription viewer
-5. Per-track reprocessing and export where supported
+1. Selected-stem separation: vocals, drums, bass, or other
+2. `other` stem as the MVP guitar transcription target
+3. Selected-stem playback and export
+4. Queue-aware processing status
+5. Multiple selected stems only after MVP stability
 
 ## Phase 4: Enhanced Multi-Instrument Transcription Features
 
@@ -215,18 +333,22 @@ MVP scope recommendation:
 - [ ] Continuously update AI models with new training data
 - [ ] Add support for additional export formats (GuitarPro, PowerTab)
 
-## Multi-Instrument Feature Placement Summary
+## Future Roadmap Summary
 
-The Moises/Songsterr-style feature is split across the roadmap instead of being treated as a single standalone phase:
+The selected-stem architecture grows in four steps:
 
-- **Phase 1**: source separation, stem generation, per-stem processing, and confidence scoring
-- **Phase 2**: multi-track database model, per-instrument tabs/notation, and API endpoints
-- **Phase 3**: instrument selector, mute/solo/volume controls, and selected-track viewer
-- **Phase 5**: advanced lead/rhythm separation, solo extraction, remix/export, and AI-assisted role detection
+- **Phase 1**: selected stem only, one active processing job at a time, Cloudinary storage integration
+- **Phase 2**: multiple selected stems
+- **Phase 3**: GPU worker or external AI processing service
+- **Phase 4**: full Songsterr-like multi-track tabs
 
-For MVP, prioritize broad stems first: vocals, drums, bass, guitar, piano, and other. Lead guitar versus rhythm guitar should be treated as an advanced feature because it is much harder than broad instrument separation.
+For MVP, prioritize Demucs default stems first: vocals, drums, bass, and other. Lead guitar versus rhythm guitar, true isolated guitar, and true isolated piano should be treated as advanced features because they are harder than default broad stem separation.
 
 Each phase should be completed with code review, testing, and stakeholder feedback before proceeding to the next. Estimated timeline: 6-9 months for MVP (Phases 0-4), additional 3-6 months for full feature set.
+
+## Historical Review Notes
+
+The notes below document earlier implementation slices. Any previous full multi-stem behavior is superseded by the selected-stem MVP architecture described at the top of this plan.
 
 ## Review Notes - 2026-05-13
 
@@ -294,3 +416,11 @@ Each phase should be completed with code review, testing, and stakeholder feedba
 - The transcription viewer now labels drum tracks with rhythm data as `Rhythm ready` and renders a playback-synced drum rhythm lane instead of the pending-score state.
 - Backend verification: `python -m py_compile app/services/audio.py app/tasks.py app/api/v1/endpoints/audio.py` passed, and `python -m pytest tests/test_music_output_services.py tests/test_audio_list_endpoint.py` passed with 43 tests and existing warnings.
 - Frontend verification: `npm run build` passed through `C:\nvm4w\nodejs\npm.cmd`.
+
+## Review Notes - 2026-05-17 Railway Persistence Slice
+
+- Added selected-stem persistence fields for Cloudinary URLs/public IDs, duplicate detection, soft deletion, and queue metadata, with additive schema compatibility and a SQL migration.
+- Upload and YouTube ingestion now reuse completed duplicates before queueing, upload originals to Cloudinary when configured, and persist `audio_hash` or normalized YouTube IDs.
+- Processing persists exactly one selected separated stem, uploads selected-stem/MIDI/TAB artifacts to Cloudinary when configured, clears queue metadata at terminal states, and treats local files as temporary scratch after durable upload.
+- Added `GET /audio/{transcription_id}/tracks/{track_id}/preview`, with Cloudinary redirect for durable stems and HTTP byte-range support for legacy/local stem files.
+- Added best-effort `DELETE /transcriptions/{id}` cleanup/cancellation behavior for completed, failed, queued, and processing records. Active Celery task termination remains best-effort for the MVP.

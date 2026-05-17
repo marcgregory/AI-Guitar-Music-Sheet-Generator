@@ -10,6 +10,7 @@ sqlalchemy>=2.1.0b2,<3.0.0
 alembic==1.10.0
 redis==5.0.1
 celery==5.3.4
+cloudinary==1.44.1
 # Audio processing libraries will be added in Phase 1
 librosa==0.10.1
 # essentia==2.1b6

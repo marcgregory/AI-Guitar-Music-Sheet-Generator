@@ -26,7 +26,16 @@ class Settings(BaseSettings):
 
     # File upload limits
     MAX_UPLOAD_SIZE: int = 100 * 1024 * 1024  # 100MB
+    UPLOAD_DIR: str = "/app/uploads"
+    MAX_SONG_DURATION_SECONDS: int = 5 * 60  # Railway-friendly MVP recommendation
     ALLOWED_AUDIO_EXTENSIONS: set = {".mp3", ".wav"}
+
+    # Cloudinary durable storage
+    CLOUDINARY_URL: str | None = None
+    CLOUDINARY_CLOUD_NAME: str | None = None
+    CLOUDINARY_API_KEY: str | None = None
+    CLOUDINARY_API_SECRET: str | None = None
+    CLOUDINARY_FOLDER: str = "musicstudio"
 
     # Environment
     ENVIRONMENT: str = "development"

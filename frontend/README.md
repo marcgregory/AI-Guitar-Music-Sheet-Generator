@@ -1,73 +1,58 @@
-# React + TypeScript + Vite
+# MusicStudio Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript frontend for the AI Guitar Music Sheet Generator / MusicStudio app.
 
-Currently, two official plugins are available:
+## MVP Flow
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Before starting upload or YouTube processing, the user must choose a target Demucs stem:
 
-## React Compiler
+- `vocals`
+- `drums`
+- `bass`
+- `other`
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+For MVP guitar transcription, the UI should guide users to choose `other`. The copy should clearly explain that guitar, piano, and accompaniment may be grouped inside `other` with default Demucs models. True separate guitar, lead/rhythm guitar, and piano stems are future model upgrades.
 
-## Expanding the ESLint configuration
+The frontend should show queue-aware processing states:
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- `pending`
+- `queued`
+- `processing`
+- `completed`
+- `failed`
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+If another job is active, show that the new job is queued or waiting because the Railway MVP intentionally processes one job at a time to reduce cost and prevent memory overload.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+Completed outputs should use the Cloudinary-hosted URLs returned by the backend:
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+- `original_audio_url` for source playback when needed
+- `separated_audio_url` for selected-stem playback
+- `midi_file_url` for MIDI download where supported
+- `tab_file_url` for TAB download where supported
+
+If the backend finds an existing completed result for the same song and selected stem, the frontend should load that result instead of showing a new processing job. Display:
+
+"This song and stem were already processed. Existing result was loaded."
+
+## UI Requirements
+
+- Add a required stem selector before the process action.
+- Prefer Demucs-supported labels first: vocals, drums, bass, other.
+- Use friendly helper text for `other`: "Best MVP choice for guitar or piano, depending on the mix."
+- Do not imply the MVP can reliably split lead guitar, rhythm guitar, and piano into separate stems.
+- In the viewer, emphasize the selected stem output rather than a full multi-stem mixer by default.
+- Display queue status clearly when `processing_status` is `queued`.
+- Display downloadable Cloudinary-hosted outputs only when their URL fields are present.
+- Add a delete button for completed, failed, queued, and processing items.
+- Show confirmation before deleting a record.
+- Explain that deleting a processing item may hide the UI record while the active worker finishes silently if MVP task cancellation is not yet reliable.
+
+## Development
+
+```bash
+npm install
+npm run dev
+npm run build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Set `VITE_API_URL` to the deployed or local FastAPI API base URL.

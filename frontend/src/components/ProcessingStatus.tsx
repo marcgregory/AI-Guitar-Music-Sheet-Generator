@@ -1,14 +1,23 @@
-import React, { useState, useEffect } from 'react';
-import audioService from '../services/audioService';
+import React, { useState, useEffect, useRef } from 'react';
+import audioService, { type ProcessingStatusValue } from '../services/audioService';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from './auth/AuthContext';
+import { Icon } from './Icon';
 
 const ProcessingStatus: React.FC = () => {
   const { transcriptionId } = useParams<{ transcriptionId: string }>();
-  const [status, setStatus] = useState<'idle' | 'processing' | 'completed' | 'failed'>('idle');
+  const [status, setStatus] = useState<'idle' | ProcessingStatusValue>('idle');
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [selectedStem, setSelectedStem] = useState<string | null>(null);
   const [transcriptionIdNum, setTranscriptionIdNum] = useState<number | null>(null);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showErrorDialog, setShowErrorDialog] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [toast, setToast] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const { token } = useAuth();
 
@@ -30,12 +39,37 @@ const ProcessingStatus: React.FC = () => {
     navigate('/dashboard');
   }, [transcriptionId, token, navigate]);
 
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setIsMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsMenuOpen(false);
+        setShowDeleteDialog(false);
+        setShowErrorDialog(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, []);
+
   const checkTranscriptionStatus = async (id: number) => {
     if (!token) return;
 
     try {
-      setStatus('processing');
       const response = await audioService.getTranscriptionStatus(id, token);
+      setSelectedStem(response.selected_stem ?? null);
+      setStatusMessage(response.message ?? null);
 
       if (response.status === 'completed') {
         setStatus('completed');
@@ -48,7 +82,7 @@ const ProcessingStatus: React.FC = () => {
         setStatus('failed');
         setError(response.error || 'Processing failed');
       } else {
-        setStatus('processing');
+        setStatus(response.status);
         setProgress(typeof response.progress === 'number' ? response.progress : null);
       }
     } catch (err: any) {
@@ -56,6 +90,36 @@ const ProcessingStatus: React.FC = () => {
       setError(err.response?.data?.detail || 'Failed to check transcription status');
     }
   };
+
+  const showToast = (tone: 'success' | 'error', message: string) => {
+    setToast({ tone, message });
+    window.setTimeout(() => setToast(null), 3600);
+  };
+
+  const handleDelete = async () => {
+    if (!token || transcriptionIdNum === null) return;
+    setIsDeleting(true);
+    try {
+      await audioService.deleteTranscription(transcriptionIdNum, token);
+      showToast('success', 'Transcription deleted.');
+      setShowDeleteDialog(false);
+      window.setTimeout(() => navigate('/dashboard'), 450);
+    } catch (err: any) {
+      showToast('error', err.response?.data?.detail || 'Could not delete transcription.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const statusActionLabel = status === 'queued' || status === 'pending'
+    ? 'View queue status'
+    : 'View progress';
+
+  const canShowProcessingMenu =
+    status === 'pending' ||
+    status === 'queued' ||
+    status === 'processing' ||
+    status === 'failed';
 
   if (status === 'idle') {
     return (
@@ -73,17 +137,85 @@ const ProcessingStatus: React.FC = () => {
   }
 
   return (
-    <div className="processing-status-container">
+    <div className="processing-status-container" ref={containerRef}>
+      {toast && <div className={`studio-toast studio-toast-${toast.tone}`}>{toast.message}</div>}
       <div className="processing-status-header">
-        <h2>Processing Your Audio</h2>
-        <p>We're analyzing your audio file to generate guitar tabs</p>
+        <div>
+          <h2>Processing Your Audio</h2>
+          <p>
+            {selectedStem
+              ? `Selected stem: ${selectedStem === 'other' ? 'Other / Guitar / Piano / Melody' : selectedStem}`
+              : "We're preparing your selected-stem analysis"}
+          </p>
+        </div>
+        {canShowProcessingMenu && (
+          <div className="project-menu-shell processing-menu-shell">
+            <button
+              type="button"
+              className={`project-more-button ${isMenuOpen ? 'active' : ''}`}
+              aria-label="Processing actions"
+              aria-haspopup="menu"
+              aria-expanded={isMenuOpen}
+              onClick={() => setIsMenuOpen((open) => !open)}
+            >
+              <Icon name="more" />
+            </button>
+            {isMenuOpen && (
+              <div className="project-action-menu" role="menu">
+                {(status === 'pending' || status === 'queued' || status === 'processing') && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="project-action-menu-item"
+                    onClick={() => setIsMenuOpen(false)}
+                  >
+                    <Icon name={status === 'processing' ? 'eye' : 'clock'} />
+                    <span>{statusActionLabel}</span>
+                  </button>
+                )}
+                {status === 'failed' && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="project-action-menu-item"
+                    onClick={() => {
+                      setIsMenuOpen(false);
+                      setShowErrorDialog(true);
+                    }}
+                  >
+                    <Icon name="alert" />
+                    <span>View processing error</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="project-action-menu-item danger"
+                  onClick={() => {
+                    setIsMenuOpen(false);
+                    setShowDeleteDialog(true);
+                  }}
+                >
+                  <Icon name="trash" />
+                  <span>Delete project</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {status === 'processing' && (
+      {(status === 'pending' || status === 'queued' || status === 'processing') && (
         <div className="processing-status-content">
           <div className="processing-info">
             <div className="progress-section">
-              <div className="progress-label">Processing Progress</div>
+              <div className="progress-label">
+                {status === 'queued'
+                  ? 'Queued'
+                  : status === 'pending'
+                    ? 'Pending'
+                    : 'Processing Progress'}
+              </div>
               <div className="progress-bar">
                 <div
                   className={`progress-fill ${progress === null ? 'indeterminate' : ''}`}
@@ -91,7 +223,11 @@ const ProcessingStatus: React.FC = () => {
                 ></div>
               </div>
               <p className="progress-percent">
-                {progress === null ? 'Processing...' : `${progress}%`}
+                {status === 'queued'
+                  ? 'Waiting for the worker'
+                  : progress === null
+                    ? 'Processing...'
+                    : `${progress}%`}
               </p>
             </div>
 
@@ -106,6 +242,7 @@ const ProcessingStatus: React.FC = () => {
           </div>
 
           <div className="processing-details">
+            {statusMessage && <p>{statusMessage}</p>}
             <p>This process may take several minutes depending on the length and complexity of your audio file.</p>
             <p>You can safely close this tab and return later - we'll notify you when processing is complete.</p>
           </div>
@@ -149,6 +286,67 @@ const ProcessingStatus: React.FC = () => {
             >
               Try Again
             </button>
+          </div>
+        </div>
+      )}
+
+      {showDeleteDialog && (
+        <div className="studio-modal-backdrop" role="presentation">
+          <div
+            className="studio-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-processing-title"
+          >
+            <h3 id="delete-processing-title">Delete transcription</h3>
+            <p>Are you sure you want to delete this transcription?</p>
+            {status === 'processing' && (
+              <p className="studio-dialog-warning">
+                Active processing cancellation is best-effort and may finish silently.
+              </p>
+            )}
+            <div className="studio-dialog-actions">
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={isDeleting}
+                onClick={() => setShowDeleteDialog(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button-danger"
+                disabled={isDeleting}
+                onClick={handleDelete}
+              >
+                <Icon name="trash" />
+                <span>{isDeleting ? 'Deleting...' : 'Delete project'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showErrorDialog && (
+        <div className="studio-modal-backdrop" role="presentation">
+          <div
+            className="studio-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="processing-error-title"
+          >
+            <h3 id="processing-error-title">Processing error</h3>
+            <p>{error || 'No detailed processing error was returned.'}</p>
+            <div className="studio-dialog-actions">
+              <button
+                type="button"
+                className="button-primary"
+                onClick={() => setShowErrorDialog(false)}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
