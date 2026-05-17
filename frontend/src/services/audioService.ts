@@ -337,11 +337,11 @@ const audioService = {
 
   reprocessInstrumentTrack: async (
     transcriptionId: number,
-    trackId: number,
+    _trackId: number,
     token: string,
   ): Promise<InstrumentTrack> => {
     const response = await axios.post(
-      `${API_BASE_URL}/audio/${transcriptionId}/tracks/${trackId}/reprocess`,
+      `${API_BASE_URL}/transcriptions/${transcriptionId}/reprocess`,
       {},
       {
         headers: getAuthHeader(token),
@@ -358,14 +358,18 @@ const audioService = {
       lower_threshold?: boolean;
       alternate_settings?: Record<string, unknown>;
       selected_stem?: StemSelection;
+      sensitivity?: "high" | "normal" | string;
+      reuse_separated_stem?: boolean;
     },
   ): Promise<TranscriptionStatus> => {
     const response = await axios.post(
-      `${API_BASE_URL}/audio/${transcriptionId}/retry`,
+      `${API_BASE_URL}/transcriptions/${transcriptionId}/retry`,
       {
         lower_threshold: options?.lower_threshold ?? true,
         alternate_settings: options?.alternate_settings,
         selected_stem: options?.selected_stem,
+        sensitivity: options?.sensitivity,
+        reuse_separated_stem: options?.reuse_separated_stem,
       },
       {
         headers: getAuthHeader(token),
