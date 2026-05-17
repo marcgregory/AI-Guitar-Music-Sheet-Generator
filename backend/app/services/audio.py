@@ -116,7 +116,6 @@ def validate_audio_dependencies(
         "demucs": _dependency_status("demucs", verify_import=verify_imports),
         "torch": _dependency_status("torch", verify_import=verify_imports),
         "torchaudio": _dependency_status("torchaudio", verify_import=verify_imports),
-        "torchcodec": _dependency_status("torchcodec", verify_import=verify_imports),
     }
     if include_ffmpeg:
         dependencies["ffmpeg"] = _ffmpeg_status()

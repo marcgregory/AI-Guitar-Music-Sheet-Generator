@@ -13,7 +13,7 @@ Railway should run the lightweight backend/controller, not the primary Demucs wo
 
 Railway trial/free resources are not reliable for Demucs production processing. Railway local storage must not be used as durable file storage. It is temporary scratch space only.
 
-The backend runtime is Python 3.11. Both Dockerfiles use Python 3.11 images, and `railway.json` points to the root Dockerfile. Local selected-stem Demucs fallback requires the PyTorch audio stack from `backend/requirements.txt` (`demucs`, `torch`, `torchaudio`, and `torchcodec`) plus an `ffmpeg` executable on `PATH`.
+The backend runtime is Python 3.11. Both Dockerfiles use Python 3.11 images, and `railway.json` points to the root Dockerfile. Local selected-stem Demucs fallback requires the PyTorch audio stack from `backend/requirements.txt` (`demucs`, `torch`, and `torchaudio`) plus an `ffmpeg` executable on `PATH`.
 
 ## Required Environment Variables
 

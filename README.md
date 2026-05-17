@@ -82,7 +82,7 @@ Record deletion should delete related Cloudinary assets when safe: original audi
 
 ## Backend Runtime Requirements
 
-The backend is supported on Python 3.11. The Docker-based Railway runtime uses Python 3.11. Local selected-stem Demucs fallback depends on the pinned PyTorch audio stack in `backend/requirements.txt`: `demucs`, `torch`, `torchaudio`, and `torchcodec`. `ffmpeg` must also be installed and available on `PATH`.
+The backend is supported on Python 3.11. The Docker-based Railway runtime uses Python 3.11. Local selected-stem Demucs fallback depends on the pinned PyTorch audio stack in `backend/requirements.txt`: `demucs`, `torch`, and `torchaudio`. `ffmpeg` must also be installed and available on `PATH`.
 
 The API validates these dependencies at startup and exposes their availability and versions from `GET /health`.
 

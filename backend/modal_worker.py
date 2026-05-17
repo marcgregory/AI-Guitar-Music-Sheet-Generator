@@ -18,6 +18,7 @@ image = (
     .apt_install("ffmpeg")
     .pip_install(
         "fastapi[standard]==0.115.6",
+        "numpy==1.26.4",
         "demucs==4.0.1",
         "torch==2.1.0",
         "torchaudio==2.1.0",
