@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import audioService, { type Transcription } from "../../services/audioService";
 import {
@@ -289,7 +289,6 @@ const Dashboard: React.FC = () => {
     () => cachedTranscriptions?.map(mapTranscriptionToProject) ?? [],
   );
   const [loading, setLoading] = useState(!cachedTranscriptions);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [openMenuProjectId, setOpenMenuProjectId] = useState<number | null>(
     null,
@@ -299,6 +298,7 @@ const Dashboard: React.FC = () => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [toast, setToast] = useState<ToastState>(null);
   const dashboardRef = useRef<HTMLDivElement | null>(null);
+  const toastTimerRef = useRef<number | undefined>(undefined);
 
   const handleNewTranscription = () => {
     navigate("/upload");
@@ -311,12 +311,20 @@ const Dashboard: React.FC = () => {
         ? `/transcription/${project.id}`
         : `/processing/${project.id}`;
 
-  const showToast = (nextToast: ToastState) => {
+  const showToast = useCallback((nextToast: ToastState) => {
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = undefined;
+    }
+
     setToast(nextToast);
     if (nextToast) {
-      window.setTimeout(() => setToast(null), 3600);
+      toastTimerRef.current = window.setTimeout(() => {
+        setToast(null);
+        toastTimerRef.current = undefined;
+      }, 3600);
     }
-  };
+  }, []);
 
   const handleProjectAction = async (
     project: Project,
@@ -414,7 +422,6 @@ const Dashboard: React.FC = () => {
 
       try {
         if (showLoading && isMounted) setLoading(true);
-        if (isMounted) setLoadError(null);
 
         const transcriptions = await audioService.listTranscriptions(token);
         const nextProjects = transcriptions.map(mapTranscriptionToProject);
@@ -427,9 +434,11 @@ const Dashboard: React.FC = () => {
         return nextProjects;
       } catch (error: any) {
         if (isMounted) {
-          setLoadError(
-            error.response?.data?.detail || "Failed to load transcriptions",
-          );
+          showToast({
+            tone: "error",
+            message:
+              error.response?.data?.detail || "Failed to load transcriptions",
+          });
           if (showLoading) setProjects([]);
           setLoading(false);
         }
@@ -464,7 +473,15 @@ const Dashboard: React.FC = () => {
       isMounted = false;
       stopAutoRefresh();
     };
-  }, [token]);
+  }, [showToast, token]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -713,7 +730,6 @@ const Dashboard: React.FC = () => {
 
           <section className="projects-section">
             <h2 className="section-title">{sectionTitle}</h2>
-            {loadError && <div className="alert alert-error">{loadError}</div>}
 
             {loading ? (
               <div className="loading-state">
