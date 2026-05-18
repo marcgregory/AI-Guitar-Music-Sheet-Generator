@@ -34,34 +34,57 @@ def _ensure_transcription_phase1_columns():
         for column in inspector.get_columns("transcriptions")
     }
     required_columns = {
-    "selected_stem": "VARCHAR DEFAULT 'other'",
-    "processing_status": "VARCHAR DEFAULT 'pending'",
-    "queue_position": "INTEGER",
-    "estimated_wait_time": "INTEGER",
-    "celery_task_id": "VARCHAR",
-    "tab_file_path": "VARCHAR",
-    "source_type": "VARCHAR",
-    "source_url": "TEXT",
-    "normalized_source_id": "VARCHAR",
-    "audio_hash": "VARCHAR",
-    "duplicate_of_id": "INTEGER",
-    "is_demo": "BOOLEAN DEFAULT FALSE",
-    "is_deleted": "BOOLEAN DEFAULT FALSE",
-    "deleted_at": "TIMESTAMP",
-    "original_audio_url": "TEXT",
-    "original_audio_public_id": "VARCHAR",
-    "separated_audio_url": "TEXT",
-    "separated_audio_public_id": "VARCHAR",
-    "midi_file_url": "TEXT",
-    "midi_file_public_id": "VARCHAR",
-    "tab_file_url": "TEXT",
-    "tab_file_public_id": "VARCHAR",
-    "processing_error": "TEXT",
-    "warning_message": "TEXT",
-    "can_generate_score": "BOOLEAN DEFAULT TRUE",
-    "can_play_stem": "BOOLEAN DEFAULT FALSE",
-    "transcription_attempts": "INTEGER DEFAULT 0",
-}
+        "audio_file_path": "VARCHAR",
+        "preprocessed_audio_file_path": "VARCHAR",
+        "selected_stem": "VARCHAR DEFAULT 'other'",
+        "processing_status": "VARCHAR DEFAULT 'pending'",
+        "queue_position": "INTEGER",
+        "estimated_wait_time": "INTEGER",
+        "celery_task_id": "VARCHAR",
+        "modal_dispatch_status": "VARCHAR",
+        "modal_job_type": "VARCHAR",
+        "modal_dispatched_at": "TIMESTAMP WITH TIME ZONE",
+        "modal_request_id": "VARCHAR",
+        "modal_retry_at": "TIMESTAMP WITH TIME ZONE",
+        "modal_retry_count": "INTEGER DEFAULT 0",
+        "separated_audio_file_path": "VARCHAR",
+        "midi_file_path": "VARCHAR",
+        "tab_file_path": "VARCHAR",
+        "youtube_url": "VARCHAR",
+        "source_type": "VARCHAR",
+        "source_url": "TEXT",
+        "normalized_source_id": "VARCHAR",
+        "audio_hash": "VARCHAR",
+        "duplicate_of_id": "INTEGER",
+        "is_demo": "BOOLEAN DEFAULT FALSE",
+        "is_deleted": "BOOLEAN DEFAULT FALSE",
+        "deleted_at": "TIMESTAMP WITH TIME ZONE",
+        "original_audio_url": "TEXT",
+        "original_audio_public_id": "VARCHAR",
+        "separated_audio_url": "TEXT",
+        "separated_audio_public_id": "VARCHAR",
+        "midi_file_url": "TEXT",
+        "midi_file_public_id": "VARCHAR",
+        "tab_file_url": "TEXT",
+        "tab_file_public_id": "VARCHAR",
+        "duration": "INTEGER",
+        "detected_tempo": "INTEGER",
+        "tempo_confidence": "INTEGER",
+        "detected_key": "VARCHAR",
+        "key_confidence": "INTEGER",
+        "project_id": "INTEGER",
+        "is_processed": "BOOLEAN DEFAULT FALSE",
+        "processing_error": "TEXT",
+        "warning_message": "TEXT",
+        "can_generate_score": "BOOLEAN DEFAULT TRUE",
+        "can_play_stem": "BOOLEAN DEFAULT FALSE",
+        "transcription_attempts": "INTEGER DEFAULT 0",
+        "notes_data": "TEXT",
+        "chords_data": "TEXT",
+        "tablature_data": "TEXT",
+        "notation_data": "TEXT",
+        "chord_chart_data": "TEXT",
+    }
 
     with engine.connect() as conn:
         for column_name, ddl_type in required_columns.items():
@@ -71,6 +94,19 @@ def _ensure_transcription_phase1_columns():
             conn.execute(
                 text(f"ALTER TABLE transcriptions ADD COLUMN {column_name} {ddl_type}")
             )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_transcriptions_modal_retry_at "
+                "ON transcriptions (modal_retry_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_transcriptions_modal_request_id "
+                "ON transcriptions (modal_request_id) "
+                "WHERE modal_request_id IS NOT NULL"
+            )
+        )
         conn.commit()
 
 
