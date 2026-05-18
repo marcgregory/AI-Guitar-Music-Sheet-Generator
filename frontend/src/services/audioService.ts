@@ -4,6 +4,7 @@ import axios from "axios";
 const API_BASE_URL =
   import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, "");
+const PUBLIC_AUDIO_PATHS = ["/demo/", "/audio-files/"];
 
 export interface Transcription {
   id: number;
@@ -134,8 +135,24 @@ const rememberTranscription = (token: string, transcription: Transcription): voi
 };
 
 const audioService = {
+  resolvePlayableAudioUrl: (audioUrl: string | null | undefined): string | null => {
+    if (!audioUrl) return null;
+    const trimmed = audioUrl.trim();
+    if (!trimmed) return null;
+    if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("blob:")) return trimmed;
+    if (PUBLIC_AUDIO_PATHS.some((prefix) => trimmed.startsWith(prefix))) {
+      return `${API_ORIGIN}${trimmed}`;
+    }
+    if (/^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.includes("\\") || trimmed.startsWith("/")) {
+      return null;
+    }
+    return null;
+  },
+
   getAudioFileUrl: (audioFilePath: string | null | undefined): string | null => {
     if (!audioFilePath) return null;
+    const publicAudioUrl = audioService.resolvePlayableAudioUrl(audioFilePath);
+    if (publicAudioUrl) return publicAudioUrl;
     const filename = audioFilePath.split(/[\\/]/).pop();
     return filename ? `${API_ORIGIN}/audio-files/${encodeURIComponent(filename)}` : null;
   },

@@ -35,6 +35,7 @@ class YouTubeUploadRequest(BaseModel):
 router = APIRouter()
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
 ESTIMATED_SECONDS_PER_SELECTED_STEM_JOB = 300
+DEMO_AUDIO_URL = "/demo/example-guitar-riff.wav"
 
 # Define the upload directory relative to the backend package so the location is
 # stable whether uvicorn is launched from the repo root or from backend/.
@@ -829,6 +830,26 @@ def _status_payload(
     return payload
 
 
+def _public_transcription_payload(transcription: models.Transcription) -> dict:
+    """Serialize while keeping local demo filesystem paths out of browser playback fields."""
+    payload = schemas.TranscriptionInDB.model_validate(transcription).model_dump(mode="json")
+    if transcription.is_demo:
+        payload["source_url"] = DEMO_AUDIO_URL
+        payload["original_audio_url"] = DEMO_AUDIO_URL
+        payload["separated_audio_url"] = DEMO_AUDIO_URL
+        payload["audio_file_path"] = DEMO_AUDIO_URL
+        payload["preprocessed_audio_file_path"] = None
+        payload["separated_audio_file_path"] = DEMO_AUDIO_URL
+    return payload
+
+
+def _public_track_payload(track: models.InstrumentTrack) -> dict:
+    payload = schemas.InstrumentTrack.model_validate(track).model_dump(mode="json")
+    if track.transcription and track.transcription.is_demo:
+        payload["stem_audio_path"] = DEMO_AUDIO_URL
+    return payload
+
+
 def _ensure_transcription_access(
     transcription: models.Transcription,
     db_session: Session,
@@ -1577,7 +1598,7 @@ async def list_transcriptions(
     """
     List the current user's transcriptions, newest first.
     """
-    return (
+    transcriptions = (
         db_session.query(models.Transcription)
         .filter(or_(
             models.Transcription.user_id == current_user.id,
@@ -1588,6 +1609,7 @@ async def list_transcriptions(
         .order_by(models.Transcription.created_at.desc(), models.Transcription.id.desc())
         .all()
     )
+    return [_public_transcription_payload(transcription) for transcription in transcriptions]
 
 
 @router.get("/demo", response_model=schemas.TranscriptionInDB)
@@ -1607,7 +1629,7 @@ async def get_demo_transcription(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Demo transcription is not available.",
         )
-    return demo
+    return _public_transcription_payload(demo)
 
 
 @router.get("/demo-guitar-riff.wav")
@@ -1833,7 +1855,7 @@ async def get_transcription_result(
         )
 
     # Return the transcription data
-    return transcription
+    return _public_transcription_payload(transcription)
 
 
 @router.post("/{transcription_id}/retry")
@@ -1937,12 +1959,13 @@ async def list_instrument_tracks(
     """
     _get_accessible_transcription(transcription_id, db_session, current_user)
 
-    return (
+    tracks = (
         db_session.query(models.InstrumentTrack)
         .filter(models.InstrumentTrack.transcription_id == transcription_id)
         .order_by(models.InstrumentTrack.id.asc())
         .all()
     )
+    return [_public_track_payload(track) for track in tracks]
 
 
 @router.get("/{transcription_id}/tracks/{track_id}", response_model=schemas.InstrumentTrack)
@@ -1968,7 +1991,7 @@ async def get_instrument_track(
             detail="Instrument track not found"
         )
 
-    return track
+    return _public_track_payload(track)
 
 
 @router.get("/{transcription_id}/tracks/{track_id}/stem")

@@ -53,6 +53,9 @@ uploads_dir = Path(__file__).resolve().parent / "uploads"
 uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/audio-files", StaticFiles(directory=uploads_dir), name="audio-files")
 
+demo_static_dir = Path(__file__).resolve().parent / "app" / "static"
+app.mount("/demo", StaticFiles(directory=demo_static_dir), name="demo")
+
 @app.get("/")
 async def root():
     return {"message": "AI Guitar Music Sheet Generator API"}

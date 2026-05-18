@@ -237,8 +237,39 @@ const buildAsciiTab = (tablatureData: unknown, chordsData: unknown): string => {
 const hasUsableBlob = (value: unknown): boolean =>
   typeof value === "string" && value.trim().length > 0;
 
-const isDirectAudioUrl = (value: unknown): value is string =>
-  typeof value === "string" && (/^https?:\/\//i.test(value.trim()) || value.trim().startsWith("/"));
+const mediaErrorDetails = (audio: HTMLMediaElement) => {
+  const error = audio.error;
+  if (!error) return null;
+  const messages: Record<number, string> = {
+    [MediaError.MEDIA_ERR_ABORTED]: "Playback was aborted.",
+    [MediaError.MEDIA_ERR_NETWORK]: "A network error interrupted loading.",
+    [MediaError.MEDIA_ERR_DECODE]: "The audio could not be decoded.",
+    [MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED]: "The audio source is not supported.",
+  };
+  return {
+    code: error.code,
+    message: error.message || messages[error.code] || "Unknown media error.",
+  };
+};
+
+const probeAudioNetwork = async (src: string): Promise<void> => {
+  if (!src || src.startsWith("blob:")) return;
+  try {
+    const response = await fetch(src, { method: "HEAD", mode: "cors" });
+    console.error("Audio playback network probe", {
+      src,
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      contentType: response.headers.get("content-type"),
+    });
+  } catch (error: unknown) {
+    console.error("Audio playback network error", {
+      src,
+      error: errorMessageOf(error, "Network request failed"),
+    });
+  }
+};
 
 const selectedStemInstrument = (selectedStem: string | null | undefined): string =>
   ({
@@ -1764,13 +1795,13 @@ const TranscriptionViewer: React.FC = () => {
     if (!transcription || !activeScoreSource) return null;
 
     if (!activeScoreSource.isGlobal && selectedTrack) {
-      const directTrackAudio = selectedTrack.stem_audio_path;
-      if (isDirectAudioUrl(directTrackAudio)) return directTrackAudio.trim();
+      const directTrackAudio = audioService.resolvePlayableAudioUrl(selectedTrack.stem_audio_path);
+      if (directTrackAudio) return directTrackAudio;
       if (
         selectedTrack.instrument_type === selectedStemInstrument(transcription.selected_stem) &&
-        isDirectAudioUrl(transcription.separated_audio_url)
+        audioService.resolvePlayableAudioUrl(transcription.separated_audio_url)
       ) {
-        return transcription.separated_audio_url.trim();
+        return audioService.resolvePlayableAudioUrl(transcription.separated_audio_url);
       }
       return directTrackAudio || transcription.separated_audio_url || null;
     }
@@ -1800,8 +1831,9 @@ const TranscriptionViewer: React.FC = () => {
         setPlaybackDuration(0);
         setIsPlaying(false);
 
-        if (isDirectAudioUrl(audioSrc)) {
-          setAudioUrl(audioSrc.trim());
+        const playableAudioUrl = audioService.resolvePlayableAudioUrl(audioSrc);
+        if (playableAudioUrl) {
+          setAudioUrl(playableAudioUrl);
           return;
         }
 
@@ -1877,7 +1909,13 @@ const TranscriptionViewer: React.FC = () => {
       setCurrentPlaybackTime(Number.isFinite(audio.duration) ? audio.duration : audio.currentTime);
     };
     const handleError = () => {
+      const src = audio.currentSrc || audio.src || audioUrl || "";
       setIsPlaying(false);
+      console.error("Audio element failed to load", {
+        src,
+        mediaError: mediaErrorDetails(audio),
+      });
+      void probeAudioNetwork(src);
       setAudioError("Audio file could not be loaded.");
     };
 
@@ -1993,8 +2031,15 @@ const TranscriptionViewer: React.FC = () => {
       await audio.play();
       setIsPlaying(true);
       setAudioError(null);
-    } catch {
+    } catch (error: unknown) {
+      const src = audio.currentSrc || audio.src || audioUrl;
       setIsPlaying(false);
+      console.error("Audio playback could not start", {
+        src,
+        playError: errorMessageOf(error, "HTMLMediaElement.play() failed"),
+        mediaError: mediaErrorDetails(audio),
+      });
+      void probeAudioNetwork(src);
       setAudioError("Audio playback could not start.");
     }
   };

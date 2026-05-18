@@ -120,6 +120,75 @@ def test_get_transcription_source_audio_normalizes_windows_style_uploaded_path(t
     assert response.headers["content-type"].startswith("audio/wav")
 
 
+def test_demo_static_audio_route_serves_public_wav_without_cors_error():
+    response = client.get(
+        "/demo/example-guitar-riff.wav",
+        headers={"Origin": "http://localhost:5173"},
+    )
+
+    assert response.status_code == 200
+    assert response.content
+    assert response.headers["content-type"].startswith("audio/wav")
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_demo_transcription_response_uses_public_audio_url_for_playback_fields():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "demo-owner", "demo-owner@example.com")
+        local_path = "/app/app/static/demo_guitar_riff.wav"
+        demo = models.Transcription(
+            title="Example guitar riff",
+            audio_file_path=local_path,
+            separated_audio_file_path=local_path,
+            original_audio_url="/demo/example-guitar-riff.wav",
+            separated_audio_url="/demo/example-guitar-riff.wav",
+            source_url="/demo/example-guitar-riff.wav",
+            normalized_source_id="demo:example-guitar-riff",
+            source_type="demo",
+            user_id=owner.id,
+            is_demo=True,
+            is_processed=True,
+            processing_status="completed",
+            can_play_stem=True,
+        )
+        session.add(demo)
+        session.commit()
+        session.refresh(demo)
+        session.add(models.InstrumentTrack(
+            transcription_id=demo.id,
+            instrument_type="guitar",
+            display_name="Demo guitar stem",
+            stem_audio_path=local_path,
+            processing_status="completed",
+        ))
+        session.commit()
+        demo_id = demo.id
+    finally:
+        session.close()
+
+    demo_response = client.get(
+        "/api/v1/audio/demo",
+        headers=auth_headers("demo-owner"),
+    )
+    tracks_response = client.get(
+        f"/api/v1/audio/{demo_id}/tracks",
+        headers=auth_headers("demo-owner"),
+    )
+
+    assert demo_response.status_code == 200
+    demo_payload = demo_response.json()
+    assert demo_payload["audio_file_path"] == "/demo/example-guitar-riff.wav"
+    assert demo_payload["separated_audio_file_path"] == "/demo/example-guitar-riff.wav"
+    assert "/app/app/static" not in json.dumps(demo_payload)
+
+    assert tracks_response.status_code == 200
+    tracks_payload = tracks_response.json()
+    assert tracks_payload[0]["stem_audio_path"] == "/demo/example-guitar-riff.wav"
+    assert "/app/app/static" not in json.dumps(tracks_payload)
+
+
 def test_list_transcriptions_returns_only_current_users_items_newest_first():
     reset_database()
     session = TestingSessionLocal()
