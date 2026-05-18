@@ -48,6 +48,7 @@ export interface Transcription {
   can_generate_score?: boolean | null;
   can_generate_rhythm?: boolean | null;
   can_play_stem?: boolean | null;
+  available_exports?: ExportFormat[] | null;
   track_count?: number | null;
   tuning?: string | null;
   import_type?: string | null;
@@ -88,6 +89,8 @@ export interface TranscriptionStatus {
   selected_stem?: StemSelection | null;
   can_play_stem?: boolean;
   can_generate_score?: boolean;
+  separated_audio_url?: string | null;
+  available_exports?: ExportFormat[] | null;
   is_demo?: boolean;
   queue_position?: number | null;
   estimated_wait_time?: number | null;
@@ -96,10 +99,12 @@ export interface TranscriptionStatus {
 }
 
 export type StemSelection = "vocals" | "drums" | "bass" | "other";
+export type ExportFormat = "midi" | "musicxml" | "tab";
 export type ProcessingStatusValue =
   | "pending"
   | "queued"
   | "processing"
+  | "stem_ready"
   | "completed"
   | "completed_with_warning"
   | "failed"
@@ -111,7 +116,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const transcriptionListCache = new Map<string, Transcription[]>();
 
-const cloneTranscriptions = (transcriptions: Transcription[]): Transcription[] =>
+const cloneTranscriptions = (
+  transcriptions: Transcription[],
+): Transcription[] =>
   transcriptions.map((transcription) => ({ ...transcription }));
 
 const rememberTranscriptions = (
@@ -123,33 +130,52 @@ const rememberTranscriptions = (
   return cloneTranscriptions(snapshot);
 };
 
-const rememberTranscription = (token: string, transcription: Transcription): void => {
+const rememberTranscription = (
+  token: string,
+  transcription: Transcription,
+): void => {
   const cached = transcriptionListCache.get(token) ?? [];
-  const withoutDuplicate = cached.filter((item) => item.id !== transcription.id);
-  transcriptionListCache.set(token, [{ ...transcription }, ...withoutDuplicate]);
+  const withoutDuplicate = cached.filter(
+    (item) => item.id !== transcription.id,
+  );
+  transcriptionListCache.set(token, [
+    { ...transcription },
+    ...withoutDuplicate,
+  ]);
 };
 
 const audioService = {
-  resolvePlayableAudioUrl: (audioUrl: string | null | undefined): string | null => {
+  resolvePlayableAudioUrl: (
+    audioUrl: string | null | undefined,
+  ): string | null => {
     if (!audioUrl) return null;
     const trimmed = audioUrl.trim();
     if (!trimmed) return null;
-    if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("blob:")) return trimmed;
+    if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("blob:"))
+      return trimmed;
     if (PUBLIC_AUDIO_PATHS.some((prefix) => trimmed.startsWith(prefix))) {
       return `${API_ORIGIN}${trimmed}`;
     }
-    if (/^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.includes("\\") || trimmed.startsWith("/")) {
+    if (
+      /^[a-zA-Z]:[\\/]/.test(trimmed) ||
+      trimmed.includes("\\") ||
+      trimmed.startsWith("/")
+    ) {
       return null;
     }
     return null;
   },
 
-  getAudioFileUrl: (audioFilePath: string | null | undefined): string | null => {
+  getAudioFileUrl: (
+    audioFilePath: string | null | undefined,
+  ): string | null => {
     if (!audioFilePath) return null;
     const publicAudioUrl = audioService.resolvePlayableAudioUrl(audioFilePath);
     if (publicAudioUrl) return publicAudioUrl;
     const filename = audioFilePath.split(/[\\/]/).pop();
-    return filename ? `${API_ORIGIN}/audio-files/${encodeURIComponent(filename)}` : null;
+    return filename
+      ? `${API_ORIGIN}/audio-files/${encodeURIComponent(filename)}`
+      : null;
   },
 
   getCachedTranscriptions: (token: string | null): Transcription[] | null => {
@@ -191,16 +217,12 @@ const audioService = {
       formData.append("project_id", projectId.toString());
     }
 
-    const response = await apiClient.post(
-      "/audio/upload",
-      formData,
-      {
-        onUploadProgress: (event) => {
-          if (!event.total) return;
-          onUploadProgress?.(Math.round((event.loaded * 100) / event.total));
-        },
+    const response = await apiClient.post("/audio/upload", formData, {
+      onUploadProgress: (event) => {
+        if (!event.total) return;
+        onUploadProgress?.(Math.round((event.loaded * 100) / event.total));
       },
-    );
+    });
 
     rememberTranscription(token, response.data);
     return response.data;
@@ -215,14 +237,11 @@ const audioService = {
     selectedStem: StemSelection,
     projectId?: number,
   ): Promise<Transcription> => {
-    const response = await apiClient.post(
-      "/audio/youtube",
-      {
-        youtube_url: youtubeUrl,
-        selected_stem: selectedStem,
-        project_id: projectId,
-      },
-    );
+    const response = await apiClient.post("/audio/youtube", {
+      youtube_url: youtubeUrl,
+      selected_stem: selectedStem,
+      project_id: projectId,
+    });
 
     rememberTranscription(token, response.data);
     return response.data;
@@ -259,12 +278,9 @@ const audioService = {
     token: string,
   ): Promise<Blob> => {
     void token;
-    const response = await apiClient.get(
-      `/audio/${transcriptionId}/source`,
-      {
-        responseType: "blob",
-      },
-    );
+    const response = await apiClient.get(`/audio/${transcriptionId}/source`, {
+      responseType: "blob",
+    });
 
     return response.data;
   },
@@ -315,7 +331,9 @@ const audioService = {
     transcriptionId: number,
     token: string,
   ): Promise<Transcription> => {
-    const response = await apiClient.delete(`/transcriptions/${transcriptionId}`);
+    const response = await apiClient.delete(
+      `/transcriptions/${transcriptionId}`,
+    );
 
     const cached = transcriptionListCache.get(token);
     if (cached) {
@@ -333,7 +351,10 @@ const audioService = {
     token: string,
   ): Promise<InstrumentTrack> => {
     void token;
-    const response = await apiClient.post(`/transcriptions/${transcriptionId}/reprocess`, {});
+    const response = await apiClient.post(
+      `/transcriptions/${transcriptionId}/reprocess`,
+      {},
+    );
 
     return response.data;
   },
@@ -364,35 +385,53 @@ const audioService = {
     return response.data;
   },
 
+  generateTab: async (
+    transcriptionId: number,
+    token: string,
+    options?: {
+      sensitivity?: "high" | "normal" | string;
+    },
+  ): Promise<TranscriptionStatus> => {
+    void token;
+    const response = await apiClient.post(
+      `/audio/${transcriptionId}/generate-tab`,
+      {
+        sensitivity: options?.sensitivity,
+      },
+    );
+
+    return response.data;
+  },
+
   /**
    * Download a generated transcription export.
    */
   downloadExport: async (
     transcriptionId: number,
-    format: "midi" | "musicxml" | "tab",
+    format: ExportFormat,
     token: string,
     trackId?: number,
   ): Promise<Blob> => {
     try {
-      const exportUrl = trackId === undefined
-        ? `/audio/${transcriptionId}/${format}`
-        : `/audio/${transcriptionId}/tracks/${trackId}/${format}`;
+      const exportUrl =
+        trackId === undefined
+          ? `/audio/${transcriptionId}/${format}`
+          : `/audio/${transcriptionId}/tracks/${trackId}/${format}`;
       void token;
-      const response = await apiClient.get(
-        exportUrl,
-        {
-          responseType: "blob",
-        },
-      );
+      const response = await apiClient.get(exportUrl, {
+        responseType: "blob",
+      });
 
       return response.data;
     } catch (err: unknown) {
-      const data = isRecord(err) && isRecord(err.response) ? err.response.data : null;
+      const data =
+        isRecord(err) && isRecord(err.response) ? err.response.data : null;
       if (data instanceof Blob && data.type.includes("application/json")) {
         const errorJson = JSON.parse(await data.text()) as unknown;
-        const detail = isRecord(errorJson) && typeof errorJson.detail === "string"
-          ? errorJson.detail
-          : `Failed to download ${format}`;
+        const detail =
+          isRecord(errorJson) && typeof errorJson.detail === "string"
+            ? errorJson.detail
+            : `Failed to download ${format}`;
         throw new Error(detail, { cause: err });
       }
       throw err;

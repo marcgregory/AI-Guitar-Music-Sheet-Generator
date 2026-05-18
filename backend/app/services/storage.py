@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -8,15 +9,41 @@ logger = logging.getLogger(__name__)
 
 
 def normalize_local_path(path: str | Path) -> str:
-    """Normalize a local filesystem path to POSIX format for Docker/Linux.
+    """Normalize a local filesystem path to the host OS path format.
 
-    This helper is intended for temporary local scratch paths only.
-    Durable URLs should remain unchanged and should continue using the Cloudinary fields.
+    On Windows, convert Docker-style `/app/uploads/...` paths to the local backend
+    uploads directory when the backend is running locally.
     """
     if isinstance(path, Path):
-        return PurePosixPath(path).as_posix()
-    normalized = str(path).replace("\\", "/")
-    return PurePosixPath(normalized).as_posix()
+        path_value = str(path)
+    else:
+        path_value = str(path)
+
+    path_value = path_value.strip()
+    if not path_value:
+        return path_value
+
+    # Normalize Windows-style separators into forward slash form for easier matching.
+    path_value = path_value.replace("\\", "/")
+
+    if os.name == "nt" and path_value.lower().startswith("/app/uploads"):
+        local_upload_dir = _windows_local_upload_dir()
+        relative_path = path_value[len("/app/uploads"):].lstrip("/\\")
+        if relative_path:
+            return str((local_upload_dir / relative_path).resolve())
+        return str(local_upload_dir.resolve())
+
+    return str(Path(path_value))
+
+
+def _windows_local_upload_dir() -> Path:
+    configured_upload_dir = Path(str(settings.UPLOAD_DIR)).expanduser()
+    configured_upload_dir_str = str(configured_upload_dir).replace("\\", "/")
+    if configured_upload_dir_str.lower().startswith("/app/uploads"):
+        local_root = Path(__file__).resolve().parents[2] / "uploads"
+        local_root.mkdir(parents=True, exist_ok=True)
+        return local_root
+    return configured_upload_dir
 
 
 def _cloudinary_configured() -> bool:

@@ -14,9 +14,14 @@ Primary MVP workflow:
 ```txt
 Audio Upload / YouTube URL
 -> User selects target stem
+-> Check duplicate by source identity + selected stem
+-> Upload original audio to Cloudinary when processing is needed
+-> Queue one selected-stem job
 -> Demucs separates selected stem
--> Pitch/rhythm detection runs on separated stem
--> Generate instrument-aware tabs/notation/rhythm data
+-> Normalize selected separated stem volume
+-> Spotify Basic Pitch runs only for melodic stems (`other`, `bass`, future melodic `vocals`)
+-> Onset/rhythm detection runs for `drums`
+-> Generate instrument-aware tabs/notation/rhythm data where supported
 -> Render synchronized playback with playhead/waveform
 -> Export generated outputs
 ```
@@ -43,15 +48,17 @@ Audio Upload / YouTube URL + selected stem
 -> Modal/external worker downloads original audio from Cloudinary
 -> Worker runs Demucs selected-stem separation on GPU when available
 -> Worker uploads selected separated stem to Cloudinary
--> Worker runs stem-aware pitch/rhythm/onset detection
--> Worker generates tabs/notation/rhythm data based on selected stem
+-> Worker normalizes selected separated stem volume
+-> Worker runs Spotify Basic Pitch only for melodic stems (`other`, `bass`, future melodic `vocals`)
+-> Worker runs onset/rhythm analysis for `drums`
+-> Worker generates tabs/notation/rhythm data based on selected stem where supported
 -> Worker uploads supported MIDI/MusicXML/TAB exports to Cloudinary
 -> Worker calls backend complete/failed endpoint
 -> Backend updates transcription status and output references
 -> Frontend renders synchronized playback and export/download controls
 ```
 
-Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar transcription, the app should use the `other` stem as the target because default Demucs models commonly group guitar, piano, synths, and accompaniment there. The UI must make this clear: guitar and piano may be inside `other` depending on the mix and model.
+Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar/accompaniment transcription, the app should use the `other` stem as the target because default Demucs models commonly group guitar, piano, synths, melody, and accompaniment there. The UI and API metadata must make this clear: those parts may be inside `other` depending on the mix and model. Do not market the MVP as isolated lead guitar transcription or promise perfect Songsterr-level accuracy.
 
 The backend should accept `selected_stem` or `selected_instrument` in audio/YouTube upload/process requests, upload the original source audio to Cloudinary, run Demucs only for the selected output needed, transcribe only that selected stem when applicable, upload durable outputs to Cloudinary, and save only the selected stem output unless explicit caching is needed.
 
@@ -100,9 +107,9 @@ Existing tools tend to solve only part of the workflow. Stem splitters can isola
 
 ## Solution
 
-Develop an AI-powered web application that combines selective Demucs stem separation and Songsterr-style synchronized notation/playback for one selected target stem.
+Develop an AI-powered web application that combines selective Demucs stem separation, Spotify Basic Pitch for melodic selected stems, drum onset/rhythm analysis, and synchronized notation/playback for one selected target stem.
 
-The system will analyze audio from MP3/WAV uploads or YouTube links, let the user choose a target stem, separate only the selected output needed, detect notes, chords, tempo, key, rhythm, onsets, and confidence levels for that selected stem where supported, then generate track-specific musical outputs.
+The system will analyze audio from MP3/WAV uploads or YouTube links, let the user choose a target stem, separate only the selected output needed, run Basic Pitch only for melodic supported stems, run onset/rhythm analysis for drums, detect chords/tempo/key where supported, record confidence levels, then generate selected-stem musical outputs.
 
 The application will provide:
 
@@ -112,7 +119,7 @@ The application will provide:
 - Drum rhythm lanes and percussion/drum tab when `drums` is selected
 - Vocal playback-only results for the MVP
 - Chord progressions and chord charts where supported
-- Synchronized playback, looping, speed control, waveform sync, playhead sync, note highlighting, and export options
+- Synchronized playback, looping, speed control, waveform sync, playhead sync, note/hit highlighting, and export options
 
 The goal is a practical selected-stem transcription and practice studio first, with imports and full multi-track project workflows as later expansion.
 
@@ -122,12 +129,13 @@ The goal is a practical selected-stem transcription and practice studio first, w
 
 - Playback only for MVP.
 - Preserve separated stem playback and metadata.
-- Future roadmap: melody extraction.
+- Future roadmap: Basic Pitch or specialist melody extraction.
 
 ### Drums
 
 - Analyze the drum stem.
-- Detect drum hits and onsets.
+- Detect drum hits and onsets with rhythm/onset analysis.
+- Do not run Spotify Basic Pitch for drums.
 - Generate a drum rhythm lane.
 - Generate percussion/drum tab where possible.
 - Support synchronized playback highlighting.
@@ -135,7 +143,7 @@ The goal is a practical selected-stem transcription and practice studio first, w
 
 ### Bass
 
-- Analyze the bass stem.
+- Analyze the bass stem with Spotify Basic Pitch.
 - Generate 4-string bass tablature.
 - Use standard tuning E A D G.
 - Generate bass score data where possible.
@@ -143,11 +151,12 @@ The goal is a practical selected-stem transcription and practice studio first, w
 
 ### Other
 
-- Primary guitar transcription target.
+- Primary guitar/accompaniment transcription target.
+- Analyze the selected `other` stem with Spotify Basic Pitch.
 - Generate guitar tablature.
 - Generate score notation.
 - Support synchronized playback/playhead highlighting.
-- Clearly explain that guitar, piano, synth, and accompaniment may be grouped together depending on the mix.
+- Clearly explain that guitar, piano, synth, melody, and accompaniment may be grouped together depending on the mix.
 
 ## Instrument-Aware Rendering Architecture
 
@@ -191,7 +200,7 @@ Do not use separate timers for waveform, tabs, and score. One shared playback cl
 ### AI Audio Analysis
 
 - Selected-stem source separation into one Demucs stem.
-- Pitch detection for melodic stems.
+- Spotify Basic Pitch as the primary note detection engine for melodic selected stems.
 - Onset and hit detection for drum stems.
 - Chord recognition where supported.
 - BPM/tempo detection.
@@ -212,9 +221,10 @@ Do not use separate timers for waveform, tabs, and score. One shared playback cl
 ### Selected-Track Transcription
 
 - Store transcription data for the selected instrument/stem.
+- Run Basic Pitch only for `other`, `bass`, and future melodic `vocals`.
 - Generate guitar-oriented tablature from the `other` stem in the MVP.
 - Generate bass tablature from the `bass` stem.
-- Generate drum rhythm data from the `drums` stem.
+- Generate drum rhythm data from the `drums` stem using onset/rhythm analysis, not Basic Pitch.
 - Generate vocal notation only when future melody extraction is added.
 - Keep full-mix or imported project playback architecture out of the MVP.
 
@@ -273,9 +283,9 @@ The platform may use the following AI and audio processing technologies:
 
 #### Pitch Detection
 
-- Spotify Basic Pitch.
-- CREPE.
-- librosa pYIN fallback.
+- Spotify Basic Pitch as the primary melodic note detection engine.
+- CREPE and librosa pYIN as fallback implementation details when needed.
+- Basic Pitch is used for `other`, `bass`, and future melodic `vocals`, not for `drums`.
 
 #### Rhythm and Drum Detection
 
@@ -310,6 +320,8 @@ The system will provide:
 
 A no-note result after successful stem separation should be `completed_with_warning`, not `failed`, when the selected stem is playable.
 
+For melodic stems, the worker should normalize separated stem volume before Basic Pitch, retry with lower-threshold/high-sensitivity settings when zero notes are detected, preserve playback if the retry still finds no notes, and disable only score/TAB/MIDI/MusicXML exports that require generated notes.
+
 Users may manually edit generated track data to correct inaccuracies.
 
 ## Accuracy Expectations
@@ -317,8 +329,8 @@ Users may manually edit generated track data to correct inaccuracies.
 Target performance:
 
 - 80-90% chord detection accuracy for clean, isolated harmonic material.
-- 70-85% note transcription accuracy for supported melodic stems.
-- Higher reliability for isolated stems than dense full mixes.
+- 70-85% note transcription accuracy target for clean supported melodic stems, without promising perfect Songsterr-level accuracy.
+- Higher reliability for selected separated stems than dense mixed audio.
 
 Performance depends heavily on:
 
@@ -421,10 +433,10 @@ Benefits include:
 MVP support:
 
 - User-selected `vocals` stem playback.
-- User-selected `drums` stem playback, hit detection, rhythm lane, and percussion/drum tab.
-- User-selected `bass` stem playback, 4-string bass tab, and bass score.
-- User-selected `other` stem playback, 6-string guitar-oriented tab, and score notation.
-- Clear messaging that guitar/piano may live inside `other`.
+- User-selected `drums` stem playback, onset/rhythm hit detection, rhythm lane, and percussion/drum tab.
+- User-selected `bass` stem playback, Basic Pitch transcription, 4-string bass tab, and bass score.
+- User-selected `other` stem playback, Basic Pitch transcription, 6-string guitar-oriented tab, and score notation.
+- Clear messaging that guitar, piano, synths, melody, or accompaniment may live inside `other`.
 
 Near-term expansion:
 
@@ -618,10 +630,12 @@ Worker endpoints:
 7. Drum rhythm lane rendering.
 8. Bass tab rendering.
 
+The selected stem should always be visible in the viewer. Stem confidence, low-confidence warnings, `other` stem limitations, and no-note warning states should be visible without blocking separated-stem playback.
+
 ## Highest Backend Priorities
 
 1. Selected-stem processing stability.
-2. Stem-aware transcription.
+2. Basic Pitch quality for selected melodic stems.
 3. Bass tab generation.
 4. Drum rhythm lane generation.
 5. Playback timing accuracy.
@@ -636,14 +650,14 @@ Worker endpoints:
 3. Guitar tab generation from `other`.
 4. Bass tab generation from `bass`.
 5. Drum rhythm lane/tab generation from `drums`.
-6. Synchronized Songsterr-style playback.
+6. Synchronized practice playback with shared waveform/playhead/tab timing.
 7. Selected-stem playback/export.
 8. Queue-aware processing status.
 
 ## Current Next Priorities
 
 1. Stabilize selected-stem processing.
-2. Improve stem-aware transcription.
+2. Improve Basic Pitch quality for selected melodic stems.
 3. Finish bass tab generation.
 4. Finish drum rhythm lane/percussion tab generation.
 5. Improve playback timing accuracy.

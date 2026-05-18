@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  useCallback,
+} from "react";
 import type { AlphaTabApi } from "@coderline/alphatab";
 import audioService from "../services/audioService";
 import type { InstrumentTrack, Transcription } from "../services/audioService";
@@ -86,12 +92,6 @@ type AlphaTexBuildResult = {
 
 type SelectedTrackView = "global" | number;
 
-type StemAudioState = {
-  url: string | null;
-  error: string | null;
-  loading: boolean;
-};
-
 type ActiveScoreSource = {
   id: SelectedTrackView;
   title: string;
@@ -135,8 +135,14 @@ const formatChordName = (value: string): string =>
 
 const tuningFromTablature = (tablatureData: unknown): number[] => {
   const parsed = parseJsonField(tablatureData);
-  if (isRecord(parsed) && Array.isArray(parsed.tuning) && parsed.tuning.length > 0) {
-    return parsed.tuning.map(Number).filter((note: number) => Number.isFinite(note));
+  if (
+    isRecord(parsed) &&
+    Array.isArray(parsed.tuning) &&
+    parsed.tuning.length > 0
+  ) {
+    return parsed.tuning
+      .map(Number)
+      .filter((note: number) => Number.isFinite(note));
   }
   return [40, 45, 50, 55, 59, 64];
 };
@@ -147,7 +153,20 @@ const labelsForTuning = (tuning: number[]): string[] => {
 };
 
 const midiNoteToAlphaTexPitch = (midiNote: number): string => {
-  const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  const noteNames = [
+    "C",
+    "C#",
+    "D",
+    "D#",
+    "E",
+    "F",
+    "F#",
+    "G",
+    "G#",
+    "A",
+    "A#",
+    "B",
+  ];
   const roundedNote = Math.round(midiNote);
   const noteName = noteNames[((roundedNote % 12) + 12) % 12];
   const octave = Math.floor(roundedNote / 12) - 1;
@@ -155,27 +174,35 @@ const midiNoteToAlphaTexPitch = (midiNote: number): string => {
 };
 
 const escapeAlphaTexText = (value: string): string =>
-  value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
 const displayInstrumentName = (instrumentType: string): string => {
   if (!instrumentType) return "Track";
-  return instrumentType.charAt(0).toUpperCase() + instrumentType.slice(1).replace("_", " ");
+  return (
+    instrumentType.charAt(0).toUpperCase() +
+    instrumentType.slice(1).replace("_", " ")
+  );
 };
 
 const exportSlug = (value: string): string =>
-  value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "track";
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "track";
 
 const buildAsciiTab = (tablatureData: unknown, chordsData: unknown): string => {
   const parsed = parseJsonField(tablatureData);
-  const notes: TablatureNote[] = isRecord(parsed) && Array.isArray(parsed.tablature)
-    ? parsed.tablature as TablatureNote[]
-    : [];
-  const parsedChords = parseJsonField(chordsData);
-  const chords: ChordSegment[] = isRecord(parsedChords) && Array.isArray(parsedChords.chords)
-    ? parsedChords.chords as ChordSegment[]
-    : isRecord(parsedChords) && Array.isArray(parsedChords.chord_charts)
-      ? parsedChords.chord_charts as ChordSegment[]
+  const notes: TablatureNote[] =
+    isRecord(parsed) && Array.isArray(parsed.tablature)
+      ? (parsed.tablature as TablatureNote[])
       : [];
+  const parsedChords = parseJsonField(chordsData);
+  const chords: ChordSegment[] =
+    isRecord(parsedChords) && Array.isArray(parsedChords.chords)
+      ? (parsedChords.chords as ChordSegment[])
+      : isRecord(parsedChords) && Array.isArray(parsedChords.chord_charts)
+        ? (parsedChords.chord_charts as ChordSegment[])
+        : [];
 
   if (notes.length === 0) return "";
 
@@ -185,7 +212,10 @@ const buildAsciiTab = (tablatureData: unknown, chordsData: unknown): string => {
   );
   const blockTime = 0.1;
   const columnsPerBlock = 2;
-  const totalColumns = Math.max(24, Math.ceil(maxOffset / blockTime) * columnsPerBlock);
+  const totalColumns = Math.max(
+    24,
+    Math.ceil(maxOffset / blockTime) * columnsPerBlock,
+  );
   const tuning = tuningFromTablature(tablatureData);
   const labels = labelsForTuning(tuning);
   const rows = labels.map(() => Array(totalColumns).fill("-"));
@@ -195,7 +225,12 @@ const buildAsciiTab = (tablatureData: unknown, chordsData: unknown): string => {
     const stringNumber = Number(note.string);
     const fret = Number(note.fret);
     const onset = noteStartTime(note);
-    if (!Number.isFinite(stringNumber) || stringNumber < 1 || stringNumber > labels.length) return;
+    if (
+      !Number.isFinite(stringNumber) ||
+      stringNumber < 1 ||
+      stringNumber > labels.length
+    )
+      return;
     if (!Number.isFinite(fret) || fret < 0) return;
 
     const rowIndex = stringNumber - 1;
@@ -248,7 +283,8 @@ const mediaErrorDetails = (audio: HTMLMediaElement) => {
     [MediaError.MEDIA_ERR_ABORTED]: "Playback was aborted.",
     [MediaError.MEDIA_ERR_NETWORK]: "A network error interrupted loading.",
     [MediaError.MEDIA_ERR_DECODE]: "The audio could not be decoded.",
-    [MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED]: "The audio source is not supported.",
+    [MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED]:
+      "The audio source is not supported.",
   };
   return {
     code: error.code,
@@ -275,7 +311,9 @@ const probeAudioNetwork = async (src: string): Promise<void> => {
   }
 };
 
-const selectedStemInstrument = (selectedStem: string | null | undefined): string =>
+const selectedStemInstrument = (
+  selectedStem: string | null | undefined,
+): string =>
   ({
     other: "guitar",
     bass: "bass",
@@ -283,15 +321,22 @@ const selectedStemInstrument = (selectedStem: string | null | undefined): string
     vocals: "vocals",
   })[selectedStem || "other"] ?? "guitar";
 
+const selectedStemLabel = (selectedStem: string | null | undefined): string =>
+  ({
+    other: "Guitar/Accompaniment",
+    bass: "Bass",
+    drums: "Drums",
+    vocals: "Vocals",
+  })[selectedStem || "other"] ?? "Guitar/Accompaniment";
+
 const trackHasStemAudio = (
   transcription: Transcription | null,
   track: InstrumentTrack,
 ): boolean =>
   hasUsableBlob(track.stem_audio_path) ||
-  (
-    hasUsableBlob(transcription?.separated_audio_url) &&
-    track.instrument_type === selectedStemInstrument(transcription?.selected_stem)
-  );
+  (hasUsableBlob(transcription?.separated_audio_url) &&
+    track.instrument_type ===
+      selectedStemInstrument(transcription?.selected_stem));
 
 const extractNoteEvents = (notesData: unknown): ScoreNote[] => {
   const parsed = parseJsonField(notesData);
@@ -326,7 +371,9 @@ const getDrumTotalDuration = (notesData: unknown, hits: DrumHit[]): number => {
 
 const extractTabNotes = (tablatureData: unknown): ScoreNote[] => {
   const parsed = parseJsonField(tablatureData);
-  return isRecord(parsed) && Array.isArray(parsed.tablature) ? parsed.tablature as ScoreNote[] : [];
+  return isRecord(parsed) && Array.isArray(parsed.tablature)
+    ? (parsed.tablature as ScoreNote[])
+    : [];
 };
 
 const noteStartTime = (note: TablatureNote): number => {
@@ -336,7 +383,10 @@ const noteStartTime = (note: TablatureNote): number => {
   return Number.isFinite(onset) ? onset : 0;
 };
 
-const noteDuration = (note: TablatureNote, fallbackDuration: number): number => {
+const noteDuration = (
+  note: TablatureNote,
+  fallbackDuration: number,
+): number => {
   const duration = Number(note.duration);
   if (Number.isFinite(duration) && duration > 0) return duration;
 
@@ -377,13 +427,15 @@ const buildTimedTabNotes = (
       }
 
       const offset = startTime + Math.max(0.08, duration);
-      const measuredBeat = Math.floor((startTime % measureDuration) / beatDuration) + 1;
+      const measuredBeat =
+        Math.floor((startTime % measureDuration) / beatDuration) + 1;
 
       return {
         ...note,
-        id: note.id !== undefined && note.id !== null
-          ? String(note.id)
-          : `${index}-${startTime}-${stringNumber}-${fret}`,
+        id:
+          note.id !== undefined && note.id !== null
+            ? String(note.id)
+            : `${index}-${startTime}-${stringNumber}-${fret}`,
         startTime,
         duration,
         onset,
@@ -393,14 +445,19 @@ const buildTimedTabNotes = (
         measure: Number.isFinite(Number(note.measure))
           ? Math.max(1, Math.round(Number(note.measure)))
           : Math.floor(startTime / measureDuration) + 1,
-        beat: Number.isFinite(Number(note.beat)) ? Number(note.beat) : measuredBeat,
+        beat: Number.isFinite(Number(note.beat))
+          ? Number(note.beat)
+          : measuredBeat,
       };
     })
     .filter((note): note is TimedTabNote => note !== null)
     .sort((a, b) => a.startTime - b.startTime || a.string - b.string);
 };
 
-const activeTimedNoteIdsAt = (notes: TimedTabNote[], activeTime: number): Set<string> => {
+const activeTimedNoteIdsAt = (
+  notes: TimedTabNote[],
+  activeTime: number,
+): Set<string> => {
   const ids = new Set<string>();
   notes.forEach((note) => {
     const audibleUntil = note.startTime + Math.max(note.duration, 0.08);
@@ -413,20 +470,30 @@ const activeTimedNoteIdsAt = (notes: TimedTabNote[], activeTime: number): Set<st
 
 const extractChords = (chordsData: unknown): ChordSegment[] => {
   const parsed = parseJsonField(chordsData);
-  if (isRecord(parsed) && Array.isArray(parsed.chords)) return parsed.chords as ChordSegment[];
-  if (isRecord(parsed) && Array.isArray(parsed.chord_charts)) return parsed.chord_charts as ChordSegment[];
+  if (isRecord(parsed) && Array.isArray(parsed.chords))
+    return parsed.chords as ChordSegment[];
+  if (isRecord(parsed) && Array.isArray(parsed.chord_charts))
+    return parsed.chord_charts as ChordSegment[];
   return [];
 };
 
-const pitchFromTabNote = (note: TablatureNote, tuning: number[] = [40, 45, 50, 55, 59, 64]) => {
+const pitchFromTabNote = (
+  note: TablatureNote,
+  tuning: number[] = [40, 45, 50, 55, 59, 64],
+) => {
   const stringNumber = Number(note.string);
   const fret = Number(note.fret);
-  if (!Number.isFinite(stringNumber) || !Number.isFinite(fret)) return undefined;
-  if (stringNumber < 1 || stringNumber > tuning.length || fret < 0) return undefined;
+  if (!Number.isFinite(stringNumber) || !Number.isFinite(fret))
+    return undefined;
+  if (stringNumber < 1 || stringNumber > tuning.length || fret < 0)
+    return undefined;
   return tuning[tuning.length - stringNumber] + fret;
 };
 
-const buildScoreNotes = (tablatureData: unknown, notesData: unknown): ScoreNote[] => {
+const buildScoreNotes = (
+  tablatureData: unknown,
+  notesData: unknown,
+): ScoreNote[] => {
   const tabNotes = extractTabNotes(tablatureData);
   const noteEvents = extractNoteEvents(notesData);
   const tuning = tuningFromTablature(tablatureData);
@@ -439,7 +506,11 @@ const buildScoreNotes = (tablatureData: unknown, notesData: unknown): ScoreNote[
         startTime: noteStartTime(note),
         pitch: Number(note.pitch),
       }))
-      .filter((note) => Number.isFinite(Number(note.onset)) && Number.isFinite(Number(note.pitch)));
+      .filter(
+        (note) =>
+          Number.isFinite(Number(note.onset)) &&
+          Number.isFinite(Number(note.pitch)),
+      );
   }
 
   return tabNotes
@@ -454,10 +525,16 @@ const buildScoreNotes = (tablatureData: unknown, notesData: unknown): ScoreNote[
         ...tabNote,
         onset,
         startTime: onset,
-        pitch: Number(matchingEvent?.pitch ?? pitchFromTabNote(tabNote, tuning)),
+        pitch: Number(
+          matchingEvent?.pitch ?? pitchFromTabNote(tabNote, tuning),
+        ),
       };
     })
-    .filter((note) => Number.isFinite(Number(note.onset)) && Number.isFinite(Number(note.fret)));
+    .filter(
+      (note) =>
+        Number.isFinite(Number(note.onset)) &&
+        Number.isFinite(Number(note.fret)),
+    );
 };
 
 const buildAlphaTexFromScore = ({
@@ -493,13 +570,16 @@ const buildAlphaTexFromScore = ({
   if (notes.length === 0) return null;
 
   const safeTempo = tempo && tempo > 0 ? tempo : 120;
-  const sixteenthDuration = (60 / safeTempo) / 4;
+  const sixteenthDuration = 60 / safeTempo / 4;
   const maxSlots = 3072;
   const slotMap = new Map<number, string[]>();
   let highestSlot = 0;
 
   notes.forEach((note) => {
-    const slot = Math.max(0, Math.round(noteStartTime(note) / sixteenthDuration));
+    const slot = Math.max(
+      0,
+      Math.round(noteStartTime(note) / sixteenthDuration),
+    );
     if (slot >= maxSlots) return;
 
     const stringNumber = Math.round(Number(note.string));
@@ -515,7 +595,10 @@ const buildAlphaTexFromScore = ({
 
   if (slotMap.size === 0) return null;
 
-  const slotCount = Math.min(maxSlots, Math.max(16, Math.ceil((highestSlot + 1) / 16) * 16));
+  const slotCount = Math.min(
+    maxSlots,
+    Math.max(16, Math.ceil((highestSlot + 1) / 16) * 16),
+  );
   const tokens: string[] = [":16"];
 
   for (let slot = 0; slot < slotCount; slot += 1) {
@@ -561,7 +644,10 @@ const confidenceOf = (value?: number) =>
 const hasConfidenceScore = (value: unknown): value is number =>
   value !== null && value !== undefined && Number.isFinite(Number(value));
 
-const prepareDisplayNotes = (notes: ScoreNote[], tempo?: number): DisplayScoreNote[] => {
+const prepareDisplayNotes = (
+  notes: ScoreNote[],
+  tempo?: number,
+): DisplayScoreNote[] => {
   const beatDuration = tempo && tempo > 0 ? 60 / tempo : 0.5;
   const gridSize = Math.max(0.08, beatDuration / 4);
   const bestBySlot = new Map<string, DisplayScoreNote>();
@@ -578,13 +664,18 @@ const prepareDisplayNotes = (notes: ScoreNote[], tempo?: number): DisplayScoreNo
     const key = `${slot}:${Number.isFinite(stringNumber) ? `s${stringNumber}` : `p${pitch}`}`;
     const candidate = { ...note, displayOnset };
     const existing = bestBySlot.get(key);
-    if (!existing || confidenceOf(candidate.confidence) >= confidenceOf(existing.confidence)) {
+    if (
+      !existing ||
+      confidenceOf(candidate.confidence) >= confidenceOf(existing.confidence)
+    ) {
       bestBySlot.set(key, candidate);
     }
   });
 
   return Array.from(bestBySlot.values()).sort(
-    (a, b) => a.displayOnset - b.displayOnset || Number(a.string ?? a.pitch ?? 0) - Number(b.string ?? b.pitch ?? 0),
+    (a, b) =>
+      a.displayOnset - b.displayOnset ||
+      Number(a.string ?? a.pitch ?? 0) - Number(b.string ?? b.pitch ?? 0),
   );
 };
 
@@ -608,9 +699,19 @@ const mergeChordSegments = (chords: ChordSegment[]): ChordSegment[] => {
       const last = merged[merged.length - 1];
       const lastRaw = last?.chord ?? last?.chord_symbol ?? "";
 
-      if (last && lastRaw === rawChord && Number(chord.onset ?? 0) - Number(last.offset ?? last.onset ?? 0) < 0.18) {
-        last.offset = Math.max(Number(last.offset ?? 0), Number(chord.offset ?? chord.onset ?? 0));
-        last.confidence = Math.max(confidenceOf(last.confidence), confidenceOf(chord.confidence));
+      if (
+        last &&
+        lastRaw === rawChord &&
+        Number(chord.onset ?? 0) - Number(last.offset ?? last.onset ?? 0) < 0.18
+      ) {
+        last.offset = Math.max(
+          Number(last.offset ?? 0),
+          Number(chord.offset ?? chord.onset ?? 0),
+        );
+        last.confidence = Math.max(
+          confidenceOf(last.confidence),
+          confidenceOf(chord.confidence),
+        );
         return;
       }
 
@@ -632,15 +733,22 @@ const buildScoreSystems = (
   const maxDurationPerSystem = measureDuration * 2;
   const maxNotesPerSystem = 24;
   const systems: ScoreSystem[] = [];
-  let start = Math.max(0, Math.floor(notes[0].displayOnset / measureDuration) * measureDuration);
+  let start = Math.max(
+    0,
+    Math.floor(notes[0].displayOnset / measureDuration) * measureDuration,
+  );
   let current: DisplayScoreNote[] = [];
 
   notes.forEach((note) => {
     const onset = note.displayOnset;
     const isFull = current.length >= maxNotesPerSystem;
-    const isTooWide = onset - start >= maxDurationPerSystem && current.length > 0;
+    const isTooWide =
+      onset - start >= maxDurationPerSystem && current.length > 0;
     if (isFull || isTooWide) {
-      const end = Math.max(start + measureDuration, current[current.length - 1].displayOnset + beatDuration);
+      const end = Math.max(
+        start + measureDuration,
+        current[current.length - 1].displayOnset + beatDuration,
+      );
       systems.push({
         start,
         end,
@@ -648,14 +756,20 @@ const buildScoreSystems = (
         notes: current,
         chords: [],
       });
-      start = Math.max(0, Math.floor(onset / measureDuration) * measureDuration);
+      start = Math.max(
+        0,
+        Math.floor(onset / measureDuration) * measureDuration,
+      );
       current = [];
     }
     current.push(note);
   });
 
   if (current.length > 0) {
-    const end = Math.max(start + measureDuration, current[current.length - 1].displayOnset + beatDuration);
+    const end = Math.max(
+      start + measureDuration,
+      current[current.length - 1].displayOnset + beatDuration,
+    );
     systems.push({
       start,
       end,
@@ -670,7 +784,12 @@ const buildScoreSystems = (
   return systems.map((system) => {
     const end = system.end;
     const measureStarts = Array.from(
-      { length: Math.max(2, Math.ceil((end - system.start) / measureDuration) + 1) },
+      {
+        length: Math.max(
+          2,
+          Math.ceil((end - system.start) / measureDuration) + 1,
+        ),
+      },
       (_item, measureIndex) => system.start + measureIndex * measureDuration,
     ).filter((measureStart) => measureStart <= end + 0.01);
 
@@ -722,15 +841,27 @@ const ScoreSheet = ({
 }) => {
   const frameRef = useRef<HTMLDivElement>(null);
   const systemRefs = useRef<Array<SVGGElement | null>>([]);
-  const tuning = useMemo(() => tuningFromTablature(tablatureData), [tablatureData]);
-  const hasTablature = useMemo(() => extractTabNotes(tablatureData).length > 0, [tablatureData]);
+  const tuning = useMemo(
+    () => tuningFromTablature(tablatureData),
+    [tablatureData],
+  );
+  const hasTablature = useMemo(
+    () => extractTabNotes(tablatureData).length > 0,
+    [tablatureData],
+  );
   const stringCount = Math.max(1, tuning.length);
   const timedTabNotes = useMemo(
     () => buildTimedTabNotes(tablatureData, notesData, tempo),
     [notesData, tablatureData, tempo],
   );
   const scoreNotes = useMemo(
-    () => prepareDisplayNotes(hasTablature ? timedTabNotes : buildScoreNotes(tablatureData, notesData), tempo),
+    () =>
+      prepareDisplayNotes(
+        hasTablature
+          ? timedTabNotes
+          : buildScoreNotes(tablatureData, notesData),
+        tempo,
+      ),
     [hasTablature, notesData, tablatureData, tempo, timedTabNotes],
   );
   const chords = useMemo(() => extractChords(chordsData), [chordsData]);
@@ -759,7 +890,11 @@ const ScoreSheet = ({
     const comfortableTop = containerRect.top + containerRect.height * 0.2;
     const comfortableBottom = containerRect.bottom - containerRect.height * 0.2;
 
-    if (systemRect.top >= comfortableTop && systemRect.bottom <= comfortableBottom) return;
+    if (
+      systemRect.top >= comfortableTop &&
+      systemRect.bottom <= comfortableBottom
+    )
+      return;
 
     const nextScrollTop =
       scrollContainer.scrollTop +
@@ -784,10 +919,14 @@ const ScoreSheet = ({
   const systemHeight = hasTablature ? 248 : 174;
   const pageHeight = 214 + systems.length * systemHeight;
   const instrumentName = displayInstrumentName(instrumentType);
-  const pageTitle = title && title.length > 52 ? `${title.slice(0, 49)}...` : title || `${instrumentName} Transcription`;
+  const pageTitle =
+    title && title.length > 52
+      ? `${title.slice(0, 49)}...`
+      : title || `${instrumentName} Transcription`;
 
   const timeToX = (time: number, system: ScoreSystem) => {
-    const progress = (time - system.start) / Math.max(system.end - system.start, 0.1);
+    const progress =
+      (time - system.start) / Math.max(system.end - system.start, 0.1);
     return left + Math.max(0, Math.min(1, progress)) * (right - left);
   };
 
@@ -803,7 +942,12 @@ const ScoreSheet = ({
         <text x={width / 2} y="58" textAnchor="middle" className="score-title">
           {pageTitle}
         </text>
-        <text x={width / 2} y="84" textAnchor="middle" className="score-subtitle">
+        <text
+          x={width / 2}
+          y="84"
+          textAnchor="middle"
+          className="score-subtitle"
+        >
           {instrumentName} transcription
         </text>
         <text x={left} y="118" className="score-meta">
@@ -830,7 +974,8 @@ const ScoreSheet = ({
           const contentBottom = hasTablature
             ? tabY + (stringCount - 1) * staffGap + 48
             : notationY + 4 * staffGap + 48;
-          const isActiveSystem = activeTime >= system.start && activeTime <= system.end;
+          const isActiveSystem =
+            activeTime >= system.start && activeTime <= system.end;
           const playheadX = timeToX(activeTime, system);
           let lastChordX = -Infinity;
 
@@ -869,7 +1014,11 @@ const ScoreSheet = ({
                 </g>
               )}
 
-              <text x={left - 24} y={notationY - 14} className="score-measure-number">
+              <text
+                x={left - 24}
+                y={notationY - 14}
+                className="score-measure-number"
+              >
                 {systemIndex * 2 + 1}
               </text>
               <text x={left - 52} y={notationY + 24} className="score-clef">
@@ -899,24 +1048,37 @@ const ScoreSheet = ({
                   className="score-staff-line"
                 />
               ))}
-              {hasTablature && Array.from({ length: stringCount }, (_item, lineIndex) => (
-                <line
-                  key={`tab-${lineIndex}`}
-                  x1={left}
-                  x2={right}
-                  y1={tabY + lineIndex * staffGap}
-                  y2={tabY + lineIndex * staffGap}
-                  className="score-tab-line"
-                />
-              ))}
+              {hasTablature &&
+                Array.from({ length: stringCount }, (_item, lineIndex) => (
+                  <line
+                    key={`tab-${lineIndex}`}
+                    x1={left}
+                    x2={right}
+                    y1={tabY + lineIndex * staffGap}
+                    y2={tabY + lineIndex * staffGap}
+                    className="score-tab-line"
+                  />
+                ))}
 
               {system.measureStarts.map((measureStart) => {
                 const x = timeToX(measureStart, system);
                 return (
                   <g key={`bar-${measureStart}`}>
-                    <line x1={x} x2={x} y1={notationY} y2={notationY + 4 * staffGap} className="score-barline" />
+                    <line
+                      x1={x}
+                      x2={x}
+                      y1={notationY}
+                      y2={notationY + 4 * staffGap}
+                      className="score-barline"
+                    />
                     {hasTablature && (
-                      <line x1={x} x2={x} y1={tabY} y2={tabY + (stringCount - 1) * staffGap} className="score-barline" />
+                      <line
+                        x1={x}
+                        x2={x}
+                        y1={tabY}
+                        y2={tabY + (stringCount - 1) * staffGap}
+                        className="score-barline"
+                      />
                     )}
                   </g>
                 );
@@ -924,7 +1086,10 @@ const ScoreSheet = ({
 
               {system.chords.map((chord, chordIndex) => {
                 const rawChord = chord.chord ?? chord.chord_symbol ?? "";
-                const chordX = timeToX(Number(chord.onset ?? system.start), system);
+                const chordX = timeToX(
+                  Number(chord.onset ?? system.start),
+                  system,
+                );
                 if (chordX - lastChordX < 54) return null;
                 lastChordX = chordX;
                 return (
@@ -940,18 +1105,23 @@ const ScoreSheet = ({
               })}
 
               {system.notes.map((note, noteIndex) => {
-                const onset = Number(note.displayOnset ?? note.onset ?? system.start);
+                const onset = Number(
+                  note.displayOnset ?? note.onset ?? system.start,
+                );
                 const startTime = noteStartTime(note);
                 const duration = noteDuration(note, 0.12);
                 const offset = startTime + Math.max(duration, 0.08);
-                const isCurrentNote = isActiveSystem && (
-                  note.id !== undefined
+                const isCurrentNote =
+                  isActiveSystem &&
+                  (note.id !== undefined
                     ? activeNoteIds.has(String(note.id))
-                    : activeTime >= startTime && activeTime < offset
-                );
+                    : activeTime >= startTime && activeTime < offset);
                 const x = timeToX(onset, system);
                 const noteY = notationY + staffYForPitch(note.pitch);
-                const stringNumber = Math.max(1, Math.min(stringCount, Number(note.string || 1)));
+                const stringNumber = Math.max(
+                  1,
+                  Math.min(stringCount, Number(note.string || 1)),
+                );
                 const fret = Number(note.fret ?? 0);
                 const tabNoteY = tabY + (stringNumber - 1) * staffGap + 3;
 
@@ -970,10 +1140,27 @@ const ScoreSheet = ({
                     }}
                   >
                     {isCurrentNote && (
-                      <circle cx={x} cy={noteY} r="10" className="score-current-note-halo" />
+                      <circle
+                        cx={x}
+                        cy={noteY}
+                        r="10"
+                        className="score-current-note-halo"
+                      />
                     )}
-                    <ellipse cx={x} cy={noteY} rx="5.8" ry="4.2" className="score-notehead" />
-                    <line x1={x + 5} x2={x + 5} y1={noteY} y2={noteY - 30} className="score-stem" />
+                    <ellipse
+                      cx={x}
+                      cy={noteY}
+                      rx="5.8"
+                      ry="4.2"
+                      className="score-notehead"
+                    />
+                    <line
+                      x1={x + 5}
+                      x2={x + 5}
+                      y1={noteY}
+                      y2={noteY - 30}
+                      className="score-stem"
+                    />
                     {hasTablature && isCurrentNote && (
                       <rect
                         x={x - 11}
@@ -985,7 +1172,12 @@ const ScoreSheet = ({
                       />
                     )}
                     {hasTablature && (
-                      <text x={x} y={tabNoteY} textAnchor="middle" className="score-fret">
+                      <text
+                        x={x}
+                        y={tabNoteY}
+                        textAnchor="middle"
+                        className="score-fret"
+                      >
                         {fret}
                       </text>
                     )}
@@ -1017,10 +1209,19 @@ const AlphaTabScore = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<AlphaTabApi | null>(null);
-  const [renderState, setRenderState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [renderState, setRenderState] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
   const [renderError, setRenderError] = useState<string | null>(null);
   const alphaTex = useMemo(
-    () => buildAlphaTexFromScore({ title, tempo, tablatureData, notesData, instrumentType }),
+    () =>
+      buildAlphaTexFromScore({
+        title,
+        tempo,
+        tablatureData,
+        notesData,
+        instrumentType,
+      }),
     [instrumentType, notesData, tablatureData, tempo, title],
   );
 
@@ -1064,7 +1265,9 @@ const AlphaTabScore = ({
 
         offError = api.error.on((error) => {
           if (disposed) return;
-          setRenderError(error.message || "alphaTab could not render this generated score.");
+          setRenderError(
+            error.message || "alphaTab could not render this generated score.",
+          );
           setRenderState("error");
         });
         offRendered = api.postRenderFinished.on(() => {
@@ -1096,7 +1299,8 @@ const AlphaTabScore = ({
       <>
         {renderError && (
           <div className="alphatab-fallback-note" role="status">
-            alphaTab could not render this draft, so the classic viewer is shown.
+            alphaTab could not render this draft, so the classic viewer is
+            shown.
           </div>
         )}
         {fallback}
@@ -1124,12 +1328,17 @@ const DrumRhythmLane = ({
   const activeTime = Number.isFinite(currentTime) ? currentTime : 0;
   const duration = Math.max(totalDuration, activeTime, 1);
   const playheadLeft = `${Math.max(0, Math.min(100, (activeTime / duration) * 100))}%`;
-  const visibleTitle = title && title.length > 62 ? `${title.slice(0, 59)}...` : title;
+  const visibleTitle =
+    title && title.length > 62 ? `${title.slice(0, 59)}...` : title;
 
   if (hits.length === 0) return null;
 
   return (
-    <div className="drum-rhythm-frame" role="img" aria-label={`${visibleTitle} drum rhythm lane`}>
+    <div
+      className="drum-rhythm-frame"
+      role="img"
+      aria-label={`${visibleTitle} drum rhythm lane`}
+    >
       <div className="drum-rhythm-header">
         <div>
           <span className="meta-label">Drum rhythm</span>
@@ -1146,8 +1355,12 @@ const DrumRhythmLane = ({
         {hits.map((hit, index) => {
           const onset = Number(hit.onset ?? 0);
           const offset = Number(hit.offset ?? onset + 0.08);
-          const intensity = Math.max(0.08, Math.min(1, Number(hit.intensity ?? hit.confidence ?? 0.5)));
-          const isActive = activeTime >= onset && activeTime <= Math.max(offset, onset + 0.12);
+          const intensity = Math.max(
+            0.08,
+            Math.min(1, Number(hit.intensity ?? hit.confidence ?? 0.5)),
+          );
+          const isActive =
+            activeTime >= onset && activeTime <= Math.max(offset, onset + 0.12);
           const left = `${Math.max(0, Math.min(100, (onset / duration) * 100))}%`;
           const height = `${32 + intensity * 88}px`;
 
@@ -1190,13 +1403,19 @@ const TimedTabView = ({
   onSeek: (time: number) => void;
 }) => {
   const activeNoteRef = useRef<HTMLButtonElement | null>(null);
-  const tuning = useMemo(() => tuningFromTablature(tablatureData), [tablatureData]);
+  const tuning = useMemo(
+    () => tuningFromTablature(tablatureData),
+    [tablatureData],
+  );
   const labels = useMemo(() => labelsForTuning(tuning), [tuning]);
   const tabNotes = useMemo(
     () => buildTimedTabNotes(tablatureData, notesData, tempo),
     [notesData, tablatureData, tempo],
   );
-  const chords = useMemo(() => mergeChordSegments(extractChords(chordsData)), [chordsData]);
+  const chords = useMemo(
+    () => mergeChordSegments(extractChords(chordsData)),
+    [chordsData],
+  );
   const activeTime = Number.isFinite(currentTime) ? currentTime : 0;
   const beatDuration = tempo && tempo > 0 ? 60 / tempo : 0.5;
   const measureDuration = beatDuration * 4;
@@ -1215,12 +1434,19 @@ const TimedTabView = ({
 
     for (let measureIndex = 0; measureIndex < measureCount; measureIndex += 2) {
       const start = measureIndex * measureDuration;
-      const end = Math.min((measureIndex + 2) * measureDuration, Math.max(lastOffset, start + measureDuration));
+      const end = Math.min(
+        (measureIndex + 2) * measureDuration,
+        Math.max(lastOffset, start + measureDuration),
+      );
       systems.push({
         start,
         end,
-        measures: [measureIndex + 1, measureIndex + 2].filter((measure) => measure <= measureCount),
-        notes: tabNotes.filter((note) => note.startTime >= start && note.startTime < end),
+        measures: [measureIndex + 1, measureIndex + 2].filter(
+          (measure) => measure <= measureCount,
+        ),
+        notes: tabNotes.filter(
+          (note) => note.startTime >= start && note.startTime < end,
+        ),
         chords: chords.filter((chord) => {
           const onset = Number(chord.onset ?? 0);
           return onset >= start && onset < end;
@@ -1229,7 +1455,7 @@ const TimedTabView = ({
     }
 
     return systems;
-  }, [beatDuration, chords, measureDuration, tabNotes]);
+  }, [chords, measureDuration, tabNotes]);
 
   const activeNoteIds = useMemo(() => {
     return activeTimedNoteIdsAt(tabNotes, activeTime);
@@ -1239,7 +1465,11 @@ const TimedTabView = ({
   useEffect(() => {
     const node = activeNoteRef.current;
     if (!node) return;
-    node.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+    node.scrollIntoView({
+      block: "nearest",
+      inline: "center",
+      behavior: "smooth",
+    });
   }, [activeNoteId]);
 
   if (tabNotes.length === 0) return null;
@@ -1252,7 +1482,8 @@ const TimedTabView = ({
   return (
     <div className="timed-tab-view" aria-label="Synchronized tablature">
       {groupedSystems.map((system) => {
-        const isActiveSystem = activeTime >= system.start && activeTime <= system.end;
+        const isActiveSystem =
+          activeTime >= system.start && activeTime <= system.end;
         const playheadLeft = timeToLeft(activeTime, system.start, system.end);
 
         return (
@@ -1262,7 +1493,10 @@ const TimedTabView = ({
           >
             <div className="timed-tab-measure-row" aria-hidden="true">
               {system.measures.map((measure) => (
-                <span key={measure} style={{ left: `${((measure - 1) % 2) * 50}%` }}>
+                <span
+                  key={measure}
+                  style={{ left: `${((measure - 1) % 2) * 50}%` }}
+                >
                   M{measure}
                 </span>
               ))}
@@ -1274,7 +1508,13 @@ const TimedTabView = ({
                 return (
                   <span
                     key={`${rawChord}-${index}`}
-                    style={{ left: timeToLeft(Number(chord.onset ?? system.start), system.start, system.end) }}
+                    style={{
+                      left: timeToLeft(
+                        Number(chord.onset ?? system.start),
+                        system.start,
+                        system.end,
+                      ),
+                    }}
                   >
                     {formatChordName(rawChord)}
                   </span>
@@ -1282,9 +1522,17 @@ const TimedTabView = ({
               })}
             </div>
             <div className="timed-tab-grid">
-              {isActiveSystem && <span className="timed-tab-playhead" style={{ left: playheadLeft }} />}
+              {isActiveSystem && (
+                <span
+                  className="timed-tab-playhead"
+                  style={{ left: playheadLeft }}
+                />
+              )}
               {labels.map((label, stringIndex) => (
-                <div className="timed-tab-string" key={`${label}-${stringIndex}`}>
+                <div
+                  className="timed-tab-string"
+                  key={`${label}-${stringIndex}`}
+                >
                   <span className="timed-tab-string-label">{label}</span>
                   <span className="timed-tab-string-line" />
                   {system.notes
@@ -1297,7 +1545,13 @@ const TimedTabView = ({
                           key={note.id}
                           ref={isActive ? activeNoteRef : undefined}
                           className={`timed-tab-note ${isActive ? "active" : ""}`}
-                          style={{ left: timeToLeft(note.startTime, system.start, system.end) }}
+                          style={{
+                            left: timeToLeft(
+                              note.startTime,
+                              system.start,
+                              system.end,
+                            ),
+                          }}
                           onClick={() => onSeek(note.startTime)}
                           title={`Measure ${note.measure}, beat ${note.beat}, ${formatPlaybackTime(note.startTime)}`}
                           aria-label={`Seek to fret ${note.fret}, measure ${note.measure}, beat ${note.beat}`}
@@ -1326,7 +1580,8 @@ const hasNoteEvents = (notesData: unknown): boolean => {
   );
 };
 
-const hasDrumHits = (notesData: unknown): boolean => extractDrumHits(notesData).length > 0;
+const hasDrumHits = (notesData: unknown): boolean =>
+  extractDrumHits(notesData).length > 0;
 
 const getNotesError = (notesData: unknown): string | null => {
   const parsed = parseJsonField(notesData);
@@ -1337,10 +1592,15 @@ const getNotesError = (notesData: unknown): string | null => {
 };
 
 const isNonBlockingProcessingWarning = (error?: string | null): boolean =>
-  Boolean(error?.startsWith("Source separation unavailable; processed the full mix instead."));
+  Boolean(
+    error?.startsWith(
+      "Source separation unavailable; processed the full mix instead.",
+    ),
+  );
 
 const statusLabel = (status?: string): string => {
   if (!status) return "Unknown";
+  if (status === "stem_ready") return "Stem Ready";
   if (status === "completed_with_warning") return "Completed with warning";
   return status.charAt(0).toUpperCase() + status.slice(1).replace("_", " ");
 };
@@ -1370,13 +1630,19 @@ const formatCompletedAt = (dateValue?: string | null): string => {
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  }).format(date).replace(" at ", " • ");
+  })
+    .format(date)
+    .replace(" at ", " • ");
 };
 
 const errorMessageOf = (error: unknown, fallback: string): string => {
   if (isRecord(error)) {
     const response = error.response;
-    if (isRecord(response) && isRecord(response.data) && typeof response.data.detail === "string") {
+    if (
+      isRecord(response) &&
+      isRecord(response.data) &&
+      typeof response.data.detail === "string"
+    ) {
       return response.data.detail;
     }
     if (typeof error.message === "string") {
@@ -1386,282 +1652,16 @@ const errorMessageOf = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
-const StemMixer = ({
-  transcriptionId,
-  tracks,
-  token,
-  selectedTrackView,
-  onSelectTrack,
-  onTimeUpdate,
-  onEnded,
-}: {
-  transcriptionId: number;
-  tracks: InstrumentTrack[];
-  token: string;
-  selectedTrackView: SelectedTrackView;
-  onSelectTrack: (trackId: number) => void;
-  onTimeUpdate: (currentTime: number) => void;
-  onEnded: () => void;
-}) => {
-  const playableTracks = useMemo(
-    () => tracks.filter((track) => hasUsableBlob(track.stem_audio_path)),
-    [tracks],
-  );
-  const [stemAudio, setStemAudio] = useState<Record<number, StemAudioState>>({});
-  const [volumes, setVolumes] = useState<Record<number, number>>({});
-  const [mutedTrackIds, setMutedTrackIds] = useState<Set<number>>(new Set());
-  const [soloTrackIds, setSoloTrackIds] = useState<Set<number>>(new Set());
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const audioRefs = useRef<Record<number, HTMLAudioElement | null>>({});
-
-  useEffect(() => {
-    const objectUrls: string[] = [];
-    let cancelled = false;
-
-    playableTracks.forEach((track) => {
-      audioService
-        .getInstrumentTrackStem(transcriptionId, track.id, token)
-        .then((blob) => {
-          if (cancelled) return;
-          const url = window.URL.createObjectURL(blob);
-          objectUrls.push(url);
-          setStemAudio((current) => ({
-            ...current,
-            [track.id]: { url, error: null, loading: false },
-          }));
-        })
-        .catch((err: unknown) => {
-          if (cancelled) return;
-          setStemAudio((current) => ({
-            ...current,
-            [track.id]: {
-              url: null,
-              error: errorMessageOf(err, "Stem audio could not be loaded"),
-              loading: false,
-            },
-          }));
-        });
-    });
-
-    return () => {
-      cancelled = true;
-      objectUrls.forEach((url) => window.URL.revokeObjectURL(url));
-    };
-  }, [playableTracks, token, transcriptionId]);
-
-  useEffect(() => {
-    playableTracks.forEach((track) => {
-      const audio = audioRefs.current[track.id];
-      if (!audio) return;
-      const isSoloMode = soloTrackIds.size > 0;
-      const isMuted = isSoloMode ? !soloTrackIds.has(track.id) : mutedTrackIds.has(track.id);
-      audio.volume = isMuted ? 0 : volumes[track.id] ?? 0.78;
-    });
-  }, [mutedTrackIds, playableTracks, soloTrackIds, stemAudio, volumes]);
-
-  useEffect(() => {
-    if (!isPlaying) return;
-    const intervalId = window.setInterval(() => {
-      const preferredAudio =
-        typeof selectedTrackView === "number"
-          ? audioRefs.current[selectedTrackView]
-          : null;
-      const activeAudio = preferredAudio ?? playableTracks
-        .map((track) => audioRefs.current[track.id])
-        .find((audio): audio is HTMLAudioElement => Boolean(audio));
-
-      if (!activeAudio) return;
-      const nextTime = activeAudio.currentTime;
-      setCurrentTime(nextTime);
-      onTimeUpdate(nextTime);
-
-      const loadedAudios = playableTracks
-        .map((track) => audioRefs.current[track.id])
-        .filter((audio): audio is HTMLAudioElement => audio !== null && audio.duration > 0);
-      const allEnded = loadedAudios.length > 0 && loadedAudios.every((audio) => audio.ended);
-      if (allEnded) {
-        setIsPlaying(false);
-        onEnded();
-      }
-    }, 120);
-
-    return () => window.clearInterval(intervalId);
-  }, [isPlaying, onEnded, onTimeUpdate, playableTracks, selectedTrackView]);
-
-  const loadedTracks = playableTracks.filter((track) => stemAudio[track.id]?.url);
-  const hasLoadedStem = loadedTracks.length > 0;
-
-  const syncAllTo = (time: number) => {
-    playableTracks.forEach((track) => {
-      const audio = audioRefs.current[track.id];
-      if (!audio || !Number.isFinite(audio.duration)) return;
-      audio.currentTime = Math.min(time, audio.duration);
-    });
-  };
-
-  const handlePlayPause = async () => {
-    if (!hasLoadedStem) return;
-
-    if (isPlaying) {
-      playableTracks.forEach((track) => audioRefs.current[track.id]?.pause());
-      setIsPlaying(false);
-      return;
-    }
-
-    syncAllTo(currentTime);
-    const audiosToPlay = loadedTracks
-      .map((track) => audioRefs.current[track.id])
-      .filter((audio): audio is HTMLAudioElement => audio !== null);
-    const playResults = await Promise.allSettled(
-      audiosToPlay.map((audio) => audio.play()),
-    );
-    if (playResults.some((result) => result.status === "fulfilled")) {
-      setIsPlaying(true);
-    }
-  };
-
-  const handleSeek = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const nextTime = (Number(event.target.value) / 100) * duration;
-    syncAllTo(nextTime);
-    setCurrentTime(nextTime);
-    onTimeUpdate(nextTime);
-  };
-
-  const toggleTrackInSet = (
-    setter: React.Dispatch<React.SetStateAction<Set<number>>>,
-    trackId: number,
-  ) => {
-    setter((current) => {
-      const next = new Set(current);
-      if (next.has(trackId)) {
-        next.delete(trackId);
-      } else {
-        next.add(trackId);
-      }
-      return next;
-    });
-  };
-
-  const formatTime = (time: number): string => {
-    const minutes = Math.floor(time / 60);
-    const seconds = Math.floor(time % 60);
-    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-  };
-
-  if (playableTracks.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="stem-mixer-panel">
-      <div className="stem-mixer-transport">
-        <button
-          type="button"
-          className={`play-pause-button ${isPlaying ? "playing" : ""}`}
-          onClick={handlePlayPause}
-          disabled={!hasLoadedStem}
-          aria-label={isPlaying ? "Pause stems" : "Play stems"}
-          title={isPlaying ? "Pause stems" : "Play stems"}
-        >
-          {isPlaying ? "II" : ">"}
-        </button>
-        <div className="audio-player-time-display">
-          <span>{formatTime(currentTime)}</span>
-          <span className="time-separator"> / </span>
-          <span>{formatTime(duration)}</span>
-        </div>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={duration > 0 ? (currentTime / duration) * 100 : 0}
-          onChange={handleSeek}
-          disabled={!hasLoadedStem || duration === 0}
-          className="audio-player-seek-bar"
-          aria-label="Stem playback position"
-        />
-      </div>
-
-      <div className="stem-mixer-grid" aria-label="Separated stem mixer">
-        {playableTracks.map((track) => {
-          const state = stemAudio[track.id];
-          const isLoading = !state || state.loading;
-          const isSoloMode = soloTrackIds.size > 0;
-          const isAudible = isSoloMode ? soloTrackIds.has(track.id) : !mutedTrackIds.has(track.id);
-          const isSelected = selectedTrackView === track.id;
-
-          return (
-            <div className={`stem-mixer-row ${isSelected ? "selected" : ""}`} key={track.id}>
-              <button
-                type="button"
-                className="stem-track-name"
-                onClick={() => onSelectTrack(track.id)}
-              >
-                <strong>{track.display_name}</strong>
-                <span>{statusLabel(track.processing_status)}</span>
-              </button>
-              <button
-                type="button"
-                className={`stem-mini-button ${mutedTrackIds.has(track.id) ? "active" : ""}`}
-                onClick={() => toggleTrackInSet(setMutedTrackIds, track.id)}
-                aria-pressed={mutedTrackIds.has(track.id)}
-              >
-                Mute
-              </button>
-              <button
-                type="button"
-                className={`stem-mini-button ${soloTrackIds.has(track.id) ? "active" : ""}`}
-                onClick={() => toggleTrackInSet(setSoloTrackIds, track.id)}
-                aria-pressed={soloTrackIds.has(track.id)}
-              >
-                Solo
-              </button>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={volumes[track.id] ?? 0.78}
-                onChange={(event) => {
-                  const nextVolume = Number(event.target.value);
-                  setVolumes((current) => ({ ...current, [track.id]: nextVolume }));
-                }}
-                className="stem-volume-slider"
-                aria-label={`${track.display_name} volume`}
-              />
-              <span className={`stem-audible-state ${isAudible ? "active" : ""}`}>
-                {isLoading ? "Loading" : state?.error ? "Unavailable" : isAudible ? "On" : "Silent"}
-              </span>
-              {state?.url && (
-                <audio
-                  ref={(node) => {
-                    audioRefs.current[track.id] = node;
-                  }}
-                  src={state.url}
-                  preload="metadata"
-                  onLoadedMetadata={(event) => {
-                    const audio = event.currentTarget;
-                    setDuration((current) => Math.max(current, Number.isFinite(audio.duration) ? audio.duration : 0));
-                  }}
-                />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
-void StemMixer;
-
 const TranscriptionViewer: React.FC = () => {
   const { transcriptionId } = useParams<{ transcriptionId: string }>();
-  const [transcription, setTranscription] = useState<Transcription | null>(null);
-  const [instrumentTracks, setInstrumentTracks] = useState<InstrumentTrack[]>([]);
-  const [selectedTrackView, setSelectedTrackView] = useState<SelectedTrackView>("global");
+  const [transcription, setTranscription] = useState<Transcription | null>(
+    null,
+  );
+  const [instrumentTracks, setInstrumentTracks] = useState<InstrumentTrack[]>(
+    [],
+  );
+  const [selectedTrackView, setSelectedTrackView] =
+    useState<SelectedTrackView>("global");
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -1676,36 +1676,50 @@ const TranscriptionViewer: React.FC = () => {
   const [notationZoomLevel, setNotationZoomLevel] = useState<number>(1.0);
   const [scoreViewMode, setScoreViewMode] = useState<"score" | "tab">("score");
   const [isRetryingTranscription, setIsRetryingTranscription] = useState(false);
-  const [reprocessingTrackId, setReprocessingTrackId] = useState<number | null>(null);
+  const [isGeneratingTab, setIsGeneratingTab] = useState(false);
+  const [reprocessingTrackId, setReprocessingTrackId] = useState<number | null>(
+    null,
+  );
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const scoreStageRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const { token } = useAuth();
 
-  const fetchTranscription = useCallback(async (id: number) => {
-    try {
-      setLoading(true);
-      setError(null);
-      if (!token) {
-        throw new Error("Authentication error. Please log in again.");
-      }
+  const fetchTranscription = useCallback(
+    async (id: number) => {
+      try {
+        setLoading(true);
+        setError(null);
+        if (!token) {
+          throw new Error("Authentication error. Please log in again.");
+        }
 
-      const [result, tracks] = await Promise.all([
-        audioService.getTranscriptionResult(id, token),
-        audioService.listInstrumentTracks(id, token).catch(() => []),
-      ]);
-      setTranscription(result);
-      setInstrumentTracks(tracks);
-      setSelectedTrackView((current) => {
-        if (tracks.length > 0 && current === "global") return tracks[0].id;
-        return tracks.some((track) => track.id === current) ? current : "global";
-      });
-      setLoading(false);
-    } catch (err: unknown) {
-      setError(errorMessageOf(err, "Failed to load transcription"));
-      setLoading(false);
-    }
-  }, [token]);
+        const [result, tracks] = await Promise.all([
+          audioService.getTranscriptionResult(id, token),
+          audioService.listInstrumentTracks(id, token).catch(() => []),
+        ]);
+        setTranscription(result);
+        setInstrumentTracks(tracks);
+        setSelectedTrackView((current) => {
+          const selectedStemTrack = tracks.find(
+            (track) =>
+              track.instrument_type ===
+              selectedStemInstrument(result.selected_stem),
+          );
+          if (selectedStemTrack) return selectedStemTrack.id;
+          if (tracks.length > 0 && current === "global") return tracks[0].id;
+          return tracks.some((track) => track.id === current)
+            ? current
+            : "global";
+        });
+        setLoading(false);
+      } catch (err: unknown) {
+        setError(errorMessageOf(err, "Failed to load transcription"));
+        setLoading(false);
+      }
+    },
+    [token],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1741,18 +1755,33 @@ const TranscriptionViewer: React.FC = () => {
   }, [fetchTranscription, transcriptionId]);
 
   const selectedTrack = useMemo(
-    () => instrumentTracks.find((track) => track.id === selectedTrackView) ?? null,
+    () =>
+      instrumentTracks.find((track) => track.id === selectedTrackView) ?? null,
     [instrumentTracks, selectedTrackView],
   );
 
-  const refreshInstrumentTracks = useCallback(async (transcriptionIdValue: number) => {
-    if (!token) return;
-    const tracks = await audioService.listInstrumentTracks(transcriptionIdValue, token);
-    setInstrumentTracks(tracks);
-    setSelectedTrackView((current) =>
-      tracks.some((track) => track.id === current) ? current : tracks[0]?.id ?? "global",
-    );
-  }, [token]);
+  const refreshInstrumentTracks = useCallback(
+    async (transcriptionIdValue: number) => {
+      if (!token) return;
+      const tracks = await audioService.listInstrumentTracks(
+        transcriptionIdValue,
+        token,
+      );
+      setInstrumentTracks(tracks);
+      setSelectedTrackView((current) => {
+        const selectedStemTrack = tracks.find(
+          (track) =>
+            track.instrument_type ===
+            selectedStemInstrument(transcription?.selected_stem),
+        );
+        if (selectedStemTrack) return selectedStemTrack.id;
+        return tracks.some((track) => track.id === current)
+          ? current
+          : (tracks[0]?.id ?? "global");
+      });
+    },
+    [token, transcription?.selected_stem],
+  );
 
   const activeScoreSource: ActiveScoreSource | null = useMemo(() => {
     if (!transcription) return null;
@@ -1777,13 +1806,15 @@ const TranscriptionViewer: React.FC = () => {
     return {
       id: "global",
       title: transcription.title,
-      label: "Full Mix",
-      instrumentType: "guitar",
+      label: selectedStemLabel(transcription.selected_stem),
+      instrumentType: selectedStemInstrument(transcription.selected_stem),
       tablatureData: transcription.tablature_data,
       notesData: transcription.notes_data,
       chordsData: transcription.chords_data,
       notationData: transcription.notation_data,
-      processingStatus: transcription.processing_status ?? (transcription.is_processed ? "completed" : "processing"),
+      processingStatus:
+        transcription.processing_status ??
+        (transcription.is_processed ? "completed" : "processing"),
       confidenceScore: null,
       confidenceNotes: null,
       hasStemAudio:
@@ -1800,13 +1831,18 @@ const TranscriptionViewer: React.FC = () => {
     if (!transcription || !activeScoreSource) return null;
 
     if (!activeScoreSource.isGlobal && selectedTrack) {
-      const directTrackAudio = audioService.resolvePlayableAudioUrl(selectedTrack.stem_audio_path);
+      const directTrackAudio = audioService.resolvePlayableAudioUrl(
+        selectedTrack.stem_audio_path,
+      );
       if (directTrackAudio) return directTrackAudio;
       if (
-        selectedTrack.instrument_type === selectedStemInstrument(transcription.selected_stem) &&
+        selectedTrack.instrument_type ===
+          selectedStemInstrument(transcription.selected_stem) &&
         audioService.resolvePlayableAudioUrl(transcription.separated_audio_url)
       ) {
-        return audioService.resolvePlayableAudioUrl(transcription.separated_audio_url);
+        return audioService.resolvePlayableAudioUrl(
+          transcription.separated_audio_url,
+        );
       }
       return directTrackAudio || transcription.separated_audio_url || null;
     }
@@ -1864,7 +1900,9 @@ const TranscriptionViewer: React.FC = () => {
         setAudioError(
           errorMessageOf(
             err,
-            activeScoreSource?.isGlobal ? "Source audio file not available" : "Instrument stem audio file not available",
+            activeScoreSource?.isGlobal
+              ? "Source audio file not available"
+              : "Instrument stem audio file not available",
           ),
         );
       }
@@ -1911,7 +1949,9 @@ const TranscriptionViewer: React.FC = () => {
     };
     const handleEnded = () => {
       setIsPlaying(false);
-      setCurrentPlaybackTime(Number.isFinite(audio.duration) ? audio.duration : audio.currentTime);
+      setCurrentPlaybackTime(
+        Number.isFinite(audio.duration) ? audio.duration : audio.currentTime,
+      );
     };
     const handleError = () => {
       const src = audio.currentSrc || audio.src || audioUrl || "";
@@ -1963,7 +2003,7 @@ const TranscriptionViewer: React.FC = () => {
 
   useEffect(() => {
     if (!audioUrl) {
-      setWaveformPeaks([]);
+      queueMicrotask(() => setWaveformPeaks([]));
       return undefined;
     }
 
@@ -1986,14 +2026,20 @@ const TranscriptionViewer: React.FC = () => {
           for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
             sum += Math.abs(data[sampleIndex]);
           }
-          return Math.max(0.12, Math.min(1, (sum / Math.max(1, end - start)) * 5.5));
+          return Math.max(
+            0.12,
+            Math.min(1, (sum / Math.max(1, end - start)) * 5.5),
+          );
         });
         await context.close();
         if (!disposed) setWaveformPeaks(peaks);
       } catch {
         if (!disposed) {
           setWaveformPeaks(
-            Array.from({ length: 58 }, (_item, index) => 0.32 + (((index * 13) % 42) / 70)),
+            Array.from(
+              { length: 58 },
+              (_item, index) => 0.32 + ((index * 13) % 42) / 70,
+            ),
           );
         }
       }
@@ -2007,20 +2053,24 @@ const TranscriptionViewer: React.FC = () => {
     };
   }, [audioUrl]);
 
-  const seekPlaybackTo = useCallback((nextTime: number) => {
-    const audio = audioElementRef.current;
-    const duration = Number.isFinite(playbackDuration) && playbackDuration > 0
-      ? playbackDuration
-      : Number.isFinite(audio?.duration)
-        ? Number(audio?.duration)
-        : nextTime;
-    const boundedTime = Math.max(0, Math.min(nextTime, duration));
+  const seekPlaybackTo = useCallback(
+    (nextTime: number) => {
+      const audio = audioElementRef.current;
+      const duration =
+        Number.isFinite(playbackDuration) && playbackDuration > 0
+          ? playbackDuration
+          : Number.isFinite(audio?.duration)
+            ? Number(audio?.duration)
+            : nextTime;
+      const boundedTime = Math.max(0, Math.min(nextTime, duration));
 
-    if (audio) {
-      audio.currentTime = boundedTime;
-    }
-    setCurrentPlaybackTime(boundedTime);
-  }, [playbackDuration]);
+      if (audio) {
+        audio.currentTime = boundedTime;
+      }
+      setCurrentPlaybackTime(boundedTime);
+    },
+    [playbackDuration],
+  );
 
   const handleHeaderPlayPause = async () => {
     const audio = audioElementRef.current;
@@ -2053,7 +2103,10 @@ const TranscriptionViewer: React.FC = () => {
     if (playbackDuration <= 0) return;
 
     const rect = event.currentTarget.getBoundingClientRect();
-    const progress = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const progress = Math.min(
+      1,
+      Math.max(0, (event.clientX - rect.left) / rect.width),
+    );
     seekPlaybackTo(progress * playbackDuration);
   };
 
@@ -2114,12 +2167,21 @@ const TranscriptionViewer: React.FC = () => {
     if (!token || !transcription?.id || !activeScoreSource) return;
 
     try {
-      const trackId = activeScoreSource.isGlobal ? undefined : Number(activeScoreSource.id);
-      const blob = await audioService.downloadExport(transcription.id, format, token, trackId);
+      const trackId = activeScoreSource.isGlobal
+        ? undefined
+        : Number(activeScoreSource.id);
+      const blob = await audioService.downloadExport(
+        transcription.id,
+        format,
+        token,
+        trackId,
+      );
       const extension = format === "midi" ? "mid" : format;
       const scope = activeScoreSource.isGlobal
         ? "full_mix"
-        : exportSlug(activeScoreSource.instrumentType || activeScoreSource.label);
+        : exportSlug(
+            activeScoreSource.instrumentType || activeScoreSource.label,
+          );
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -2129,7 +2191,12 @@ const TranscriptionViewer: React.FC = () => {
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err: unknown) {
-      setError(errorMessageOf(err, `Failed to download ${format.toUpperCase()} export`));
+      setError(
+        errorMessageOf(
+          err,
+          `Failed to download ${format.toUpperCase()} export`,
+        ),
+      );
     }
   };
 
@@ -2145,7 +2212,9 @@ const TranscriptionViewer: React.FC = () => {
         token,
       );
       setInstrumentTracks((current) =>
-        current.map((track) => (track.id === updatedTrack.id ? updatedTrack : track)),
+        current.map((track) =>
+          track.id === updatedTrack.id ? updatedTrack : track,
+        ),
       );
       await refreshInstrumentTracks(transcription.id);
     } catch (err: unknown) {
@@ -2161,20 +2230,41 @@ const TranscriptionViewer: React.FC = () => {
     try {
       setError(null);
       setIsRetryingTranscription(true);
-      await audioService.retryTranscription(transcription.id, token, {
-        lower_threshold: true,
+      await audioService.generateTab(transcription.id, token, {
         sensitivity: "high",
-        reuse_separated_stem: true,
-        alternate_settings: {
-          sensitivity: "high",
-          reuse_separated_stem: true,
-        },
       });
       navigate(`/processing/${transcription.id}`);
     } catch (err: unknown) {
-      setError(errorMessageOf(err, "Failed to retry transcription"));
+      setError(
+        errorMessageOf(
+          err,
+          "Failed to retry tab generation with higher sensitivity",
+        ),
+      );
     } finally {
       setIsRetryingTranscription(false);
+    }
+  };
+
+  const handleGenerateTab = async () => {
+    if (!token || !transcription?.id || transcription.is_demo) return;
+
+    try {
+      setError(null);
+      setIsGeneratingTab(true);
+      await audioService.generateTab(transcription.id, token);
+      navigate(`/processing/${transcription.id}`);
+    } catch (err: unknown) {
+      setError(
+        errorMessageOf(
+          err,
+          transcription.selected_stem === "drums"
+            ? "Failed to generate rhythm from this stem"
+            : "Failed to generate tab from this stem",
+        ),
+      );
+    } finally {
+      setIsGeneratingTab(false);
     }
   };
 
@@ -2241,96 +2331,172 @@ const TranscriptionViewer: React.FC = () => {
   }
 
   const scoreSource = activeScoreSource;
-  const transcriptionMetadata = buildTranscriptionMetadata(transcription, instrumentTracks);
-  const asciiTab = buildAsciiTab(scoreSource?.tablatureData, scoreSource?.chordsData);
-  const selectedTrackNotesError = scoreSource?.isGlobal ? null : getNotesError(scoreSource?.notesData);
+  const transcriptionMetadata = buildTranscriptionMetadata(
+    transcription,
+    instrumentTracks,
+  );
+  const asciiTab = buildAsciiTab(
+    scoreSource?.tablatureData,
+    scoreSource?.chordsData,
+  );
+  const selectedTrackNotesError = scoreSource?.isGlobal
+    ? null
+    : getNotesError(scoreSource?.notesData);
   const notesError = scoreSource?.isGlobal
     ? isNonBlockingProcessingWarning(transcription.processing_error)
       ? getNotesError(transcription.notes_data)
-      : transcription.processing_error || getNotesError(transcription.notes_data)
+      : transcription.processing_error ||
+        getNotesError(transcription.notes_data)
     : selectedTrackNotesError;
-  const globalAsciiTab = buildAsciiTab(transcription.tablature_data, transcription.chords_data);
+  const globalAsciiTab = buildAsciiTab(
+    transcription.tablature_data,
+    transcription.chords_data,
+  );
   const globalNoteEventsAvailable = hasNoteEvents(transcription.notes_data);
-  const selectedTrackNoteEventsAvailable = hasNoteEvents(scoreSource?.notesData);
+  const selectedTrackNoteEventsAvailable = hasNoteEvents(
+    scoreSource?.notesData,
+  );
+  const availableExports = transcription.available_exports ?? [];
   const selectedTrackMidiXmlExportSupported = Boolean(
     scoreSource?.isGlobal ||
-      ["guitar", "bass", "piano"].includes(scoreSource?.instrumentType.toLowerCase() ?? ""),
+    ["guitar", "bass"].includes(
+      scoreSource?.instrumentType.toLowerCase() ?? "",
+    ),
   );
   const selectedTrackTabExportSupported = Boolean(
     scoreSource?.isGlobal ||
-      ["guitar", "bass"].includes(scoreSource?.instrumentType.toLowerCase() ?? ""),
+    ["guitar", "bass"].includes(
+      scoreSource?.instrumentType.toLowerCase() ?? "",
+    ),
   );
   const selectedTrackHasDrumRhythm = Boolean(
-    !scoreSource?.isGlobal &&
-      scoreSource?.instrumentType.toLowerCase() === "drums" &&
-      hasDrumHits(scoreSource.notesData),
+    scoreSource?.instrumentType.toLowerCase() === "drums" &&
+    hasDrumHits(scoreSource.notesData),
   );
   const selectedTrackReprocessSupported = Boolean(
     selectedTrack &&
-      ["guitar", "bass", "piano", "drums"].includes(selectedTrack.instrument_type.toLowerCase()),
+    ["guitar", "bass", "drums", "vocals"].includes(
+      selectedTrack.instrument_type.toLowerCase(),
+    ),
   );
   const canReprocessSelectedTrack = Boolean(
     selectedTrackReprocessSupported &&
-      selectedTrack?.processing_status !== "processing",
+    selectedTrack?.processing_status !== "processing",
   );
   const canDownloadMidi = Boolean(
-    scoreSource?.isGlobal
-      ? hasUsableBlob(transcription.midi_file_path) || globalNoteEventsAvailable
-      : selectedTrackMidiXmlExportSupported && selectedTrackNoteEventsAvailable,
+    !availableExports.includes("midi")
+      ? false
+      : scoreSource?.isGlobal
+        ? hasUsableBlob(transcription.midi_file_path) ||
+          globalNoteEventsAvailable
+        : selectedTrackMidiXmlExportSupported &&
+          selectedTrackNoteEventsAvailable,
   );
   const canDownloadMusicXml = Boolean(
-    scoreSource?.isGlobal
-      ? hasUsableBlob(transcription.notation_data) || globalNoteEventsAvailable
-      : selectedTrackMidiXmlExportSupported &&
-        (hasUsableBlob(scoreSource?.notationData) || selectedTrackNoteEventsAvailable),
+    !availableExports.includes("musicxml")
+      ? false
+      : scoreSource?.isGlobal
+        ? hasUsableBlob(transcription.notation_data) ||
+          globalNoteEventsAvailable
+        : selectedTrackMidiXmlExportSupported &&
+          (hasUsableBlob(scoreSource?.notationData) ||
+            selectedTrackNoteEventsAvailable),
   );
   const canDownloadTab = Boolean(
-    scoreSource?.isGlobal
-      ? globalAsciiTab.length > 0 || globalNoteEventsAvailable
-      : selectedTrackTabExportSupported &&
-        (asciiTab.length > 0 || selectedTrackNoteEventsAvailable),
+    !availableExports.includes("tab")
+      ? false
+      : scoreSource?.isGlobal
+        ? globalAsciiTab.length > 0 || globalNoteEventsAvailable
+        : selectedTrackTabExportSupported &&
+          (asciiTab.length > 0 || selectedTrackNoteEventsAvailable),
   );
-  const hasTrackOptions = instrumentTracks.length > 0;
-  const selectedTrackHasScore = asciiTab.length > 0 || selectedTrackNoteEventsAvailable || hasUsableBlob(scoreSource?.notationData);
+  const hasTrackOptions = instrumentTracks.length > 1;
+  const selectedTrackHasScore =
+    asciiTab.length > 0 ||
+    selectedTrackNoteEventsAvailable ||
+    hasUsableBlob(scoreSource?.notationData);
   const scoreGenerationAllowed = transcription.can_generate_score !== false;
   const canGenerateScore = Boolean(
     scoreSource &&
-      scoreGenerationAllowed &&
-      (selectedTrackHasScore || selectedTrackHasDrumRhythm),
+    ((scoreGenerationAllowed && selectedTrackHasScore) ||
+      selectedTrackHasDrumRhythm),
   );
   const displayedAsciiTab = asciiTab || globalAsciiTab;
   const canShowTabView = displayedAsciiTab.length > 0;
   const activeScoreViewMode = canShowTabView ? scoreViewMode : "score";
-  const scoreControlsAvailable = scoreGenerationAllowed && canGenerateScore;
+  const scoreControlsAvailable =
+    canGenerateScore && !selectedTrackHasDrumRhythm;
+  const isDemoTranscription = Boolean(transcription.is_demo);
+  const selectedStemReady = transcription.processing_status === "stem_ready";
+  const hasStemPlayback =
+    transcription.can_play_stem !== false &&
+    Boolean(
+      transcription.separated_audio_url ||
+      transcription.separated_audio_file_path ||
+      selectedTrack?.stem_audio_path ||
+      audioSrc,
+    );
+  const isVocalStemReady =
+    selectedStemReady && transcription.selected_stem === "vocals";
+  const generateTabAllowed = Boolean(
+    selectedStemReady &&
+    hasStemPlayback &&
+    (transcription.selected_stem === "other" ||
+      transcription.selected_stem === "bass" ||
+      transcription.selected_stem === "drums") &&
+    !isDemoTranscription,
+  );
+  const generateTabLabel =
+    transcription.selected_stem === "drums"
+      ? "Generate Rhythm"
+      : "Generate Tab";
+  const stemReadyMessage = isVocalStemReady
+    ? "Vocal stem is ready for playback. Listen to the separated vocal stem; tab generation is not available for vocals."
+    : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";
   const displayedProcessingStatus =
     transcription.processing_status === "completed_with_warning"
       ? "completed_with_warning"
-      : transcription.processing_status === "failed" || scoreSource?.processingStatus === "failed"
+      : transcription.processing_status === "failed" ||
+          scoreSource?.processingStatus === "failed"
         ? "failed"
-        : scoreSource?.processingStatus ?? "completed";
+        : (scoreSource?.processingStatus ?? "completed");
   const displayedStatusLabel =
     transcription.processing_status === "completed_with_warning"
       ? "Stem Ready"
       : statusLabel(displayedProcessingStatus);
   const playbackProgress =
-    playbackDuration > 0 ? Math.min(1, Math.max(0, currentPlaybackTime / playbackDuration)) : 0;
+    playbackDuration > 0
+      ? Math.min(1, Math.max(0, currentPlaybackTime / playbackDuration))
+      : 0;
   const rawProjectTitle = transcription.title || "Untitled transcription";
-  const isDemoTranscription = Boolean(transcription.is_demo);
-  const titleWithoutExtension = rawProjectTitle.replace(/\.(mp3|wav|m4a|aac|flac)$/i, "");
+  const titleWithoutExtension = rawProjectTitle.replace(
+    /\.(mp3|wav|m4a|aac|flac)$/i,
+    "",
+  );
   const subtitleMatch = titleWithoutExtension.match(/\(([^)]+)\)\s*$/);
-  const displayProjectTitle = (subtitleMatch
-    ? titleWithoutExtension.slice(0, subtitleMatch.index).trim()
-    : titleWithoutExtension
-  ) || rawProjectTitle;
+  const displayProjectTitle =
+    (subtitleMatch
+      ? titleWithoutExtension.slice(0, subtitleMatch.index).trim()
+      : titleWithoutExtension) || rawProjectTitle;
   const displayProjectSubtitle = subtitleMatch ? `(${subtitleMatch[1]})` : null;
-  const displayDuration = formatDisplayDuration(transcriptionMetadata.durationSeconds || transcription.duration);
-  const displayTempo = transcription.detected_tempo ? `${transcription.detected_tempo} BPM` : "Not detected";
-  const displayHeaderTempo = transcription.detected_tempo ? `${transcription.detected_tempo}` : "—";
+  const displayDuration = formatDisplayDuration(
+    transcriptionMetadata.durationSeconds || transcription.duration,
+  );
+  const displayTempo = transcription.detected_tempo
+    ? `${transcription.detected_tempo} BPM`
+    : "Not detected";
+  const displayHeaderTempo = transcription.detected_tempo
+    ? `${transcription.detected_tempo}`
+    : "—";
   const displayKey = transcription.detected_key || "D# major";
-  const completedAt = formatCompletedAt(transcription.updated_at ?? transcription.created_at);
+  const completedAt = formatCompletedAt(
+    transcription.updated_at ?? transcription.created_at,
+  );
   const sourceFileName = transcription.audio_file_path?.split(/[\\/]/).pop();
   const sourceLabel = transcription.audio_file_path
-    ? isDemoTranscription ? "Bundled example stem" : "Loaded from upload"
+    ? isDemoTranscription
+      ? "Bundled example stem"
+      : "Loaded from upload"
     : transcription.youtube_url
       ? "Loaded from YouTube"
       : isDemoTranscription
@@ -2338,49 +2504,97 @@ const TranscriptionViewer: React.FC = () => {
         : "Source not attached";
   const sourceSummary = isDemoTranscription
     ? "Example guitar riff"
-    : sourceFileName || (transcription.youtube_url ? "YouTube audio" : transcriptionMetadata.sourceLabel);
+    : sourceFileName ||
+      (transcription.youtube_url
+        ? "YouTube audio"
+        : transcriptionMetadata.sourceLabel);
   const playbackSourceLabel = audioSrc
     ? transcriptionMetadata.sourceLabel
     : isDemoTranscription
       ? "Demo audio missing"
       : transcriptionMetadata.sourceLabel;
-  const selectedTrackLabel = selectedTrack?.display_name ?? transcriptionMetadata.stemLabel;
+  const selectedTrackLabel =
+    selectedTrack?.display_name ?? transcriptionMetadata.stemLabel;
   const selectedInstrumentLabel = selectedTrack
     ? displayInstrumentName(selectedTrack.instrument_type)
     : transcriptionMetadata.instrumentLabel;
   const selectedTuningLabel = transcriptionMetadata.tuningLabel;
-  const capabilityBadges = transcriptionMetadata.outputBadges.length > 0
-    ? transcriptionMetadata.outputBadges
-    : ["PLAYBACK ONLY"];
-  const heroWaveformPeaks = waveformPeaks.length > 0
-    ? waveformPeaks
-    : Array.from({ length: 72 }, (_item, index) => 0.32 + (((index * 13) % 42) / 70));
-  const transcriptionInfoMessage = transcription.warning_message ||
-    "Guitar detected from Demucs 'other' stem. Accuracy depends on mix quality.";
+  const capabilityBadges =
+    transcriptionMetadata.outputBadges.length > 0
+      ? transcriptionMetadata.outputBadges
+      : ["PLAYBACK ONLY"];
+  const heroWaveformPeaks =
+    waveformPeaks.length > 0
+      ? waveformPeaks
+      : Array.from(
+          { length: 72 },
+          (_item, index) => 0.32 + ((index * 13) % 42) / 70,
+        );
+  const transcriptionInfoMessage =
+    transcription.selected_stem === "other"
+      ? "Guitar may be grouped with piano, synths, or accompaniment in the 'other' stem."
+      : transcription.warning_message || transcriptionMetadata.description;
   return (
     <div className="transcription-viewer-container transcription-premium-page">
-      <section className="premium-transcription-card" aria-label="Transcription result">
+      <section
+        className="premium-transcription-card"
+        aria-label="Transcription result"
+      >
         <header className="premium-project-hero">
           <div className="hero-line-art" aria-hidden="true" />
           <div className="premium-title-block">
             <h1>{displayProjectTitle}</h1>
             {displayProjectSubtitle && <p>{displayProjectSubtitle}</p>}
             <div className="premium-hero-chips" aria-label="Project metadata">
-              <span><Music2 aria-hidden="true" /><small>Key</small><strong>{displayKey}</strong></span>
-              <span><SlidersHorizontal aria-hidden="true" /><small>Tempo</small><strong>{displayHeaderTempo} BPM</strong></span>
-              <span><CheckCircle2 aria-hidden="true" /><small>Duration</small><strong>{displayDuration}</strong></span>
+              <span>
+                <Music2 aria-hidden="true" />
+                <small>Key</small>
+                <strong>{displayKey}</strong>
+              </span>
+              <span>
+                <SlidersHorizontal aria-hidden="true" />
+                <small>Tempo</small>
+                <strong>{displayHeaderTempo} BPM</strong>
+              </span>
+              <span>
+                <CheckCircle2 aria-hidden="true" />
+                <small>Duration</small>
+                <strong>{displayDuration}</strong>
+              </span>
             </div>
-            <div className="premium-stem-summary" aria-label="Selected stem metadata">
-              <span><Music2 aria-hidden="true" /><small>Selected Stem</small><strong>{transcriptionMetadata.stemLabel}</strong></span>
-              <span><SlidersHorizontal aria-hidden="true" /><small>Instrument</small><strong>{selectedInstrumentLabel}</strong></span>
-              <span><FileDown aria-hidden="true" /><small>Output</small><strong>{transcriptionMetadata.outputLabel}</strong></span>
+            <div
+              className="premium-stem-summary"
+              aria-label="Selected stem metadata"
+            >
+              <span>
+                <Music2 aria-hidden="true" />
+                <small>Selected Stem</small>
+                <strong>{transcriptionMetadata.stemLabel}</strong>
+              </span>
+              <span>
+                <SlidersHorizontal aria-hidden="true" />
+                <small>Instrument</small>
+                <strong>{selectedInstrumentLabel}</strong>
+              </span>
+              <span>
+                <FileDown aria-hidden="true" />
+                <small>Output</small>
+                <strong>{transcriptionMetadata.outputLabel}</strong>
+              </span>
             </div>
-            <div className="premium-capability-badges" aria-label="Output capability badges">
-              <span className={`premium-source-badge stem-tone-${transcriptionMetadata.tone}`}>
+            <div
+              className="premium-capability-badges"
+              aria-label="Output capability badges"
+            >
+              <span
+                className={`premium-source-badge stem-tone-${transcriptionMetadata.tone}`}
+              >
                 {transcriptionMetadata.sourceBadge}
               </span>
               {capabilityBadges.map((badge) => (
-                <span className="premium-completed-badge" key={badge}>{badge}</span>
+                <span className="premium-completed-badge" key={badge}>
+                  {badge}
+                </span>
               ))}
             </div>
           </div>
@@ -2390,11 +2604,17 @@ const TranscriptionViewer: React.FC = () => {
                 <button
                   type="button"
                   className={`premium-play-button ${isPlaying ? "playing" : ""}`}
-                  aria-label={isPlaying ? "Pause stem playback" : "Play stem playback"}
+                  aria-label={
+                    isPlaying ? "Pause stem playback" : "Play stem playback"
+                  }
                   disabled={!audioUrl}
                   onClick={handleHeaderPlayPause}
                 >
-                  {isPlaying ? <Pause aria-hidden="true" fill="currentColor" /> : <Play aria-hidden="true" fill="currentColor" />}
+                  {isPlaying ? (
+                    <Pause aria-hidden="true" fill="currentColor" />
+                  ) : (
+                    <Play aria-hidden="true" fill="currentColor" />
+                  )}
                 </button>
                 <button
                   type="button"
@@ -2402,35 +2622,80 @@ const TranscriptionViewer: React.FC = () => {
                   aria-label="Seek playback"
                   disabled={!audioUrl || playbackDuration <= 0}
                   onClick={handleHeroSeek}
-                  style={{ "--progress": `${playbackProgress * 100}%` } as React.CSSProperties}
+                  style={
+                    {
+                      "--progress": `${playbackProgress * 100}%`,
+                    } as React.CSSProperties
+                  }
                 >
                   <i className="premium-waveform-playhead" aria-hidden="true" />
                   {heroWaveformPeaks.map((peak, index) => (
                     <span
                       key={index}
-                      className={(index + 1) / heroWaveformPeaks.length <= playbackProgress ? "played" : ""}
-                      style={{ "--bar": `${Math.round(14 + peak * 56)}px` } as React.CSSProperties}
+                      className={
+                        (index + 1) / heroWaveformPeaks.length <=
+                        playbackProgress
+                          ? "played"
+                          : ""
+                      }
+                      style={
+                        {
+                          "--bar": `${Math.round(14 + peak * 56)}px`,
+                        } as React.CSSProperties
+                      }
                     />
                   ))}
                 </button>
               </div>
               <div className="premium-source-line">
                 <span className="premium-time-display">
-                  {formatPlaybackTime(currentPlaybackTime)} / {formatPlaybackTime(playbackDuration)}
+                  {formatPlaybackTime(currentPlaybackTime)} /{" "}
+                  {formatPlaybackTime(playbackDuration)}
                 </span>
-                <span className="premium-source-filename" title={playbackSourceLabel}>{playbackSourceLabel}</span>
+                <span
+                  className="premium-source-filename"
+                  title={playbackSourceLabel}
+                >
+                  {playbackSourceLabel}
+                </span>
               </div>
             </div>
-            <div className="premium-playback-metadata" aria-label="Playback metadata">
-              <span><Play aria-hidden="true" /> <small>Playback</small><strong>{transcriptionMetadata.playbackLabel}</strong></span>
-              <span><Waves aria-hidden="true" /> <small>Track</small><strong>{selectedTrackLabel}</strong></span>
+            <div
+              className="premium-playback-metadata"
+              aria-label="Playback metadata"
+            >
+              <span>
+                <Play aria-hidden="true" /> <small>Playback</small>
+                <strong>{transcriptionMetadata.playbackLabel}</strong>
+              </span>
+              <span>
+                <Waves aria-hidden="true" /> <small>Track</small>
+                <strong>{selectedTrackLabel}</strong>
+              </span>
               {transcriptionMetadata.isMultiTrack && (
-                <span><SlidersHorizontal aria-hidden="true" /> <small>Tracks</small><strong>{transcriptionMetadata.trackCount}</strong></span>
+                <span>
+                  <SlidersHorizontal aria-hidden="true" /> <small>Tracks</small>
+                  <strong>{transcriptionMetadata.trackCount}</strong>
+                </span>
               )}
-              <span><Music2 aria-hidden="true" /> <small>Instrument</small><strong>{selectedInstrumentLabel}</strong></span>
-              {selectedTuningLabel && <span><SlidersHorizontal aria-hidden="true" /> <small>Tuning</small><strong>Standard Guitar ({selectedTuningLabel})</strong></span>}
-              <span><Volume2 aria-hidden="true" /> <small>Volume</small><strong>{Math.round(playbackVolume * 100)}%</strong></span>
-              <span><CheckCircle2 aria-hidden="true" /> <small>Speed</small><strong>{playbackRate}x</strong></span>
+              <span>
+                <Music2 aria-hidden="true" /> <small>Instrument</small>
+                <strong>{selectedInstrumentLabel}</strong>
+              </span>
+              {selectedTuningLabel && (
+                <span>
+                  <SlidersHorizontal aria-hidden="true" /> <small>Tuning</small>
+                  <strong>Standard Guitar ({selectedTuningLabel})</strong>
+                </span>
+              )}
+              <span>
+                <Volume2 aria-hidden="true" /> <small>Volume</small>
+                <strong>{Math.round(playbackVolume * 100)}%</strong>
+              </span>
+              <span>
+                <CheckCircle2 aria-hidden="true" /> <small>Speed</small>
+                <strong>{playbackRate}x</strong>
+              </span>
             </div>
             <div className="premium-hero-audio-controls">
               <label>
@@ -2466,7 +2731,11 @@ const TranscriptionViewer: React.FC = () => {
                   <ChevronDown aria-hidden="true" />
                 </button>
                 {isSpeedMenuOpen && (
-                  <div className="premium-speed-menu" role="listbox" aria-label="Playback speed">
+                  <div
+                    className="premium-speed-menu"
+                    role="listbox"
+                    aria-label="Playback speed"
+                  >
                     {playbackRateOptions.map((rate) => (
                       <button
                         type="button"
@@ -2488,52 +2757,125 @@ const TranscriptionViewer: React.FC = () => {
         </header>
 
         <div className="premium-transcription-body">
-          <section className="premium-info-section" aria-labelledby="audio-source-heading">
+          <section
+            className="premium-info-section"
+            aria-labelledby="audio-source-heading"
+          >
             <h2 id="audio-source-heading">Audio Source</h2>
             <div className="premium-horizontal-card">
-              <span className="premium-card-icon"><Waves aria-hidden="true" /></span>
+              <span className="premium-card-icon">
+                <Waves aria-hidden="true" />
+              </span>
               <div>
                 <strong>{transcriptionMetadata.sourceLabel}</strong>
-                <span>{sourceLabel} - {sourceSummary}</span>
+                <span>
+                  {sourceLabel} - {sourceSummary}
+                </span>
               </div>
-              {isDemoTranscription && <span className="premium-completed-badge premium-confidence-badge">Example</span>}
+              {isDemoTranscription && (
+                <span className="premium-completed-badge premium-confidence-badge">
+                  Example
+                </span>
+              )}
               {!isDemoTranscription && (
-                <button type="button" className="premium-light-button" onClick={() => navigate("/upload")}><FolderOpen aria-hidden="true" /> Change file</button>
+                <button
+                  type="button"
+                  className="premium-light-button"
+                  onClick={() => navigate("/upload")}
+                >
+                  <FolderOpen aria-hidden="true" /> Change file
+                </button>
               )}
             </div>
           </section>
 
-          <section className="premium-info-callout" aria-label="Transcription information">
+          <section
+            className="premium-info-callout"
+            aria-label="Transcription information"
+          >
             <Info aria-hidden="true" />
             <p>{transcriptionInfoMessage}</p>
           </section>
 
-          <section className="premium-info-section" aria-labelledby="transcription-status-heading">
+          {selectedStemReady && (
+            <section
+              className="premium-stem-review-panel"
+              aria-label="Stem review"
+            >
+              <div>
+                <span
+                  className={`premium-source-badge stem-tone-${transcriptionMetadata.tone}`}
+                >
+                  {transcriptionMetadata.stemLabel}
+                </span>
+                <strong>{displayProjectTitle}</strong>
+                <p>{stemReadyMessage}</p>
+              </div>
+              {generateTabAllowed && (
+                <button
+                  type="button"
+                  className="button-primary premium-generate-tab-button"
+                  onClick={handleGenerateTab}
+                  disabled={isGeneratingTab}
+                >
+                  <FileDown aria-hidden="true" />
+                  {isGeneratingTab ? "Starting..." : generateTabLabel}
+                </button>
+              )}
+            </section>
+          )}
+
+          <section
+            className="premium-info-section"
+            aria-labelledby="transcription-status-heading"
+          >
             <h2 id="transcription-status-heading">Transcription Status</h2>
             <div className="premium-horizontal-card premium-status-card">
-              <span className="premium-check-icon"><CheckCircle2 aria-hidden="true" /></span>
-              <strong>{scoreSource?.label ?? transcriptionMetadata.sourceLabel}</strong>
+              <span className="premium-check-icon">
+                <CheckCircle2 aria-hidden="true" />
+              </span>
+              <strong>
+                {scoreSource?.label ?? transcriptionMetadata.sourceLabel}
+              </strong>
               <div className="premium-status-badge-row">
-                <span className={`premium-completed-badge status-${displayedProcessingStatus}`}>
+                <span
+                  className={`premium-completed-badge status-${displayedProcessingStatus}`}
+                >
                   {displayedStatusLabel}
                 </span>
                 {capabilityBadges.map((badge) => (
-                  <span className="premium-completed-badge" key={`status-${badge}`}>{badge}</span>
+                  <span
+                    className="premium-completed-badge"
+                    key={`status-${badge}`}
+                  >
+                    {badge}
+                  </span>
                 ))}
                 {hasConfidenceScore(scoreSource?.confidenceScore) && (
                   <span className="premium-completed-badge premium-confidence-badge">
-                    {Math.round(Number(scoreSource?.confidenceScore))}% confidence
+                    {Math.round(Number(scoreSource?.confidenceScore))}%
+                    confidence
                   </span>
                 )}
               </div>
-              <span className="premium-completed-date">Completed on {completedAt}</span>
+              <span className="premium-completed-date">
+                Completed on {completedAt}
+              </span>
             </div>
           </section>
 
-          {((canGenerateScore && scoreSource?.confidenceNotes) || audioError || (canGenerateScore && notesError)) && (
+          {((canGenerateScore && scoreSource?.confidenceNotes) ||
+            audioError ||
+            (canGenerateScore && notesError)) && (
             <div className="premium-warning-stack">
-              {canGenerateScore && scoreSource?.confidenceNotes && <div className="alert alert-error">{scoreSource.confidenceNotes}</div>}
-              {audioError && <div className="alert alert-error">{audioError}</div>}
+              {canGenerateScore && scoreSource?.confidenceNotes && (
+                <div className="alert alert-error">
+                  {scoreSource.confidenceNotes}
+                </div>
+              )}
+              {audioError && (
+                <div className="alert alert-error">{audioError}</div>
+              )}
               {canGenerateScore && notesError && (
                 <div className="alert alert-error">
                   {scoreSource?.instrumentType.toLowerCase() === "drums"
@@ -2544,204 +2886,255 @@ const TranscriptionViewer: React.FC = () => {
             </div>
           )}
 
-          <section className="premium-score-workspace" aria-label="Score viewer">
-            <aside className="premium-score-sidebar">
-              {scoreControlsAvailable && (
-                <div className="premium-view-tabs" role="tablist" aria-label="Score mode">
-                  <button
-                    type="button"
-                    className={activeScoreViewMode === "score" ? "active" : ""}
-                    role="tab"
-                    aria-selected={activeScoreViewMode === "score"}
-                    onClick={() => setScoreViewMode("score")}
+          {!selectedStemReady && (
+            <section
+              className="premium-score-workspace"
+              aria-label="Score viewer"
+            >
+              <aside className="premium-score-sidebar">
+                {scoreControlsAvailable && (
+                  <div
+                    className="premium-view-tabs"
+                    role="tablist"
+                    aria-label="Score mode"
                   >
-                    <Music2 aria-hidden="true" /> Score
-                  </button>
-                  {canShowTabView && (
                     <button
                       type="button"
-                      className={activeScoreViewMode === "tab" ? "active" : ""}
+                      className={
+                        activeScoreViewMode === "score" ? "active" : ""
+                      }
                       role="tab"
-                      aria-selected={activeScoreViewMode === "tab"}
-                      onClick={() => setScoreViewMode("tab")}
+                      aria-selected={activeScoreViewMode === "score"}
+                      onClick={() => setScoreViewMode("score")}
                     >
-                      <SlidersHorizontal aria-hidden="true" /> Tab
+                      <Music2 aria-hidden="true" /> Score
                     </button>
-                  )}
-                </div>
-              )}
-
-              {hasTrackOptions && (
-                <div className="premium-track-list" aria-label="Instrument tracks">
-                  <span className="premium-sidebar-label">Tracks</span>
-                  {instrumentTracks.map((track) => {
-                    const isActive = selectedTrackView === track.id;
-                    return (
+                    {canShowTabView && (
                       <button
                         type="button"
-                        key={track.id}
-                        className={isActive ? "active" : ""}
-                        onClick={() => setSelectedTrackView(track.id)}
+                        className={
+                          activeScoreViewMode === "tab" ? "active" : ""
+                        }
+                        role="tab"
+                        aria-selected={activeScoreViewMode === "tab"}
+                        onClick={() => setScoreViewMode("tab")}
                       >
-                        {track.display_name}
+                        <SlidersHorizontal aria-hidden="true" /> Tab
                       </button>
-                    );
-                  })}
-                </div>
-              )}
-
-              {transcriptionMetadata.isMultiTrack && token && (
-                <StemMixer
-                  transcriptionId={transcription.id}
-                  tracks={instrumentTracks}
-                  token={token}
-                  selectedTrackView={selectedTrackView}
-                  onSelectTrack={setSelectedTrackView}
-                  onTimeUpdate={setCurrentPlaybackTime}
-                  onEnded={() => setIsPlaying(false)}
-                />
-              )}
-
-              {scoreControlsAvailable && (
-                <>
-                  <span className="premium-sidebar-label">Zoom</span>
-                  <div className="premium-sidebar-zoom">
-                    <button
-                      type="button"
-                      onClick={() => setNotationZoomLevel(Math.max(notationZoomLevel - 0.25, 0.5))}
-                      aria-label="Zoom out"
-                    >
-                      -
-                    </button>
-                    <span>{Math.round(notationZoomLevel * 100)}%</span>
-                    <button
-                      type="button"
-                      onClick={() => setNotationZoomLevel(Math.min(notationZoomLevel + 0.25, 3.0))}
-                      aria-label="Zoom in"
-                    >
-                      +
-                    </button>
+                    )}
                   </div>
-                </>
-              )}
-              {selectedTrack && selectedTrackReprocessSupported && !isDemoTranscription && (
-                <button
-                  type="button"
-                  className="premium-reprocess-link"
-                  onClick={handleReprocessSelectedTrack}
-                  disabled={!canReprocessSelectedTrack || reprocessingTrackId === selectedTrack.id}
-                >
-                  {reprocessingTrackId === selectedTrack.id ? "Queuing..." : "Reprocess track"}
-                </button>
-              )}
-            </aside>
+                )}
 
-            <div className="premium-score-stage" ref={scoreStageRef}>
-              {scoreControlsAvailable && (
-                <button
-                  type="button"
-                  className="premium-fullscreen-button"
-                  aria-label="Fullscreen score"
-                  onClick={handleFullscreenScore}
-                >
-                  <Expand aria-hidden="true" />
-                </button>
-              )}
-              <div className="score-viewer premium-score-viewer">
-                {scoreSource && canGenerateScore && activeScoreViewMode === "tab" && canShowTabView ? (
-                  <TimedTabView
-                    tablatureData={scoreSource.tablatureData}
-                    notesData={scoreSource.notesData}
-                    chordsData={scoreSource.chordsData}
-                    tempo={transcription.detected_tempo}
-                    currentTime={currentPlaybackTime}
-                    onSeek={seekPlaybackTo}
-                  />
-                ) : scoreSource && canGenerateScore && selectedTrackHasDrumRhythm ? (
-                  <DrumRhythmLane
-                    title={scoreSource.title}
-                    notesData={scoreSource.notesData}
-                    currentTime={currentPlaybackTime}
-                  />
-                ) : scoreSource && canGenerateScore && selectedTrackHasScore ? (
+                {hasTrackOptions && (
                   <div
-                    className="score-sheet-zoom"
-                    style={{
-                      transform: `scale(${notationZoomLevel})`,
-                      transformOrigin: "top left",
-                      width: `${100 / notationZoomLevel}%`,
-                    }}
+                    className="premium-track-list"
+                    aria-label="Instrument tracks"
                   >
-                    <AlphaTabScore
-                      title={scoreSource.title}
-                      tempo={transcription.detected_tempo ?? undefined}
-                      tablatureData={scoreSource.tablatureData}
-                      notesData={scoreSource.notesData}
-                      instrumentType={scoreSource.instrumentType}
-                      fallback={(
-                        <ScoreSheet
-                          title={scoreSource.title}
-                          tempo={transcription.detected_tempo ?? undefined}
-                          detectedKey={transcription.detected_key ?? undefined}
-                          currentTime={currentPlaybackTime}
-                          tablatureData={scoreSource.tablatureData}
-                          notesData={scoreSource.notesData}
-                          chordsData={scoreSource.chordsData}
-                          instrumentType={scoreSource.instrumentType}
-                          onSeek={seekPlaybackTo}
-                        />
-                      )}
-                    />
-                  </div>
-                ) : (
-                  <div className="premium-inline-empty-state">
-                    <strong>
-                      {transcriptionMetadata.capabilities.playback
-                        ? "Playback available, but notation generation was limited."
-                        : "No note events detected for this stem."}
-                    </strong>
-                    <p>
-                      {transcription.selected_stem === "drums"
-                        ? "This stem currently supports rhythm playback only when drum hits are detected."
-                        : "No note events were detected for the selected stem."}
-                    </p>
-                    <div className="premium-inline-empty-actions">
-                      {!isDemoTranscription && (
+                    <span className="premium-sidebar-label">Tracks</span>
+                    {instrumentTracks.map((track) => {
+                      const isActive = selectedTrackView === track.id;
+                      return (
                         <button
                           type="button"
-                          className="button-primary"
-                          onClick={handleRetryTranscription}
-                          disabled={isRetryingTranscription}
+                          key={track.id}
+                          className={isActive ? "active" : ""}
+                          onClick={() => setSelectedTrackView(track.id)}
                         >
-                          {isRetryingTranscription ? "Retrying..." : "Retry"}
+                          {track.display_name}
                         </button>
-                      )}
-                      {!isDemoTranscription && (
+                      );
+                    })}
+                  </div>
+                )}
+
+                {scoreControlsAvailable && (
+                  <>
+                    <span className="premium-sidebar-label">Zoom</span>
+                    <div className="premium-sidebar-zoom">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setNotationZoomLevel(
+                            Math.max(notationZoomLevel - 0.25, 0.5),
+                          )
+                        }
+                        aria-label="Zoom out"
+                      >
+                        -
+                      </button>
+                      <span>{Math.round(notationZoomLevel * 100)}%</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setNotationZoomLevel(
+                            Math.min(notationZoomLevel + 0.25, 3.0),
+                          )
+                        }
+                        aria-label="Zoom in"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </>
+                )}
+                {selectedTrack &&
+                  selectedTrackReprocessSupported &&
+                  !isDemoTranscription && (
+                    <button
+                      type="button"
+                      className="premium-reprocess-link"
+                      onClick={handleReprocessSelectedTrack}
+                      disabled={
+                        !canReprocessSelectedTrack ||
+                        reprocessingTrackId === selectedTrack.id
+                      }
+                    >
+                      {reprocessingTrackId === selectedTrack.id
+                        ? "Queuing..."
+                        : "Reprocess track"}
+                    </button>
+                  )}
+              </aside>
+
+              <div className="premium-score-stage" ref={scoreStageRef}>
+                {scoreControlsAvailable && (
+                  <button
+                    type="button"
+                    className="premium-fullscreen-button"
+                    aria-label="Fullscreen score"
+                    onClick={handleFullscreenScore}
+                  >
+                    <Expand aria-hidden="true" />
+                  </button>
+                )}
+                <div className="score-viewer premium-score-viewer">
+                  {scoreSource &&
+                  canGenerateScore &&
+                  activeScoreViewMode === "tab" &&
+                  canShowTabView ? (
+                    <TimedTabView
+                      tablatureData={scoreSource.tablatureData}
+                      notesData={scoreSource.notesData}
+                      chordsData={scoreSource.chordsData}
+                      tempo={transcription.detected_tempo}
+                      currentTime={currentPlaybackTime}
+                      onSeek={seekPlaybackTo}
+                    />
+                  ) : scoreSource &&
+                    canGenerateScore &&
+                    selectedTrackHasDrumRhythm ? (
+                    <DrumRhythmLane
+                      title={scoreSource.title}
+                      notesData={scoreSource.notesData}
+                      currentTime={currentPlaybackTime}
+                    />
+                  ) : scoreSource &&
+                    canGenerateScore &&
+                    selectedTrackHasScore ? (
+                    <div
+                      className="score-sheet-zoom"
+                      style={{
+                        transform: `scale(${notationZoomLevel})`,
+                        transformOrigin: "top left",
+                        width: `${100 / notationZoomLevel}%`,
+                      }}
+                    >
+                      <AlphaTabScore
+                        title={scoreSource.title}
+                        tempo={transcription.detected_tempo ?? undefined}
+                        tablatureData={scoreSource.tablatureData}
+                        notesData={scoreSource.notesData}
+                        instrumentType={scoreSource.instrumentType}
+                        fallback={
+                          <ScoreSheet
+                            title={scoreSource.title}
+                            tempo={transcription.detected_tempo ?? undefined}
+                            detectedKey={
+                              transcription.detected_key ?? undefined
+                            }
+                            currentTime={currentPlaybackTime}
+                            tablatureData={scoreSource.tablatureData}
+                            notesData={scoreSource.notesData}
+                            chordsData={scoreSource.chordsData}
+                            instrumentType={scoreSource.instrumentType}
+                            onSeek={seekPlaybackTo}
+                          />
+                        }
+                      />
+                    </div>
+                  ) : (
+                    <div className="premium-inline-empty-state">
+                      <strong>
+                        {selectedStemReady
+                          ? "Stem playback is ready for review."
+                          : transcriptionMetadata.capabilities.playback
+                            ? "Stem playback is available, but no reliable notes were detected for this stem."
+                            : "No note events detected for this stem."}
+                      </strong>
+                      <p>
+                        {selectedStemReady
+                          ? "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+                          : transcription.selected_stem === "drums"
+                            ? "This stem currently supports rhythm playback only when drum hits are detected."
+                            : transcription.selected_stem === "vocals"
+                              ? "Vocal stem playback is available. Vocal notation is planned for a future release."
+                              : "No note events were detected for the selected stem."}
+                      </p>
+                      <div className="premium-inline-empty-actions">
+                        {generateTabAllowed && (
+                          <button
+                            type="button"
+                            className="button-primary"
+                            onClick={handleGenerateTab}
+                            disabled={isGeneratingTab}
+                          >
+                            {isGeneratingTab ? "Starting..." : generateTabLabel}
+                          </button>
+                        )}
+                        {!isDemoTranscription && !selectedStemReady && (
+                          <button
+                            type="button"
+                            className="button-primary"
+                            onClick={handleRetryTranscription}
+                            disabled={isRetryingTranscription}
+                          >
+                            {isRetryingTranscription
+                              ? "Retrying..."
+                              : "Retry with higher sensitivity"}
+                          </button>
+                        )}
+                        {!isDemoTranscription && (
+                          <button
+                            type="button"
+                            className="button-secondary"
+                            onClick={handleViewExampleTab}
+                          >
+                            View example TAB
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="button-secondary"
-                          onClick={handleViewExampleTab}
+                          onClick={() => navigate("/upload")}
                         >
-                          View example TAB
+                          Choose another stem
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        className="button-secondary"
-                        onClick={() => navigate("/upload")}
-                      >
-                        Choose another stem
-                      </button>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
-          </section>
+            </section>
+          )}
         </div>
       </section>
 
-      <audio ref={audioElementRef} src={audioUrl ?? undefined} preload="metadata" className="premium-hidden-audio" />
+      <audio
+        ref={audioElementRef}
+        src={audioUrl ?? undefined}
+        preload="metadata"
+        className="premium-hidden-audio"
+      />
       <div className="transcription-footer premium-bottom-bar">
         <div className="transcription-meta">
           <div className="meta-item">
@@ -2765,32 +3158,43 @@ const TranscriptionViewer: React.FC = () => {
           >
             Dashboard
           </button>
-          <button type="button" className="premium-icon-only" aria-label="Copy link" onClick={handleCopyLink}>
+          <button
+            type="button"
+            className="premium-icon-only"
+            aria-label="Copy link"
+            onClick={handleCopyLink}
+          >
             <LinkIcon aria-hidden="true" />
           </button>
-          {scoreControlsAvailable && (
+          {availableExports.length > 0 && (
             <>
-              <button
-                className="button-secondary premium-download-button"
-                onClick={() => handleDownload("midi")}
-                disabled={!canDownloadMidi}
-              >
-                <Download aria-hidden="true" /> MIDI
-              </button>
-              <button
-                className="button-secondary premium-download-button"
-                onClick={() => handleDownload("musicxml")}
-                disabled={!canDownloadMusicXml}
-              >
-                <FileDown aria-hidden="true" /> MusicXML
-              </button>
-              <button
-                className="button-secondary premium-download-button"
-                onClick={() => handleDownload("tab")}
-                disabled={!canDownloadTab}
-              >
-                <Download aria-hidden="true" /> TAB
-              </button>
+              {availableExports.includes("midi") && (
+                <button
+                  className="button-secondary premium-download-button"
+                  onClick={() => handleDownload("midi")}
+                  disabled={!canDownloadMidi}
+                >
+                  <Download aria-hidden="true" /> MIDI
+                </button>
+              )}
+              {availableExports.includes("musicxml") && (
+                <button
+                  className="button-secondary premium-download-button"
+                  onClick={() => handleDownload("musicxml")}
+                  disabled={!canDownloadMusicXml}
+                >
+                  <FileDown aria-hidden="true" /> MusicXML
+                </button>
+              )}
+              {availableExports.includes("tab") && (
+                <button
+                  className="button-secondary premium-download-button"
+                  onClick={() => handleDownload("tab")}
+                  disabled={!canDownloadTab}
+                >
+                  <Download aria-hidden="true" /> TAB
+                </button>
+              )}
             </>
           )}
           {!transcription.is_processed && (

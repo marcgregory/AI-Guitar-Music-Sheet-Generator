@@ -5,12 +5,12 @@
 - Supported input types: audio upload and YouTube URL
 - Required selected stem: `vocals`, `drums`, `bass`, or `other`
 - Demucs selected-stem separation, one selected stem per job
-- Pitch/rhythm detection on the separated selected stem
-- Guitar tablature and score notation from `other`
-- 4-string bass tablature and bass score notation from `bass`, using standard E A D G tuning
-- Drum hit/onset detection, rhythm lane, and percussion/drum tab from `drums`
+- Spotify Basic Pitch on normalized melodic selected stems only: `other`, `bass`, and future melodic `vocals`
+- Guitar/accompaniment tablature and score notation from `other`, with clear copy that it may include guitar, piano, synths, melody, or accompaniment
+- 4-string bass tablature and bass score notation from `bass`, using Basic Pitch and standard E A D G tuning
+- Drum hit/onset detection, rhythm lane, and percussion/drum tab from `drums`; no Basic Pitch for drums
 - Vocal stem playback only
-- Synchronized Songsterr-style playback with one shared `currentTime`
+- Synchronized practice playback with one shared `currentTime`
 - Moving playhead, note highlighting, tab sync, score sync, waveform sync, seek sync, and selected-stem playback sync
 - Cloudinary persistence for original audio, selected separated stem, and generated MIDI/MusicXML/TAB outputs
 - Duplicate song/stem detection before queueing work
@@ -25,6 +25,7 @@
 - External worker authentication with `WORKER_API_TOKEN`
 - Status callback flow from worker to backend
 - Selected-stem preview and export from Cloudinary outputs
+- Worker behavior: one selected stem per job, Basic Pitch only for melodic stems, onset/rhythm analysis for drums, and `completed_with_warning` for playable no-note results
 
 ## Phase 3: Playback and Instrument Reliability
 
@@ -37,6 +38,7 @@
 - Drum rhythm lane rendering
 - Bass tab rendering
 - Better retry/recovery and worker logs
+- Basic Pitch threshold retry and no-note warning handling
 - Duplicate reuse and Cloudinary persistence hardening
 
 ## Phase 4: Future Imports and Advanced Workflows
@@ -70,7 +72,7 @@
 ## Current Next Priorities
 
 1. Selected-stem processing stability.
-2. Stem-aware transcription.
+2. Basic Pitch quality for selected melodic stems.
 3. Bass tab generation.
 4. Drum rhythm lane generation.
 5. Playback timing accuracy.

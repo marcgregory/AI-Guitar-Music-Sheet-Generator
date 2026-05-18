@@ -24,12 +24,13 @@ celery -A app.celery worker --loglevel=info --concurrency=1
 - Backend queues jobs.
 - External/manual worker pulls jobs from the backend.
 - Useful for Kaggle/manual GPU testing.
+- Worker processes one selected stem, normalizes the separated stem, runs Basic Pitch only for melodic stems, and runs onset/rhythm analysis for drums.
 
 `PROCESSING_MODE=modal`
 
 - Preferred MVP production-like mode.
 - Backend triggers Modal/serverless GPU worker.
-- Modal downloads from Cloudinary, runs selected-stem Demucs on GPU, performs stem-aware transcription, uploads outputs, and calls back.
+- Modal downloads from Cloudinary, runs selected-stem Demucs on GPU, normalizes the selected stem, performs Basic Pitch transcription only for `other`/`bass`/future melodic `vocals`, performs onset/rhythm analysis for `drums`, uploads outputs, and calls back.
 
 ## Statuses
 
@@ -43,6 +44,8 @@ celery -A app.celery worker --loglevel=info --concurrency=1
 `processing_error` should contain a user-safe failure message when status is `failed`.
 
 Use `completed_with_warning` when separation succeeds but generated output is limited, such as a vocal playback-only result or a stem with no detected notes.
+
+For melodic stems, zero-note results after Basic Pitch retry should preserve selected-stem playback, expose `can_play_stem=true`, set `can_generate_score=false`, and disable only score/TAB/MIDI/MusicXML exports that require generated notes.
 
 ## Worker Endpoints
 

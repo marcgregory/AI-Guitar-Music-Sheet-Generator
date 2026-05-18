@@ -160,7 +160,17 @@ def _ensure_demucs_available() -> None:
         )
 
 
-def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems: str = None) -> None:
+def _demucs_file_listing(output_path: Path) -> list[str]:
+    if not output_path.exists():
+        return []
+    return [
+        storage.normalize_local_path(path)
+        for path in output_path.rglob("*")
+        if path.is_file()
+    ]
+
+
+def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems: str = None) -> dict:
     _configure_demucs_vendor_path()
     cmd = [
         sys.executable,
@@ -174,6 +184,16 @@ def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems:
     if two_stems:
         cmd.extend(["--two-stems", two_stems])
     cmd.append(str(input_path))
+    logger.info(
+        "Running Demucs command=%s model=%s two_stems=%s input=%s output_dir=%s input_exists=%s input_size=%s",
+        cmd,
+        model_name,
+        two_stems,
+        storage.normalize_local_path(input_path),
+        storage.normalize_local_path(output_path),
+        input_path.exists(),
+        input_path.stat().st_size if input_path.exists() and input_path.is_file() else None,
+    )
 
     env = os.environ.copy()
     if DEMUCS_VENDOR_PATH.exists():
@@ -198,30 +218,91 @@ def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems:
             f"for model {model_name}"
         ) from timeout_error
 
+    run_debug = {
+        "command": cmd,
+        "exit_code": result.returncode,
+        "stdout": result.stdout or "",
+        "stderr": result.stderr or "",
+        "file_list": _demucs_file_listing(output_path),
+    }
+
     if result.returncode != 0:
         error_text = result.stderr.strip() or result.stdout.strip()
+        logger.error("Demucs failed debug=%s", run_debug)
         raise RuntimeError(f"Demucs separation failed with {model_name}: {error_text}")
+    logger.info(
+        "Demucs completed command=%s exit_code=%s model=%s two_stems=%s output_dir=%s stdout_tail=%s stderr_tail=%s file_list=%s",
+        cmd,
+        result.returncode,
+        model_name,
+        two_stems,
+        storage.normalize_local_path(output_path),
+        (result.stdout or "")[-1000:],
+        (result.stderr or "")[-1000:],
+        run_debug["file_list"],
+    )
+    return run_debug
 
 
-def _find_demucs_stem(output_path: Path, model_name: str, input_stem: str, stem_name: str) -> Path:
-    expected_path = output_path / model_name / input_stem / f"{stem_name}.wav"
-    if expected_path.exists():
-        return expected_path
-
-    matches = list((output_path / model_name).rglob(f"{stem_name}.wav"))
+def _find_demucs_stem(
+    output_path: Path,
+    model_name: str,
+    input_stem: str,
+    stem_name: str,
+    run_debug: dict | None = None,
+) -> Path:
+    requested_name = stem_name.lower()
+    matches = [
+        path for path in output_path.rglob("*")
+        if (
+            path.is_file()
+            and path.stem.lower() == requested_name
+            and path.suffix.lower() in {".wav", ".mp3"}
+        )
+    ]
     if matches:
-        return matches[0]
+        selected_path = matches[0]
+        logger.info(
+            "Found Demucs stem by recursive filename search model=%s input_stem=%s stem=%s path=%s size=%s matches=%s",
+            model_name,
+            input_stem,
+            stem_name,
+            storage.normalize_local_path(selected_path),
+            selected_path.stat().st_size if selected_path.is_file() else None,
+            [storage.normalize_local_path(match) for match in matches],
+        )
+        return selected_path
 
-    all_matches = list(output_path.rglob(f"{stem_name}.wav"))
-    if all_matches:
-        return all_matches[0]
+    generated = _demucs_file_listing(output_path)
+    debug_payload = {
+        "demucs_command": (run_debug or {}).get("command"),
+        "demucs_exit_code": (run_debug or {}).get("exit_code"),
+        "demucs_stdout": (run_debug or {}).get("stdout"),
+        "demucs_stderr": (run_debug or {}).get("stderr"),
+        "recursive_file_list": generated,
+    }
+    logger.error(
+        "Could not find Demucs stem model=%s input_stem=%s stem=%s debug=%s",
+        model_name,
+        input_stem,
+        stem_name,
+        debug_payload,
+    )
+    raise FileNotFoundError(
+        f"Could not find {stem_name}.wav or {stem_name}.mp3 after Demucs separation. "
+        f"Debug: {json.dumps(debug_payload)}"
+    )
 
-    raise FileNotFoundError(f"Could not find {stem_name} stem after Demucs separation")
 
-
-def _maybe_find_demucs_stem(output_path: Path, model_name: str, input_stem: str, stem_name: str) -> Path | None:
+def _maybe_find_demucs_stem(
+    output_path: Path,
+    model_name: str,
+    input_stem: str,
+    stem_name: str,
+    run_debug: dict | None = None,
+) -> Path | None:
     try:
-        return _find_demucs_stem(output_path, model_name, input_stem, stem_name)
+        return _find_demucs_stem(output_path, model_name, input_stem, stem_name, run_debug)
     except FileNotFoundError:
         return None
 
@@ -240,6 +321,10 @@ def preprocess_audio(input_file_path: str, output_file_path: str = None, target_
     """
     input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
+        logger.error(
+            "Input audio file disappeared before selected-stem separation: path=%s",
+            input_file_path,
+        )
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     # Determine output file path
@@ -298,6 +383,11 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
         output_dir = tempfile.mkdtemp()
     output_path = Path(storage.normalize_local_path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "Starting multi-stem separation input=%s output_dir=%s",
+        storage.normalize_local_path(input_path),
+        storage.normalize_local_path(output_path),
+    )
 
     _ensure_demucs_available()
 
@@ -305,7 +395,7 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
     try:
         input_stem = input_path.stem
         try:
-            _run_demucs(input_path, output_path, DEMUCS_GUITAR_MODEL)
+            run_debug = _run_demucs(input_path, output_path, DEMUCS_GUITAR_MODEL)
             stems = {}
             for instrument_type, stem_name in DEMUCS_MULTI_STEMS.items():
                 stem_path = _maybe_find_demucs_stem(
@@ -313,6 +403,7 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
                     DEMUCS_GUITAR_MODEL,
                     input_stem,
                     stem_name,
+                    run_debug,
                 )
                 if stem_path:
                     stems[instrument_type] = storage.normalize_local_path(stem_path)
@@ -324,14 +415,15 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
         except Exception as e:
             primary_error = e
 
-        _run_demucs(input_path, output_path, DEMUCS_FALLBACK_MODEL, two_stems="vocals")
+        fallback_debug = _run_demucs(input_path, output_path, DEMUCS_FALLBACK_MODEL, two_stems="vocals")
         fallback_stems = {}
-        vocals_path = _maybe_find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, "vocals")
+        vocals_path = _maybe_find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, "vocals", fallback_debug)
         accompaniment_path = _maybe_find_demucs_stem(
             output_path,
             DEMUCS_FALLBACK_MODEL,
             input_stem,
             "accompaniment",
+            fallback_debug,
         )
         if vocals_path:
             fallback_stems["vocals"] = storage.normalize_local_path(vocals_path)
@@ -359,7 +451,7 @@ def separate_selected_stem(
     """
     Separate one Demucs MVP stem and return only that stem path.
 
-    Demucs may write temporary files for all default stems while separating, but
+    Demucs may write a complementary ``no_<stem>`` file while separating, but
     callers should persist only the requested output. This keeps the Railway MVP
     storage and transcription cost focused on one selected target per job.
     """
@@ -368,14 +460,38 @@ def separate_selected_stem(
             f"selected_stem must be one of: {', '.join(sorted(DEMUCS_MULTI_STEMS))}"
         )
 
-    stems = separate_sources_multi(input_file_path, output_dir)
-    stem_path = stems.get(selected_stem)
-    if stem_path:
-        return stem_path
+    input_path = Path(storage.normalize_local_path(input_file_path))
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
-    raise FileNotFoundError(
-        f"Demucs did not produce the selected '{selected_stem}' stem for this audio."
-    )
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp()
+    output_path = Path(storage.normalize_local_path(output_dir))
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    _ensure_demucs_available()
+    input_stem = input_path.stem
+    try:
+        run_debug = _run_demucs(input_path, output_path, DEMUCS_GUITAR_MODEL, two_stems=selected_stem)
+        return storage.normalize_local_path(
+            _find_demucs_stem(output_path, DEMUCS_GUITAR_MODEL, input_stem, selected_stem, run_debug)
+        )
+    except Exception as primary_error:
+        if DEMUCS_FALLBACK_MODEL == DEMUCS_GUITAR_MODEL:
+            raise RuntimeError(
+                f"Failed to separate selected '{selected_stem}' stem: {primary_error}"
+            ) from primary_error
+
+        try:
+            fallback_debug = _run_demucs(input_path, output_path, DEMUCS_FALLBACK_MODEL, two_stems=selected_stem)
+            return storage.normalize_local_path(
+                _find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, selected_stem, fallback_debug)
+            )
+        except Exception as fallback_error:
+            raise RuntimeError(
+                f"Failed to separate selected '{selected_stem}' stem. "
+                f"Primary error: {primary_error}. Fallback error: {fallback_error}"
+            ) from fallback_error
 
 
 def separate_sources(input_file_path: str, output_dir: str = None) -> str:

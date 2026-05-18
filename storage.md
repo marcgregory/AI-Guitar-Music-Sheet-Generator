@@ -31,6 +31,8 @@ Modal/serverless GPU and external workers should treat Cloudinary as the source 
 
 For preview playback, prefer `separated_audio_url` and redirect to Cloudinary. Local stem paths are development/legacy fallback only and may be removed after durable upload.
 
+If Basic Pitch finds no notes after retry for a melodic stem, keep the selected separated stem in Cloudinary for playback and mark notation-dependent exports unavailable rather than deleting the stem or failing the job.
+
 ## Deleting Stored Assets
 
 When a processing record is deleted, delete related Cloudinary files when safe:
@@ -67,5 +69,7 @@ Selective stem processing reduces:
 - repeated Cloudinary storage from duplicate jobs
 
 Phase 1 should recommend 3-5 minute songs and avoid full multi-stem processing. Production-like selected-stem AI work should move to Modal/serverless GPU; Kaggle remains optional/manual testing only.
+
+Selected-stem processing also reduces Basic Pitch work because note detection runs only for the selected melodic stem; drum jobs use onset/rhythm analysis instead of melodic transcription.
 
 MIDI import, Guitar Pro import, PowerTab import/export, imported project editing, and imported multi-track workflows are future roadmap only.

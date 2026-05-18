@@ -26,6 +26,7 @@ image = (
     .pip_install(
     "demucs==4.0.1",
     "librosa==0.10.1",
+    "basic-pitch==0.4.0",
     "fastapi[standard]==0.115.6",
     "cloudinary==1.44.1",
     "requests==2.32.3",
@@ -175,6 +176,162 @@ def _upload_stem(stem_path: Path, transcription_id: int, selected_stem: str) -> 
     }
 
 
+def _normalize_audio_volume(input_path: Path) -> Path:
+    import librosa
+    import numpy as np
+    import soundfile as sf
+
+    output_path = input_path.with_name(f"{input_path.stem}_normalized{input_path.suffix}")
+    y, sr = librosa.load(input_path, sr=None, mono=True)
+    peak = float(np.max(np.abs(y))) if y.size else 0.0
+    if peak > 0:
+        y = y * min(0.95 / peak, 20.0)
+    sf.write(output_path, y, sr)
+    return output_path
+
+
+def _format_basic_pitch_events(note_events: list) -> list[dict[str, Any]]:
+    notes = []
+    for event in note_events:
+        if len(event) < 4:
+            continue
+        onset, offset, pitch, amplitude = event[:4]
+        confidence = float(amplitude or 0)
+        notes.append({
+            "onset": round(float(onset), 3),
+            "offset": round(float(offset), 3),
+            "pitch": int(pitch),
+            "velocity": max(1, min(127, int(round(confidence * 127)))),
+            "confidence": round(confidence, 3),
+        })
+    return notes
+
+
+def _confidence_stats(notes: list[dict[str, Any]]) -> dict[str, Any]:
+    values = [float(note.get("confidence", 0)) for note in notes if isinstance(note, dict)]
+    if not values:
+        return {"count": 0, "min": None, "max": None, "mean": None}
+    return {
+        "count": len(values),
+        "min": round(min(values), 4),
+        "max": round(max(values), 4),
+        "mean": round(sum(values) / len(values), 4),
+    }
+
+
+def _detect_pitch_basic_pitch(input_path: Path, sensitivity: str = "normal") -> dict[str, Any]:
+    from basic_pitch.inference import predict
+
+    threshold = 0.2 if sensitivity == "high" else 0.35
+    model_output, _midi_data, note_events = predict(str(input_path))
+    notes = [
+        note
+        for note in _format_basic_pitch_events(note_events)
+        if float(note.get("confidence", 1.0)) >= threshold
+    ]
+    return {
+        "notes": notes,
+        "model_outputs": {
+            "backend": "basic_pitch.modal",
+            "sensitivity": sensitivity,
+            "confidence_threshold": threshold,
+            "raw_output_summary": str(type(model_output)),
+        },
+        "confidence_stats": _confidence_stats(notes),
+        "total_notes_detected": len(notes),
+    }
+
+
+def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict[str, Any]:
+    tuning = [40, 45, 50, 55] if instrument_type == "bass" else [40, 45, 50, 55, 59, 64]
+    string_labels = ["E", "A", "D", "G"] if instrument_type == "bass" else ["E", "A", "D", "G", "B", "E"]
+    tab_notes = []
+    for note in notes_data.get("notes", []):
+        pitch = int(note.get("pitch", 0))
+        candidates = [
+            (string_index + 1, pitch - open_pitch)
+            for string_index, open_pitch in enumerate(tuning)
+            if 0 <= pitch - open_pitch <= 24
+        ]
+        if not candidates:
+            continue
+        string_number, fret = min(candidates, key=lambda item: (item[1], item[0]))
+        onset = float(note.get("onset", 0))
+        offset = float(note.get("offset", onset))
+        tab_notes.append({
+            "string": string_number,
+            "fret": fret,
+            "startTime": onset,
+            "duration": max(0.05, offset - onset),
+            "confidence": note.get("confidence"),
+        })
+    return {
+        "instrument": instrument_type,
+        "tuning": string_labels,
+        "tablature": tab_notes,
+    }
+
+
+def _analyze_drum_rhythm(input_path: Path) -> dict[str, Any]:
+    import librosa
+    import numpy as np
+
+    y, sr = librosa.load(input_path, sr=None, mono=True)
+    onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units="frames", backtrack=False)
+    onset_times = librosa.frames_to_time(onset_frames, sr=sr)
+    envelope = librosa.onset.onset_strength(y=y, sr=sr)
+    max_strength = float(np.max(envelope)) if envelope.size else 0.0
+    drum_hits = []
+    for index, onset in enumerate(onset_times):
+        frame = int(onset_frames[index]) if index < len(onset_frames) else 0
+        strength = float(envelope[frame]) if frame < len(envelope) else max_strength
+        confidence = strength / max_strength if max_strength > 0 else 0.75
+        drum_hits.append({
+            "onset": round(float(onset), 3),
+            "offset": round(float(onset) + 0.12, 3),
+            "confidence": round(max(0.0, min(1.0, confidence)), 3),
+        })
+    duration = float(librosa.get_duration(y=y, sr=sr)) if y.size else 0.0
+    return {
+        "drum_hits": drum_hits,
+        "rhythm_analysis": {
+            "source": "drum_stem_onset_detection",
+            "total_duration": duration,
+            "hit_count": len(drum_hits),
+        },
+    }
+
+
+def _analyze_selected_stem(stem_path: Path, selected_stem: str) -> dict[str, Any]:
+    if selected_stem == "vocals":
+        return {
+            "notes_data": {"notes": [], "message": "Vocal stem playback is available; notation is not enabled in this MVP."},
+            "track_metadata": {"confidence_notes": "Playback-only vocal stem."},
+        }
+    if selected_stem == "drums":
+        rhythm = _analyze_drum_rhythm(stem_path)
+        return {
+            "notes_data": rhythm,
+            "track_metadata": {"confidence_notes": None},
+        }
+
+    normalized_path = _normalize_audio_volume(stem_path)
+    pitch_result = _detect_pitch_basic_pitch(normalized_path, "normal")
+    if not pitch_result.get("notes"):
+        pitch_result = _detect_pitch_basic_pitch(normalized_path, "high")
+
+    instrument_type = "bass" if selected_stem == "bass" else "guitar"
+    tab_data = _note_to_tablature(pitch_result, instrument_type) if pitch_result.get("notes") else None
+    return {
+        "notes_data": pitch_result,
+        "tablature_data": tab_data,
+        "track_metadata": {
+            "display_name": "Bass" if selected_stem == "bass" else "Guitar / Other",
+            "confidence_notes": None,
+        },
+    }
+
+
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     import requests
 
@@ -190,7 +347,10 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     return response.json()
 
 
-def _complete_job(job: dict[str, Any], upload_result: dict[str, str | None]) -> None:
+def _complete_job(
+    job: dict[str, Any],
+    upload_result: dict[str, str | None],
+) -> None:
     payload = {
         "separated_audio_url": upload_result.get("secure_url"),
         "separated_audio_public_id": upload_result.get("public_id"),

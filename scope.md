@@ -9,16 +9,18 @@ Current architecture summary:
 - Use Cloudinary for durable storage of original audio, selected separated stems, MIDI files, MusicXML files, and TAB files.
 - Support MVP input types: audio upload and YouTube URL.
 - Require the user to choose `vocals`, `drums`, `bass`, or `other` before processing.
-- Use Demucs selected-stem processing for the MVP.
-- Run pitch/rhythm detection on the separated selected stem.
-- Generate instrument-aware outputs from separated stems: guitar tabs/score from `other`, bass tabs/score from `bass`, drum rhythm lane/percussion tab from `drums`, and playback-only output from `vocals`.
+- Use Demucs selected-stem processing for the MVP, with one selected stem per job.
+- Run Spotify Basic Pitch only on selected melodic stems: `other`, `bass`, and future melodic `vocals`.
+- Run onset/rhythm detection for `drums`; do not use Basic Pitch on drum stems.
+- Generate instrument-aware outputs from separated stems: guitar/accompaniment tabs/score from `other`, bass tabs/score from `bass`, drum rhythm lane/percussion tab from `drums`, and playback-only output from `vocals`.
+- Explain in API metadata and UI copy that `other` may contain guitar, piano, synths, melody, or accompaniment and is not isolated lead guitar.
 - Render one synchronized practice view with waveform, playhead, tabs, score, active notes, and selected-stem playback all driven by a shared `currentTime`.
 - Keep MIDI export, MusicXML export, and TAB export in scope.
 - Move MIDI import, Guitar Pro import, PowerTab import/export, imported project editing, and imported multi-track workflows to the future roadmap only.
 - Save Cloudinary `secure_url` and `public_id` references on transcription/job records.
 - Treat Railway local storage as temporary scratch space only.
 - Queue jobs and expose `queue_position` and `estimated_wait_time` so the UI can explain pending work.
-- Use `completed_with_warning` for successful selected-stem processing with limited generated output, such as no-note vocal playback-only results.
+- Use `completed_with_warning` for successful selected-stem processing with limited generated output, such as playback-only vocals or melodic stems where Basic Pitch detects no notes after retry.
 - Use `PROCESSING_MODE=modal` for Modal/serverless GPU, `external_worker` for manual/Kaggle tests, and `local` for dev fallback.
 - Check for duplicate completed or completed_with_warning audio/YouTube results before queueing new work.
 - Reuse the same song plus same selected stem instead of reprocessing.

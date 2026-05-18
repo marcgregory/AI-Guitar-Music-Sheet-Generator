@@ -63,7 +63,9 @@ The backend queues jobs and exposes worker endpoints for a manually running exte
 
 ### `PROCESSING_MODE=modal`
 
-Preferred production-like MVP mode. The backend triggers Modal/serverless GPU processing. Modal downloads the original audio from Cloudinary, runs Demucs selected-stem separation on GPU, runs stem-aware transcription, uploads outputs to Cloudinary, and reports completion/failure back to Railway.
+Preferred production-like MVP mode. The backend triggers Modal/serverless GPU processing. Modal downloads the original audio from Cloudinary, runs Demucs selected-stem separation on GPU, runs selected-stem transcription/analysis, uploads outputs to Cloudinary, and reports completion/failure back to Railway.
+
+Worker transcription should normalize the selected separated stem, run Spotify Basic Pitch only for melodic selected stems (`other`, `bass`, and future melodic `vocals`), and run onset/rhythm analysis for `drums`. Zero-note melodic results after retry should report `completed_with_warning` with playable stem metadata instead of failing the job.
 
 ## Worker Endpoints
 

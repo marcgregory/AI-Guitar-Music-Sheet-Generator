@@ -16,6 +16,8 @@ Valid MVP values:
 
 For MVP guitar transcription, clients should submit `other`.
 
+API and frontend copy should explain that `other` is the guitar/accompaniment MVP target and may contain guitar, piano, synths, melody, or accompaniment depending on the mix. The MVP should not present `other` as isolated lead guitar.
+
 Supported MVP input types:
 
 1. Audio upload
@@ -93,6 +95,9 @@ Result/status payloads should include:
 - `tab_file_public_id`
 - `processing_status`
 - `processing_error`
+- `warning_message`
+- `can_play_stem`
+- `can_generate_score`
 - `queue_position`
 - `estimated_wait_time`
 - `duplicate_reused`
@@ -107,6 +112,8 @@ Result/status payloads should include:
 
 Cloudinary URL fields may be `null` when an output is unsupported for the selected stem. For example, `vocals` is playback-only in the MVP. `queue_position` is `0` for active processing, positive for pending/queued jobs, and `null` after terminal states.
 
+No-note melodic results should preserve `separated_audio_url`, return `can_play_stem=true`, set `can_generate_score=false`, and include a warning such as `"No note events detected for this stem."`. The database should prefer `completed_with_warning`; API responses may expose `status="completed"` plus warning/capability fields when existing clients require that shape.
+
 Valid MVP `source_type` values are:
 
 - `upload`
@@ -116,9 +123,15 @@ Valid MVP `source_type` values are:
 ## Stem Output Semantics
 
 - `vocals`: preserve separated stem playback and metadata; generated notation is future roadmap.
-- `drums`: return drum hit/onset data for rhythm lane/percussion tab rendering and drum MIDI export when possible.
-- `bass`: return bass notes, 4-string E A D G tablature, score notation, and timing data where detected.
-- `other`: return guitar-oriented notes, 6-string tablature, score notation, and timing data where detected.
+- `drums`: return onset/rhythm hit data for rhythm lane/percussion tab rendering and drum MIDI export when possible. Do not use Basic Pitch for drums.
+- `bass`: run Spotify Basic Pitch on the normalized selected bass stem, return bass notes, 4-string E A D G tablature, score notation, and timing data where detected.
+- `other`: run Spotify Basic Pitch on the normalized selected `other` stem, return guitar-oriented notes, 6-string tablature, score notation, and timing data where detected. Explain that `other` may include guitar, piano, synths, melody, or accompaniment.
+
+## Basic Pitch and Warning Semantics
+
+Spotify Basic Pitch is the primary note detection engine for selected melodic stems: `other`, `bass`, and future melodic `vocals`. Workers normalize the separated stem before transcription and retry Basic Pitch with lower-threshold/high-sensitivity settings when the first pass detects zero notes.
+
+If retry still detects zero notes, the job is not a failure when the separated stem is playable. Preserve stem playback and waveform/rhythm metadata, set `warning_message`, expose `can_play_stem=true` and `can_generate_score=false`, and make score/TAB/MIDI/MusicXML exports unavailable for that result.
 
 ## Preview Semantics
 
@@ -127,6 +140,8 @@ Valid MVP `source_type` values are:
 ## Frontend Behavior
 
 The frontend must require one stem before submitting an audio/YouTube processing request, display queue status, and show downloadable Cloudinary-hosted outputs only when the corresponding URL fields are present.
+
+The frontend must also show the selected stem, stem confidence, low-confidence warnings, and the `other` stem explanation. Playback should remain available for playable separated stems even when score/tab generation is unavailable.
 
 Highest frontend priorities:
 

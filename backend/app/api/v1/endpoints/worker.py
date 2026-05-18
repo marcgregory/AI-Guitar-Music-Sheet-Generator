@@ -84,6 +84,13 @@ def _payload_has_note_events(value: Any) -> bool:
     return False
 
 
+def _payload_has_drum_hits(value: Any) -> bool:
+    if isinstance(value, dict):
+        drum_hits = value.get("drum_hits")
+        return isinstance(drum_hits, list) and len(drum_hits) > 0
+    return False
+
+
 def _build_worker_job(transcription: models.Transcription, request: Request) -> schemas.WorkerJob:
     selected_stem = transcription.selected_stem or "other"
     if selected_stem not in VALID_SELECTED_STEMS:
@@ -150,38 +157,26 @@ async def complete_worker_job(
 
     transcription.separated_audio_url = payload.separated_audio_url
     transcription.separated_audio_public_id = payload.separated_audio_public_id
-    transcription.midi_file_url = payload.midi_file_url
-    transcription.midi_file_public_id = payload.midi_file_public_id
-    transcription.tab_file_url = payload.tab_file_url
-    transcription.tab_file_public_id = payload.tab_file_public_id
+    transcription.midi_file_url = None
+    transcription.midi_file_public_id = None
+    transcription.tab_file_url = None
+    transcription.tab_file_public_id = None
     transcription.duration = payload.duration if payload.duration is not None else transcription.duration
     transcription.detected_tempo = payload.detected_tempo
     transcription.tempo_confidence = payload.tempo_confidence
     transcription.detected_key = payload.detected_key
     transcription.key_confidence = payload.key_confidence
-    transcription.notes_data = _json_or_text(payload.notes_data)
-    transcription.chords_data = _json_or_text(payload.chords_data)
-    transcription.tablature_data = _json_or_text(payload.tablature_data)
-    transcription.notation_data = _json_or_text(payload.notation_data)
-    transcription.chord_chart_data = _json_or_text(payload.chord_chart_data)
-    notes_available = _payload_has_note_events(payload.notes_data)
+    transcription.notes_data = None
+    transcription.chords_data = None
+    transcription.tablature_data = None
+    transcription.notation_data = None
+    transcription.chord_chart_data = None
+    selected_stem = transcription.selected_stem or "other"
     warning_message = None
-    if selected_stem := (transcription.selected_stem or "other"):
-        if selected_stem in {"vocals", "drums"}:
-            warning_message = (
-                "Stem separated successfully, but notation generation is not supported for this stem in the MVP."
-            )
-        elif not notes_available:
-            warning_message = "No note events detected for this stem."
-    if warning_message and not transcription.notes_data:
-        transcription.notes_data = _json_or_text({
-            "notes": [],
-            "message": warning_message,
-        })
     transcription.warning_message = warning_message
     transcription.can_play_stem = bool(payload.separated_audio_url)
-    transcription.can_generate_score = bool(notes_available and not warning_message)
-    transcription.processing_status = "completed_with_warning" if warning_message else "completed"
+    transcription.can_generate_score = False
+    transcription.processing_status = "stem_ready"
     transcription.is_processed = True
     transcription.processing_error = None
     transcription.queue_position = None
@@ -206,14 +201,14 @@ async def complete_worker_job(
     if payload.track_metadata:
         track.display_name = str(payload.track_metadata.get("display_name") or track.display_name)
         track.confidence_notes = payload.track_metadata.get("confidence_notes")
-    track.notes_json = transcription.notes_data
-    track.chords_json = transcription.chords_data
-    track.tab_json = transcription.tablature_data
-    track.notation_json = transcription.notation_data
+    track.notes_json = None
+    track.chords_json = None
+    track.tab_json = None
+    track.notation_json = None
     track.confidence_score = payload.confidence
-    track.processing_status = "completed_with_warning" if warning_message else "completed"
-    if warning_message and not track.confidence_notes:
-        track.confidence_notes = warning_message
+    track.processing_status = "stem_ready"
+    if not track.confidence_notes:
+        track.confidence_notes = "Selected stem separated by worker."
     db_session.add(track)
 
     db_session.add(transcription)

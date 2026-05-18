@@ -111,6 +111,7 @@ class TranscriptionBase(BaseModel):
     can_generate_score: Optional[bool] = True
     can_generate_rhythm: Optional[bool] = False
     can_play_stem: Optional[bool] = False
+    available_exports: Optional[list[str]] = None
     track_count: Optional[int] = 0
     tuning: Optional[str] = None
     import_type: Optional[str] = None

@@ -23,8 +23,10 @@ Audio Upload / YouTube URL
 -> Modal worker downloads original audio from Cloudinary
 -> Modal worker runs Demucs selected-stem separation on GPU
 -> Modal worker uploads selected separated stem to Cloudinary
--> Pitch/rhythm detection runs on separated stem
--> Generate instrument-aware tabs/notation/rhythm data
+-> Modal worker normalizes selected separated stem volume
+-> Spotify Basic Pitch runs only for melodic stems (`other`, `bass`, future melodic `vocals`)
+-> Onset/rhythm analysis runs for `drums`; Basic Pitch does not run on drums
+-> Generate instrument-aware tabs/notation/rhythm data where supported
 -> Modal worker uploads supported MIDI/MusicXML/TAB exports to Cloudinary
 -> Modal worker calls backend complete/failed endpoint
 -> Backend updates status and output references
@@ -47,10 +49,10 @@ Only hard blockers such as missing source audio, failed separation, deleted reco
 
 For the MVP:
 
-- `vocals`: playback only. Future roadmap: melody extraction.
-- `drums`: analyze drum stem, detect drum hits/onsets, generate a drum rhythm lane and percussion/drum tab where possible, support synchronized playback highlighting, and support drum MIDI export when possible.
-- `bass`: analyze bass stem, generate 4-string bass tablature using standard E A D G tuning, generate bass score data, and support synchronized playback/playhead highlighting.
-- `other`: primary guitar transcription target; generate guitar tablature, score notation, and synchronized playback/playhead highlighting.
+- `vocals`: playback only. Future roadmap: Basic Pitch or specialist melody extraction.
+- `drums`: analyze drum stem with onset/rhythm detection only; do not use Basic Pitch; generate a drum rhythm lane and percussion/drum tab where possible, support synchronized playback highlighting, and support drum MIDI export when possible.
+- `bass`: analyze bass stem with Basic Pitch, generate 4-string bass tablature using standard E A D G tuning, generate bass score data, and support synchronized playback/playhead highlighting.
+- `other`: primary guitar/accompaniment transcription target; analyze with Basic Pitch, generate guitar-oriented tablature, score notation, and synchronized playback/playhead highlighting.
 
 Unsupported notation for a valid separated stem is a warning state, not a processing failure.
 
@@ -74,9 +76,13 @@ All rendered views must share playback synchronization:
 
 The frontend should use one shared `currentTime` source for waveform, tabs, score, and stem playback. Do not create separate timers for waveform, tab, and score synchronization.
 
-## Fallback Transcription and Retry Flow
+## Basic Pitch, Fallback Transcription, and Retry Flow
 
-The note-detection pipeline normalizes separated stem volume before transcription, logs RMS loudness, peak amplitude, onset count, confidence statistics, selected stem, and model output metadata, then retries with lower threshold/high-sensitivity settings if the first pass detects zero notes.
+Spotify Basic Pitch is the primary note detection engine for selected melodic stems. The note-detection pipeline normalizes separated stem volume before transcription, logs RMS loudness, peak amplitude, onset count, confidence statistics, selected stem, and model output metadata, then retries with lower threshold/high-sensitivity settings if the first pass detects zero notes.
+
+Basic Pitch runs only for `other`, `bass`, and future melodic `vocals`. Drum processing uses onset/rhythm analysis and must not route through Basic Pitch.
+
+If Basic Pitch still detects zero notes after retry, preserve selected-stem playback and mark the record as `completed_with_warning` with `can_play_stem=true` and `can_generate_score=false`. Score, TAB, MIDI, and MusicXML exports should be disabled or unavailable for that no-note result while the separated stem remains playable.
 
 Users can call `POST /api/v1/audio/{transcription_id}/retry` with lower-threshold mode and an optional alternate `selected_stem`. Same-stem retry can reuse the retained separated stem. Alternate-stem retry requires the original/preprocessed source to still be available so Demucs can run again.
 
@@ -98,7 +104,7 @@ Demucs default stems are:
 - `bass`
 - `other`
 
-The MVP processes one selected stem per job. Guitar transcription uses `other`, because default Demucs models commonly group guitar, piano, synths, melody, and accompaniment into `other` depending on the mix. True isolated guitar, lead guitar, rhythm guitar, and piano stems are later model upgrades.
+The MVP processes one selected stem per job. Guitar/accompaniment transcription uses `other`, because default Demucs models commonly group guitar, piano, synths, melody, and accompaniment into `other` depending on the mix. API metadata and frontend copy should explain this clearly. Do not market the MVP as isolated lead guitar transcription or perfect Songsterr-level accuracy. True isolated guitar, lead guitar, rhythm guitar, and piano stems are later model upgrades.
 
 ## Storage
 
@@ -167,6 +173,9 @@ The Modal worker should:
 - support `vocals`, `drums`, `bass`, and `other`
 - download `original_audio_url` from Cloudinary
 - upload the selected separated stem to Cloudinary
+- normalize selected separated stem volume before transcription
+- run Spotify Basic Pitch only for selected melodic stems
+- run onset/rhythm analysis for `drums`
 - generate MIDI, MusicXML, and TAB outputs when supported by the selected stem transcription result
 - report completion or failure to the backend
 - keep full logs in Modal/backend while returning user-safe errors to the UI

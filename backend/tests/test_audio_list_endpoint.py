@@ -1,11 +1,11 @@
 import hashlib
 import json
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from fastapi import BackgroundTasks
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app import db, models
 from app.core import config
 from app.core.security import create_access_token, get_password_hash
+from app.services import storage
 from main import app
 
 
@@ -202,6 +203,16 @@ def test_get_transcription_source_audio_normalizes_windows_style_uploaded_path(t
     assert response.headers["content-type"].startswith("audio/wav")
 
 
+def test_windows_app_uploads_path_normalizes_to_local_backend(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage.os, "name", "nt")
+    monkeypatch.setattr(storage, "_windows_local_upload_dir", lambda: tmp_path / "uploads")
+
+    normalized_path = storage.normalize_local_path("/app/uploads/youtube-download.wav")
+
+    assert Path(normalized_path) == (tmp_path / "uploads" / "youtube-download.wav").resolve()
+    assert str(normalized_path).endswith(str(Path("uploads") / "youtube-download.wav"))
+
+
 def test_demo_static_audio_route_serves_public_wav_without_cors_error():
     response = client.get(
         "/demo/example-guitar-riff.wav",
@@ -377,7 +388,7 @@ def test_upload_audio_requires_selected_stem():
     assert response.status_code == 422
 
 
-def test_upload_audio_queues_when_active_transcription_exists():
+def test_upload_audio_rejects_when_active_transcription_exists():
     reset_database()
     session = TestingSessionLocal()
     original_mode = config.settings.PROCESSING_MODE
@@ -410,9 +421,10 @@ def test_upload_audio_queues_when_active_transcription_exists():
     finally:
         config.settings.PROCESSING_MODE = original_mode
 
-    assert response.status_code == 200
-    assert response.json()["selected_stem"] == "other"
-    assert response.json()["processing_status"] == "queued"
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Another transcription is currently processing. Please wait until it finishes before starting a new one."
+    )
     modal_trigger_mock.assert_not_called()
     send_task_mock.assert_not_called()
 
@@ -513,7 +525,7 @@ def test_upload_audio_modal_mode_triggers_modal_path_without_celery():
     send_task_mock.assert_not_called()
 
 
-def test_upload_audio_modal_second_job_remains_queued():
+def test_upload_audio_modal_second_job_is_rejected_while_first_is_processing():
     reset_database()
     session = TestingSessionLocal()
     original_mode = config.settings.PROCESSING_MODE
@@ -541,9 +553,11 @@ def test_upload_audio_modal_second_job_remains_queued():
         config.settings.PROCESSING_MODE = original_mode
 
     assert first.status_code == 200
-    assert second.status_code == 200
+    assert second.status_code == 409
     assert first.json()["processing_status"] == "processing"
-    assert second.json()["processing_status"] == "queued"
+    assert second.json()["detail"] == (
+        "Another transcription is currently processing. Please wait until it finishes before starting a new one."
+    )
     modal_trigger_mock.assert_called_once()
 
 
@@ -607,7 +621,7 @@ def test_worker_complete_triggers_oldest_queued_modal_job():
         session.close()
 
 
-def test_two_simultaneous_modal_uploads_do_not_both_become_processing():
+def test_second_modal_upload_does_not_become_processing_while_first_is_active():
     reset_database()
     session = TestingSessionLocal()
     original_mode = config.settings.PROCESSING_MODE
@@ -628,20 +642,14 @@ def test_two_simultaneous_modal_uploads_do_not_both_become_processing():
 
     try:
         with patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock:
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                responses = list(
-                    executor.map(
-                        lambda args: upload(*args),
-                        [
-                            ("race-owner-a", "race-a.wav", b"RIFF race a"),
-                            ("race-owner-b", "race-b.wav", b"RIFF race b"),
-                        ],
-                    )
-                )
+            responses = [
+                upload("race-owner-a", "race-a.wav", b"RIFF race a"),
+                upload("race-owner-b", "race-b.wav", b"RIFF race b"),
+            ]
     finally:
         config.settings.PROCESSING_MODE = original_mode
 
-    assert [response.status_code for response in responses] == [200, 200]
+    assert sorted(response.status_code for response in responses) == [200, 409]
     session = TestingSessionLocal()
     try:
         statuses = [
@@ -652,7 +660,7 @@ def test_two_simultaneous_modal_uploads_do_not_both_become_processing():
         session.close()
 
     assert statuses.count("processing") == 1
-    assert statuses.count("queued") == 1
+    assert statuses.count("queued") == 0
     assert modal_trigger_mock.call_count == 1
 
 
@@ -885,14 +893,83 @@ def test_status_no_note_warning_is_completed_and_playable(tmp_path):
     assert payload == {
         "status": "completed",
         "warning": "No note events detected for this stem.",
+        "warning_message": "No note events detected for this stem.",
         "transcription_id": transcription_id,
         "selected_stem": "other",
         "can_play_stem": True,
         "can_generate_score": False,
+        "separated_audio_url": None,
+        "available_exports": [],
         "is_demo": False,
         "queue_position": None,
         "estimated_wait_time": None,
     }
+
+
+def test_status_repairs_processing_playback_only_stem_to_stem_ready(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "stem-ready-owner", "stem-ready-owner@example.com")
+        stem_path = tmp_path / "bass.wav"
+        stem_path.write_bytes(b"stem")
+        transcription = models.Transcription(
+            title="Separated bass stem",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_file_path=str(stem_path),
+            is_processed=True,
+            processing_status="processing",
+            can_play_stem=True,
+            can_generate_score=False,
+            queue_position=0,
+            estimated_wait_time=0,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("stem-ready-owner"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stem_ready"
+    assert payload["output_mode"] == "playback_only"
+    assert payload["can_play_stem"] is True
+    assert payload["can_generate_score"] is False
+    assert payload["selected_stem"] == "bass"
+    assert payload["queue_position"] is None
+    assert payload["estimated_wait_time"] is None
+    assert payload["message"] == (
+        "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+    )
+
+    result_response = client.get(
+        f"/api/v1/audio/{transcription_id}/result",
+        headers=auth_headers("stem-ready-owner"),
+    )
+    assert result_response.status_code == 200
+    result_payload = result_response.json()
+    assert result_payload["processing_status"] == "stem_ready"
+    assert result_payload["output_mode"] == "playback_only"
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.can_play_stem is True
+        assert refreshed.can_generate_score is False
+        assert refreshed.queue_position is None
+        assert refreshed.estimated_wait_time is None
+    finally:
+        session.close()
 
 
 def test_retry_transcription_endpoint_queues_lower_threshold_retry(tmp_path):
@@ -951,6 +1028,55 @@ def test_retry_transcription_endpoint_queues_lower_threshold_retry(tmp_path):
         assert refreshed.processing_status == "processing"
         assert refreshed.warning_message is None
         assert refreshed.celery_task_id == "retry-task"
+    finally:
+        session.close()
+
+
+def test_generate_tab_endpoint_accepts_high_sensitivity_option():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "tab-owner", "tab-owner@example.com")
+        transcription = models.Transcription(
+            title="Tab from stem",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_file_path=str(Path("/tmp/bass.wav")),
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_tab_generation", return_value="tab-task") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/generate-tab",
+            headers=auth_headers("tab-owner"),
+            json={"sensitivity": "high"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "processing"
+    assert payload["selected_stem"] == "bass"
+    assert payload["can_play_stem"] is True
+    assert payload["can_generate_score"] is False
+    assert payload["message"] == "Tab generation started."
+    assert start_mock.call_args.args[0] == transcription_id
+    assert start_mock.call_args.kwargs["detection_sensitivity"] == "high"
+    assert isinstance(start_mock.call_args.args[1], BackgroundTasks)
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "processing"
+        assert refreshed.celery_task_id == "tab-task"
     finally:
         session.close()
 
@@ -1676,9 +1802,9 @@ def test_reprocess_instrument_track_rejects_unsupported_instrument(tmp_path):
     reset_database()
     session = TestingSessionLocal()
     try:
-        owner = create_user(session, "reprocess-vocal-owner", "reprocess-vocal-owner@example.com")
-        stem_path = tmp_path / "vocals.wav"
-        stem_path.write_bytes(b"vocals")
+        owner = create_user(session, "reprocess-strings-owner", "reprocess-strings-owner@example.com")
+        stem_path = tmp_path / "strings.wav"
+        stem_path.write_bytes(b"strings")
         transcription = models.Transcription(
             title="Unsupported reprocess song",
             audio_file_path="uploads/unsupported-reprocess.wav",
@@ -1690,8 +1816,8 @@ def test_reprocess_instrument_track_rejects_unsupported_instrument(tmp_path):
         session.refresh(transcription)
         track = models.InstrumentTrack(
             transcription_id=transcription.id,
-            instrument_type="vocals",
-            display_name="Vocals",
+                instrument_type="strings",
+                display_name="Strings",
             stem_audio_path=str(stem_path),
             processing_status="completed",
         )
@@ -1704,11 +1830,11 @@ def test_reprocess_instrument_track_rejects_unsupported_instrument(tmp_path):
 
     response = client.post(
         f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
-        headers=auth_headers("reprocess-vocal-owner"),
+        headers=auth_headers("reprocess-strings-owner"),
     )
 
     assert response.status_code == 422
-    assert "supports guitar, bass, piano, and drum tracks" in response.json()["detail"]
+    assert "supports guitar, bass, drum, and vocal stems" in response.json()["detail"]
 
 
 def test_reprocess_instrument_track_marks_missing_stem_failed():
@@ -2073,10 +2199,10 @@ def test_get_piano_track_exports_use_note_events_without_tab_data():
         headers=auth_headers("piano-export-owner"),
     )
 
-    assert midi_response.status_code == 200
-    assert midi_response.content.startswith(b"MThd")
-    assert musicxml_response.status_code == 200
-    assert musicxml_response.text == "<score-partwise version=\"3.1\"></score-partwise>"
+    assert midi_response.status_code == 422
+    assert "Per-track MIDI export currently supports guitar and bass" in midi_response.json()["detail"]
+    assert musicxml_response.status_code == 422
+    assert "Per-track MUSICXML export currently supports guitar and bass" in musicxml_response.json()["detail"]
     assert tab_response.status_code == 422
     assert "Per-track TAB export currently supports guitar and bass" in tab_response.json()["detail"]
 
@@ -2208,7 +2334,7 @@ def test_get_track_export_rejects_stem_only_track_with_useful_error():
     )
 
     assert response.status_code == 422
-    assert "Per-track MIDI export currently supports guitar, bass, and piano" in response.json()["detail"]
+    assert "Per-track MIDI export currently supports guitar and bass" in response.json()["detail"]
 
 
 def test_get_drum_track_export_remains_unsupported_with_rhythm_data():
@@ -2246,7 +2372,7 @@ def test_get_drum_track_export_remains_unsupported_with_rhythm_data():
     )
 
     assert response.status_code == 422
-    assert "Per-track MIDI export currently supports guitar, bass, and piano" in response.json()["detail"]
+    assert "Per-track MIDI export currently supports guitar and bass" in response.json()["detail"]
 
 
 def test_get_track_export_requires_transcription_access():

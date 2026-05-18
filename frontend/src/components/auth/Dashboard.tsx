@@ -11,7 +11,7 @@ interface Project {
   description: string;
   createdAt: string;
   audioFileName: string;
-  status: "pending" | "queued" | "processing" | "completed" | "warning" | "failed";
+  status: "pending" | "queued" | "processing" | "stem_ready" | "completed" | "warning" | "failed";
   duration: number;
   difficulty: "beginner" | "intermediate" | "advanced";
   processingError?: string | null;
@@ -30,6 +30,7 @@ const getTranscriptionStatus = (transcription: Transcription): Project["status"]
     transcription.processing_status === "pending" ||
     transcription.processing_status === "queued" ||
     transcription.processing_status === "processing" ||
+    transcription.processing_status === "stem_ready" ||
     transcription.processing_status === "completed" ||
     transcription.processing_status === "completed_with_warning" ||
     transcription.processing_status === "failed"
@@ -70,6 +71,8 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
         ? transcription.processing_error || "Processing failed"
       : status === "warning"
           ? transcription.warning_message || metadata.description
+      : status === "stem_ready"
+          ? "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
         : status === "queued"
           ? "Queued because another Railway MVP job is processing"
         : status === "pending"
@@ -112,6 +115,8 @@ const getStatusGradient = (status: Project["status"]) => {
   switch (status) {
     case "completed":
       return "linear-gradient(135deg, #42755f, #244c69)";
+    case "stem_ready":
+      return "linear-gradient(135deg, #2c7c7c, #244c69)";
     case "warning":
       return "linear-gradient(135deg, #bf8d31, #7a6331)";
     case "queued":
@@ -127,7 +132,7 @@ const getStatusGradient = (status: Project["status"]) => {
 };
 
 const getStatusDisplay = (status: Project["status"]): string =>
-  status === "warning" ? "Stem Ready" : status;
+  status === "warning" || status === "stem_ready" ? "Stem Ready" : status;
 
 type ToastState = {
   tone: "success" | "error";
@@ -150,7 +155,7 @@ type ProjectActionMenuItem = {
 const getProjectActionMenuItems = (project: Project): ProjectActionMenuItem[] => {
   const items: ProjectActionMenuItem[] = [];
 
-  if (project.status === "completed" || project.status === "warning") {
+  if (project.status === "completed" || project.status === "warning" || project.status === "stem_ready") {
     items.push({ action: "source", label: "Open source audio", icon: "music" });
   }
 
@@ -269,7 +274,7 @@ const Dashboard: React.FC = () => {
   };
 
   const getProjectRoute = (project: Project): string =>
-    project.status === "completed"
+    project.status === "completed" || project.status === "stem_ready"
       ? `/transcription/${project.id}`
       : project.status === "warning"
         ? `/transcription/${project.id}`
@@ -449,7 +454,7 @@ const Dashboard: React.FC = () => {
   }
 
   const completedCount = projects.filter((project) =>
-    project.status === "completed" || project.status === "warning",
+    project.status === "completed" || project.status === "warning" || project.status === "stem_ready",
   ).length;
   const processingCount = projects.filter((project) =>
     project.status === "pending" || project.status === "queued" || project.status === "processing",

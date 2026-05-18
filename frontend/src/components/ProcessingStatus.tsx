@@ -79,8 +79,8 @@ const ProcessingStatus: React.FC = () => {
       setCanPlayStem(Boolean(response.can_play_stem));
       setCanGenerateScore(response.can_generate_score !== false);
       setIsDemo(Boolean(response.is_demo));
-      if (response.status === 'completed') {
-        setStatus('completed');
+      if (response.status === 'completed' || response.status === 'stem_ready') {
+        setStatus(response.status);
         setProgress(100);
         if (response.can_generate_score !== false) {
           setTimeout(() => {
@@ -159,6 +159,7 @@ const ProcessingStatus: React.FC = () => {
       status === 'pending' ||
       status === 'queued' ||
       status === 'processing' ||
+      status === 'stem_ready' ||
       status === 'completed' ||
       status === 'completed_with_warning' ||
       status === 'failed'
@@ -292,12 +293,17 @@ const ProcessingStatus: React.FC = () => {
         </div>
       )}
 
-      {(status === 'completed' || status === 'completed_with_warning') && (
+      {(status === 'stem_ready' || status === 'completed' || status === 'completed_with_warning') && (
         <div className={`processing-status-content ${canGenerateScore ? 'processing-success' : 'processing-warning'}`}>
           <div className={canGenerateScore ? 'success-icon' : 'warning-icon'} aria-hidden="true"></div>
           <h3>{canGenerateScore ? 'Processing complete' : 'Stem preview ready'}</h3>
           {canGenerateScore ? (
             <p>Your audio has been successfully processed and transcribed into guitar tabs.</p>
+          ) : status === 'stem_ready' ? (
+            <>
+              <p>Stem is ready. Listen first, then generate tabs if the stem sounds useful.</p>
+              <p>Tab generation will only run after you confirm from the preview screen.</p>
+            </>
           ) : (
             <>
               <p>{warning || 'Stem separated successfully, but no playable notes were detected for notation generation.'}</p>

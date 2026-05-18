@@ -6,6 +6,7 @@ from sqlalchemy import or_, update
 import os
 import uuid
 import hashlib
+import shutil
 from pathlib import Path
 import re
 import tempfile
@@ -14,7 +15,7 @@ from yt_dlp.utils import DownloadError
 import httpx
 from pydantic import BaseModel
 from urllib.parse import parse_qs, urlsplit
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .... import db, core, models
 from ....core.security import get_current_user
@@ -32,10 +33,24 @@ class YouTubeUploadRequest(BaseModel):
     selected_stem: str
     project_id: int = None
 
+class GenerateTabRequest(BaseModel):
+    sensitivity: str | None = None
+
 router = APIRouter()
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
+ACTIVE_TRANSCRIPTION_STATUSES = ("pending", "queued", "processing")
+QUEUE_WAITING_STATUSES = ("pending", "queued")
+TERMINAL_TRANSCRIPTION_STATUSES = (
+    "stem_ready",
+    "completed",
+    "completed_with_warning",
+    "failed",
+    "cancelled",
+    "deleted",
+)
 ESTIMATED_SECONDS_PER_SELECTED_STEM_JOB = 300
 DEMO_AUDIO_URL = "/demo/example-guitar-riff.wav"
+STEM_READY_MESSAGE = "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
 
 # Define the upload directory relative to the backend package so the location is
 # stable whether uvicorn is launched from the repo root or from backend/.
@@ -43,7 +58,7 @@ DEMO_AUDIO_URL = "/demo/example-guitar-riff.wav"
 # UPLOAD_DIR = BACKEND_DIR / "uploads"
 # UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-UPLOAD_DIR = Path(core.config.settings.UPLOAD_DIR)
+UPLOAD_DIR = Path(storage.normalize_local_path(core.config.settings.UPLOAD_DIR)).resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 import logging
@@ -98,6 +113,30 @@ def _run_instrument_track_reprocess_locally(track_id: int):
         reprocess_instrument_track.update_state = original_update_state
 
 
+def _run_tab_generation_locally(
+    transcription_id: int,
+    detection_sensitivity: str | None = None,
+):
+    """Run tab generation without a Celery broker for local development."""
+    from ....tasks import generate_tab_from_separated_stem
+
+    original_update_state = generate_tab_from_separated_stem.update_state
+    generate_tab_from_separated_stem.update_state = lambda *args, **kwargs: None
+    try:
+        generate_tab_from_separated_stem.run(
+            transcription_id,
+            detection_sensitivity,
+        )
+    except Exception as e:
+        logger.error(
+            "Local tab generation task failed for transcription %s: %s",
+            transcription_id,
+            e,
+        )
+    finally:
+        generate_tab_from_separated_stem.update_state = original_update_state
+
+
 def _start_transcription_processing(
     transcription_id: int,
     background_tasks: BackgroundTasks,
@@ -140,6 +179,48 @@ def _start_transcription_processing(
             transcription_id,
             detection_sensitivity,
             selected_stem_override,
+        )
+        return None
+
+
+def _start_tab_generation(
+    transcription_id: int,
+    background_tasks: BackgroundTasks,
+    *,
+    detection_sensitivity: str | None = None,
+) -> str | None:
+    """Start tab generation through Celery, with an in-process fallback for dev."""
+    if _should_use_local_worker_fallback() and not _celery_has_available_worker():
+        logger.warning(
+            "No Celery worker is available; running tab generation %s as a local background task",
+            transcription_id,
+        )
+        background_tasks.add_task(
+            _run_tab_generation_locally,
+            transcription_id,
+            detection_sensitivity,
+        )
+        return None
+
+    try:
+        task_args = [transcription_id]
+        if detection_sensitivity:
+            task_args.append(detection_sensitivity)
+        result = celery_app.send_task(
+            "app.tasks.generate_tab_from_separated_stem",
+            args=task_args,
+        )
+        task_id = getattr(result, "id", None)
+        return str(task_id) if isinstance(task_id, (str, int)) else None
+    except Exception as e:
+        logger.warning(
+            "Celery broker unavailable; falling back to local tab generation: %s",
+            e,
+        )
+        background_tasks.add_task(
+            _run_tab_generation_locally,
+            transcription_id,
+            detection_sensitivity,
         )
         return None
 
@@ -253,11 +334,91 @@ def _dispatch_transcription_processing(
     return None
 
 
+def _active_transcription_query(db_session: Session):
+    return (
+        db_session.query(models.Transcription)
+        .filter(models.Transcription.is_deleted == False)
+        .filter(models.Transcription.processing_status.in_(ACTIVE_TRANSCRIPTION_STATUSES))
+    )
+
+
+def _stale_active_cutoff() -> datetime:
+    timeout_seconds = max(0, int(core.config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS))
+    return datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
+
+
+def _as_aware_utc(value: datetime | None) -> datetime | None:
+    if not value:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _active_celery_task_ids() -> set[str]:
+    try:
+        active = celery_app.control.inspect(timeout=1.0).active() or {}
+    except Exception as exc:
+        logger.warning("Could not inspect active Celery tasks during stale cleanup: %s", exc)
+        return set()
+
+    task_ids: set[str] = set()
+    for tasks in active.values():
+        for task in tasks or []:
+            task_id = task.get("id") if isinstance(task, dict) else None
+            if task_id:
+                task_ids.add(str(task_id))
+    return task_ids
+
+
+def _cleanup_stale_active_transcription_jobs(db_session: Session) -> int:
+    cutoff = _stale_active_cutoff()
+    active_task_ids = _active_celery_task_ids()
+    active_jobs = _active_transcription_query(db_session).all()
+    stale_jobs = []
+    for transcription in active_jobs:
+        if transcription.celery_task_id and str(transcription.celery_task_id) in active_task_ids:
+            logger.info(
+                "Skipping stale cleanup for transcription %s because Celery task %s is active",
+                transcription.id,
+                transcription.celery_task_id,
+            )
+            continue
+
+        last_activity = _as_aware_utc(transcription.updated_at) or _as_aware_utc(transcription.created_at)
+        if not last_activity:
+            logger.info(
+                "Skipping stale cleanup for transcription %s because no timestamp is available",
+                transcription.id,
+            )
+            continue
+        if last_activity >= cutoff:
+            continue
+        stale_jobs.append(transcription)
+    if not stale_jobs:
+        return 0
+
+    for transcription in stale_jobs:
+        transcription.processing_status = "failed"
+        transcription.processing_error = (
+            "Processing job timed out without worker activity and was marked failed."
+        )
+        transcription.queue_position = None
+        transcription.estimated_wait_time = None
+        transcription.celery_task_id = None
+        transcription.is_processed = False
+        db_session.add(transcription)
+
+    db_session.commit()
+    logger.warning("Marked %s stale transcription job(s) failed.", len(stale_jobs))
+    return len(stale_jobs)
+
+
 def _promote_oldest_queued_transcription(db_session: Session) -> models.Transcription | None:
     with _queue_promotion_lock:
         candidate = (
             db_session.query(models.Transcription)
-            .filter(models.Transcription.processing_status.in_(["pending", "queued"]))
+            .filter(models.Transcription.processing_status.in_(QUEUE_WAITING_STATUSES))
             .filter(models.Transcription.is_deleted == False)
             .order_by(models.Transcription.created_at.asc(), models.Transcription.id.asc())
             .first()
@@ -274,7 +435,7 @@ def _promote_oldest_queued_transcription(db_session: Session) -> models.Transcri
         result = db_session.execute(
             update(models.Transcription)
             .where(models.Transcription.id == candidate.id)
-            .where(models.Transcription.processing_status.in_(["pending", "queued"]))
+            .where(models.Transcription.processing_status.in_(QUEUE_WAITING_STATUSES))
             .where(models.Transcription.is_deleted == False)
             .where(~active_exists)
             .values(
@@ -445,7 +606,7 @@ def _find_duplicate_transcription(
         db_session.query(models.Transcription)
         .filter(models.Transcription.user_id == user_id)
         .filter(models.Transcription.selected_stem == selected_stem)
-        .filter(models.Transcription.processing_status.in_(["completed", "completed_with_warning"]))
+        .filter(models.Transcription.processing_status.in_(["stem_ready", "completed", "completed_with_warning"]))
         .filter(models.Transcription.is_processed == True)
         .filter(models.Transcription.is_deleted == False)
     )
@@ -485,6 +646,68 @@ def _delete_local_file(path_value: str | None) -> None:
             path.unlink()
     except OSError as exc:
         logger.warning("Local cleanup failed for %s: %s", path_value, exc)
+
+
+def _transcription_scratch_dir(transcription_id: int) -> Path:
+    scratch_dir = Path(tempfile.gettempdir()) / "transcriptions" / str(transcription_id)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    return scratch_dir
+
+
+def _file_lifecycle_snapshot(path_value: str | Path | None) -> dict:
+    if not path_value:
+        return {"path": None, "exists": False}
+    path = Path(storage.normalize_local_path(path_value))
+    snapshot = {"path": storage.normalize_local_path(path), "exists": path.exists()}
+    if path.exists():
+        try:
+            stat = path.stat()
+            snapshot.update({
+                "is_file": path.is_file(),
+                "size": stat.st_size,
+                "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+        except OSError as exc:
+            snapshot["stat_error"] = str(exc)
+    return snapshot
+
+
+def _move_source_to_transcription_scratch(
+    transcription: models.Transcription,
+    source_path: str | Path,
+    db_session: Session,
+) -> Path:
+    source = Path(storage.normalize_local_path(source_path))
+    scratch_dir = _transcription_scratch_dir(transcription.id)
+    destination = scratch_dir / f"original{source.suffix or '.wav'}"
+    logger.info(
+        "Moving source audio into transcription scratch dir transcription_id=%s source=%s destination=%s",
+        transcription.id,
+        _file_lifecycle_snapshot(source),
+        storage.normalize_local_path(destination),
+    )
+    if not source.exists():
+        logger.error(
+            "Source audio missing before scratch move transcription_id=%s source=%s",
+            transcription.id,
+            _file_lifecycle_snapshot(source),
+        )
+        raise FileNotFoundError(
+            f"Source audio does not exist: {storage.normalize_local_path(source)}"
+        )
+    if source.resolve() != destination.resolve():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(destination))
+    transcription.audio_file_path = storage.normalize_local_path(destination)
+    db_session.add(transcription)
+    db_session.commit()
+    db_session.refresh(transcription)
+    logger.info(
+        "Source audio scratch move complete transcription_id=%s file=%s",
+        transcription.id,
+        _file_lifecycle_snapshot(destination),
+    )
+    return destination
 
 
 def _cloudinary_asset_specs(transcription: models.Transcription):
@@ -651,7 +874,7 @@ def _soft_delete_transcription(
         )
 
     previous_status = transcription.processing_status or "pending"
-    if previous_status in {"queued", "pending", "processing"}:
+    if previous_status in ACTIVE_TRANSCRIPTION_STATUSES:
         _revoke_transcription_task(transcription)
         transcription.processing_status = "cancelled"
         transcription.processing_error = (
@@ -659,7 +882,7 @@ def _soft_delete_transcription(
             if previous_status == "processing"
             else "Transcription was deleted before processing completed."
         )
-    elif previous_status in {"completed", "failed", "cancelled", "deleted"}:
+    elif previous_status in TERMINAL_TRANSCRIPTION_STATUSES:
         transcription.processing_status = "deleted"
     else:
         raise HTTPException(
@@ -668,11 +891,20 @@ def _soft_delete_transcription(
         )
 
     _cleanup_transcription_cloudinary_assets(transcription, db_session)
-    _cleanup_transcription_local_assets(transcription)
+    if previous_status == "processing":
+        logger.info(
+            "Skipping immediate local cleanup for deleted processing transcription %s; active worker cleanup is best-effort",
+            transcription.id,
+        )
+    else:
+        _cleanup_transcription_local_assets(transcription)
 
     transcription.is_deleted = True
     transcription.deleted_at = datetime.now(timezone.utc)
     transcription.is_processed = False if transcription.processing_status == "cancelled" else transcription.is_processed
+    transcription.queue_position = None
+    transcription.estimated_wait_time = None
+    transcription.celery_task_id = None
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(transcription)
@@ -681,6 +913,18 @@ def _soft_delete_transcription(
 
 
 def _cleanup_transcription_local_assets(transcription: models.Transcription) -> None:
+    if (
+        transcription.processing_status == "processing"
+        and transcription.celery_task_id
+        and str(transcription.celery_task_id) in _active_celery_task_ids()
+    ):
+        logger.info(
+            "Skipping local cleanup for transcription %s because Celery task %s is active",
+            transcription.id,
+            transcription.celery_task_id,
+        )
+        return
+
     for path_value in [
         transcription.audio_file_path,
         transcription.preprocessed_audio_file_path,
@@ -800,8 +1044,33 @@ def _can_play_stem(transcription: models.Transcription) -> bool:
     )
 
 
+def _has_stem_audio_reference(transcription: models.Transcription) -> bool:
+    return bool(
+        transcription.separated_audio_url
+        or transcription.separated_audio_file_path
+        or any(track.stem_audio_path for track in transcription.instrument_tracks)
+    )
+
+
+def _is_viewable_stem_ready(transcription: models.Transcription) -> bool:
+    return bool(
+        transcription.processing_status == "stem_ready"
+        and _can_play_stem(transcription)
+        and _has_stem_audio_reference(transcription)
+    )
+
+
 def _can_generate_score(transcription: models.Transcription) -> bool:
     return bool(transcription.can_generate_score and _has_note_events(transcription.notes_data))
+
+
+def _available_exports(transcription: models.Transcription) -> list[str]:
+    selected_stem = (transcription.selected_stem or "other").lower()
+    if selected_stem not in {"other", "bass"}:
+        return []
+    if not _can_generate_score(transcription):
+        return []
+    return ["tab", "midi", "musicxml"]
 
 
 def _json_field(value: str | None):
@@ -825,6 +1094,49 @@ def _has_tablature_events(value: str | None) -> bool:
     if isinstance(parsed, list):
         return bool(parsed)
     return bool(value and value.strip())
+
+
+def _has_score_output(transcription: models.Transcription) -> bool:
+    return bool(
+        _has_note_events(transcription.notes_data)
+        or _has_tablature_events(transcription.tablature_data)
+        or transcription.notation_data
+        or transcription.midi_file_path
+        or transcription.midi_file_url
+        or transcription.tab_file_path
+        or transcription.tab_file_url
+    )
+
+
+def _is_playback_only_stem_state(transcription: models.Transcription) -> bool:
+    return bool(
+        _can_play_stem(transcription)
+        and _has_stem_audio_reference(transcription)
+        and not _has_score_output(transcription)
+    )
+
+
+def _repair_playback_only_stem_ready(
+    transcription: models.Transcription,
+    db_session: Session,
+) -> bool:
+    if not _is_playback_only_stem_state(transcription):
+        return False
+    if transcription.processing_status not in {"pending", "queued", "processing"}:
+        return False
+
+    transcription.processing_status = "stem_ready"
+    transcription.is_processed = True
+    transcription.processing_error = None
+    transcription.can_play_stem = True
+    transcription.can_generate_score = False
+    transcription.queue_position = None
+    transcription.estimated_wait_time = None
+    transcription.celery_task_id = None
+    db_session.add(transcription)
+    db_session.commit()
+    db_session.refresh(transcription)
+    return True
 
 
 def _has_drum_hits(value: str | None) -> bool:
@@ -918,7 +1230,6 @@ def _metadata_payload(transcription: models.Transcription) -> dict:
     can_generate_score = _can_generate_score(transcription)
     can_play_stem = _can_play_stem(transcription)
     output_mode = (
-        "multi_track" if track_count > 1 else
         "rhythm" if can_generate_rhythm else
         "tab_score" if can_generate_tab and can_generate_score else
         "tab" if can_generate_tab else
@@ -930,6 +1241,9 @@ def _metadata_payload(transcription: models.Transcription) -> dict:
 
     return {
         "selected_stem": selected_stem,
+        "separated_audio_url": transcription.separated_audio_url,
+        "warning_message": transcription.warning_message,
+        "available_exports": _available_exports(transcription),
         "instrument_type": _instrument_type_for(transcription),
         "output_mode": output_mode,
         "can_generate_tab": can_generate_tab,
@@ -954,18 +1268,29 @@ def _status_payload(
     can_play_stem = _can_play_stem(transcription)
     can_generate_score = _can_generate_score(transcription)
     payload = {
-        "status": "completed",
+        "status": transcription.processing_status or "completed",
         "warning": warning,
         "transcription_id": transcription_id,
         "selected_stem": selected_stem,
         "can_play_stem": can_play_stem,
         "can_generate_score": can_generate_score,
+        "warning_message": warning,
+        "separated_audio_url": transcription.separated_audio_url,
+        "available_exports": _available_exports(transcription),
         "is_demo": transcription.is_demo,
         "queue_position": None,
         "estimated_wait_time": None,
     }
     if message:
         payload["message"] = message
+    elif transcription.processing_status == "stem_ready":
+        payload["message"] = STEM_READY_MESSAGE
+    if (
+        transcription.processing_status == "stem_ready"
+        and can_play_stem
+        and not _has_score_output(transcription)
+    ):
+        payload["output_mode"] = "playback_only"
     return payload
 
 
@@ -1039,7 +1364,10 @@ def _ensure_derived_outputs(transcription: models.Transcription, db_session: Ses
 
     if not transcription.tablature_data:
         transcription.tablature_data = json.dumps(
-            tablature_service.notes_to_tablature(transcription.notes_data)
+            tablature_service.notes_to_tablature(
+                transcription.notes_data,
+                instrument_type="bass" if (transcription.selected_stem or "other") == "bass" else "guitar",
+            )
         )
         changed = True
 
@@ -1060,6 +1388,27 @@ def _require_note_events_for_export(transcription: models.Transcription) -> None
         else "Cannot generate exports because no note events were detected."
     )
     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+
+
+def _require_transcription_export_supported(
+    transcription: models.Transcription,
+    format_name: str,
+) -> None:
+    selected_stem = (transcription.selected_stem or "other").lower()
+    if selected_stem not in {"other", "bass"}:
+        label = "drum rhythm data" if selected_stem == "drums" else "vocal stem playback"
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{format_name.upper()} export is not available for the selected "
+                f"{selected_stem} stem in this MVP. Use the result JSON for {label}."
+            ),
+        )
+    if not transcription.can_generate_score:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Stem playback is available, but no reliable notes were detected for export generation.",
+        )
 
 
 def _require_track_note_events_for_export(track: models.InstrumentTrack) -> None:
@@ -1096,10 +1445,8 @@ def _get_accessible_transcription(
 
 def _has_active_transcription(user_id: int, db_session: Session) -> bool:
     active_transcriptions = (
-        db_session.query(models.Transcription)
+        _active_transcription_query(db_session)
         .filter(models.Transcription.user_id == user_id)
-        .filter(models.Transcription.is_processed == False)
-        .filter(models.Transcription.is_deleted == False)
         .all()
     )
     return any(
@@ -1109,23 +1456,12 @@ def _has_active_transcription(user_id: int, db_session: Session) -> bool:
     )
 
 
-def _has_active_processing_job(db_session: Session) -> bool:
-    return (
-        db_session.query(models.Transcription)
-        .filter(models.Transcription.processing_status == "processing")
-        .filter(models.Transcription.is_deleted == False)
-        .first()
-        is not None
-    )
+def _has_global_active_transcription_job(db_session: Session) -> bool:
+    return _active_transcription_query(db_session).first() is not None
 
 
 def _active_queue_count(db_session: Session) -> int:
-    return (
-        db_session.query(models.Transcription)
-        .filter(models.Transcription.processing_status.in_(["pending", "queued", "processing"]))
-        .filter(models.Transcription.is_deleted == False)
-        .count()
-    )
+    return _active_transcription_query(db_session).count()
 
 
 def _queue_metadata_for_new_job(db_session: Session) -> tuple[str, int | None, int | None]:
@@ -1146,9 +1482,7 @@ def _queue_metadata_for_existing_job(
         return None, None
 
     queued_ahead = (
-        db_session.query(models.Transcription)
-        .filter(models.Transcription.processing_status.in_(["pending", "queued", "processing"]))
-        .filter(models.Transcription.is_deleted == False)
+        _active_transcription_query(db_session)
         .filter(models.Transcription.created_at < transcription.created_at)
         .count()
     )
@@ -1260,15 +1594,15 @@ def _ensure_track_export_ready(
 
     supported_by_format = {
         "tab": {"guitar", "bass"},
-        "midi": {"guitar", "bass", "piano"},
-        "musicxml": {"guitar", "bass", "piano"},
+        "midi": {"guitar", "bass"},
+        "musicxml": {"guitar", "bass"},
     }
     supported_instruments = supported_by_format.get(format_name, set())
     if track.instrument_type not in supported_instruments:
         supported_label = (
             "guitar and bass"
             if format_name == "tab"
-            else "guitar, bass, and piano"
+            else "guitar and bass"
         )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1288,12 +1622,12 @@ def _ensure_track_export_ready(
 
 
 def _prepare_track_reprocess(track: models.InstrumentTrack, db_session: Session) -> None:
-    if track.instrument_type not in {"guitar", "bass", "piano", "drums"}:
+    if track.instrument_type not in {"guitar", "bass", "drums", "vocals"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 f"{track.display_name} reprocessing is not available yet. "
-                "Single-track reprocessing currently supports guitar, bass, piano, and drum tracks."
+                "Selected-stem reprocessing currently supports guitar, bass, drum, and vocal stems."
             )
         )
 
@@ -1382,6 +1716,17 @@ async def upload_audio_file(
     if duplicate:
         return _mark_duplicate_response(duplicate)
 
+    # Global active-job pre-check (MVP): reject new uploads when any transcription
+    # is currently pending, queued, or processing (and not soft-deleted).
+    _cleanup_stale_active_transcription_jobs(db_session)
+    if _has_global_active_transcription_job(db_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Another transcription is currently processing. Please wait until it finishes before starting a new one."
+            ),
+        )
+
     initial_processing_status, queue_position, estimated_wait = _queue_metadata_for_new_job(db_session)
 
     # Generate a unique filename to avoid collisions
@@ -1433,6 +1778,11 @@ async def upload_audio_file(
     db_session.add(db_transcription)
     db_session.commit()
     db_session.refresh(db_transcription)
+    file_path = _move_source_to_transcription_scratch(
+        db_transcription,
+        file_path,
+        db_session,
+    )
 
     try:
         original_upload = _upload_original_audio(str(file_path), db_transcription.id)
@@ -1597,6 +1947,17 @@ async def extract_audio_from_youtube(
     if duplicate:
         return _mark_duplicate_response(duplicate)
 
+    # Global active-job pre-check (MVP): reject new YouTube requests when any
+    # transcription is currently pending, queued, or processing (and not soft-deleted).
+    _cleanup_stale_active_transcription_jobs(db_session)
+    if _has_global_active_transcription_job(db_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Another transcription is currently processing. Please wait until it finishes before starting a new one."
+            ),
+        )
+
     initial_processing_status, queue_position, estimated_wait = _queue_metadata_for_new_job(db_session)
 
     # Generate a unique filename for the output (without extension, yt-dlp will add it)
@@ -1626,8 +1987,11 @@ async def extract_audio_from_youtube(
             if cleanup_cookiefile and cookiefile:
                 _delete_local_file(cookiefile)
 
+        expected_audio_file_path = UPLOAD_DIR / f"{unique_filename}.wav"
+        logger.info("yt-dlp expected output path: %s", expected_audio_file_path)
+
         # After download, the file should be at the resolved path
-        audio_file_path = UPLOAD_DIR / f"{unique_filename}.wav"
+        audio_file_path = expected_audio_file_path
 
         # Check if the file exists
         if not audio_file_path.exists():
@@ -1640,11 +2004,17 @@ async def extract_audio_from_youtube(
             else:
                 # List what files we DO have for debugging
                 existing = list(UPLOAD_DIR.glob(f"{unique_filename}.*"))
-                logger.error(f"Expected audio file not found. Files matching pattern: {existing}")
+                logger.error(
+                    "Expected audio file not found. Files matching pattern: %s",
+                    existing,
+                )
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Failed to extract audio from YouTube URL. No output file found."
                 )
+
+        logger.info("yt-dlp actual downloaded file path: %s", audio_file_path)
+        logger.info("yt-dlp normalized source path: %s", storage.normalize_local_path(audio_file_path))
 
     except HTTPException:
         raise
@@ -1704,6 +2074,24 @@ async def extract_audio_from_youtube(
     db_session.add(db_transcription)
     db_session.commit()
     db_session.refresh(db_transcription)
+    try:
+        audio_file_path = _move_source_to_transcription_scratch(
+            db_transcription,
+            audio_file_path,
+            db_session,
+        )
+    except Exception as exc:
+        db_transcription.processing_status = "failed"
+        db_transcription.processing_error = (
+            f"Could not move downloaded YouTube audio into scratch: {exc}"
+        )
+        db_session.add(db_transcription)
+        db_session.commit()
+        _delete_local_file(str(audio_file_path))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to prepare downloaded audio for transcription.",
+        ) from exc
 
     try:
         original_upload = _upload_original_audio(str(audio_file_path), db_transcription.id)
@@ -1825,6 +2213,7 @@ async def get_transcription_status(
         )
 
     _ensure_transcription_access(transcription, db_session, current_user)
+    _repair_playback_only_stem_ready(transcription, db_session)
 
     selected_stem = transcription.selected_stem or "other"
     if transcription.is_deleted:
@@ -1833,8 +2222,11 @@ async def get_transcription_status(
             "transcription_id": transcription_id,
             "selected_stem": selected_stem,
             "warning": transcription.warning_message,
+            "warning_message": transcription.warning_message,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
+            "separated_audio_url": transcription.separated_audio_url,
+            "available_exports": _available_exports(transcription),
             "is_demo": transcription.is_demo,
             "deleted_at": transcription.deleted_at,
             "message": "This transcription record was deleted.",
@@ -1850,15 +2242,18 @@ async def get_transcription_status(
             "transcription_id": transcription_id,
             "selected_stem": selected_stem,
             "warning": transcription.warning_message,
+            "warning_message": transcription.warning_message,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
+            "separated_audio_url": transcription.separated_audio_url,
+            "available_exports": _available_exports(transcription),
             "is_demo": transcription.is_demo,
             "queue_position": None,
             "estimated_wait_time": None,
         }
 
     # Return status based on transcription record
-    if transcription.is_processed:
+    if transcription.is_processed or _is_viewable_stem_ready(transcription):
         notes_error = _notes_error(transcription.notes_data)
         if notes_error and not transcription.warning_message:
             transcription.warning_message = f"Pitch detection warning: {notes_error}"
@@ -1894,8 +2289,11 @@ async def get_transcription_status(
             "transcription_id": transcription_id,
             "selected_stem": selected_stem,
             "warning": transcription.warning_message,
+            "warning_message": transcription.warning_message,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
+            "separated_audio_url": transcription.separated_audio_url,
+            "available_exports": _available_exports(transcription),
             "is_demo": transcription.is_demo,
             "message": message,
             "queue_position": transcription.queue_position,
@@ -1922,15 +2320,22 @@ async def get_transcription_source_audio(
 
     _ensure_transcription_access(transcription, db_session, current_user)
 
+    if transcription.processing_status == "stem_ready" and transcription.separated_audio_url:
+        return RedirectResponse(transcription.separated_audio_url)
+
     if transcription.original_audio_url:
         return RedirectResponse(transcription.original_audio_url)
 
-    candidates = [
+    source_candidates = [
         transcription.audio_file_path,
         str(UPLOAD_DIR / Path(transcription.audio_file_path).name) if transcription.audio_file_path else None,
-        transcription.separated_audio_file_path,
         transcription.preprocessed_audio_file_path,
     ]
+    candidates = (
+        [transcription.separated_audio_file_path, *source_candidates]
+        if transcription.processing_status == "stem_ready"
+        else [*source_candidates, transcription.separated_audio_file_path]
+    )
     for candidate in candidates:
         if not candidate:
             continue
@@ -1970,9 +2375,10 @@ async def get_transcription_result(
         )
 
     _ensure_transcription_access(transcription, db_session, current_user)
+    _repair_playback_only_stem_ready(transcription, db_session)
 
-    # Check if processing is complete
-    if not transcription.is_processed:
+    processing_status_value = transcription.processing_status or "pending"
+    if processing_status_value in {"pending", "queued", "processing"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Transcription is still processing"
@@ -1985,17 +2391,95 @@ async def get_transcription_result(
             detail=f"Transcription failed: {blocking_error}"
         )
 
-    try:
-        _ensure_derived_outputs(transcription, db_session)
-    except Exception as e:
-        logger.warning(
-            "Could not regenerate derived outputs for transcription %s: %s",
-            transcription_id,
-            e,
+    if not transcription.is_processed and not _is_viewable_stem_ready(transcription):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transcription is not ready to view"
         )
+
+    if transcription.processing_status != "stem_ready":
+        try:
+            _ensure_derived_outputs(transcription, db_session)
+        except Exception as e:
+            logger.warning(
+                "Could not regenerate derived outputs for transcription %s: %s",
+                transcription_id,
+                e,
+            )
 
     # Return the transcription data
     return _public_transcription_payload(transcription)
+
+
+@router.post("/{transcription_id}/generate-tab")
+async def generate_tab(
+    transcription_id: int,
+    background_tasks: BackgroundTasks,
+    request: GenerateTabRequest = Body(default=GenerateTabRequest()),
+    db_session: Session = Depends(db.get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """
+    Generate TAB/rhythm output from an existing separated selected stem.
+    """
+    transcription = _get_accessible_transcription(transcription_id, db_session, current_user)
+    if transcription.is_demo:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Demo transcriptions already include their example outputs.",
+        )
+    if transcription.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot generate tabs for a deleted transcription.",
+        )
+
+    selected_stem = _validate_selected_stem(transcription.selected_stem)
+    if selected_stem == "vocals":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vocal stems are playback-only in this MVP.",
+        )
+    if not _can_play_stem(transcription):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Separated stem is required before generating tabs.",
+        )
+    if transcription.processing_status == "processing":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This transcription is already processing.",
+        )
+
+    transcription.processing_status = "processing"
+    transcription.is_processed = False
+    transcription.processing_error = None
+    transcription.warning_message = None
+    transcription.can_generate_score = False
+    transcription.can_play_stem = True
+    transcription.queue_position = 0
+    transcription.estimated_wait_time = 0
+    db_session.add(transcription)
+    db_session.commit()
+    db_session.refresh(transcription)
+
+    task_id = _start_tab_generation(transcription.id, background_tasks, detection_sensitivity=request.sensitivity)
+    if task_id:
+        transcription.celery_task_id = task_id
+        db_session.add(transcription)
+        db_session.commit()
+        db_session.refresh(transcription)
+
+    return {
+        "status": transcription.processing_status,
+        "transcription_id": transcription.id,
+        "selected_stem": selected_stem,
+        "can_play_stem": True,
+        "can_generate_score": False,
+        "separated_audio_url": transcription.separated_audio_url,
+        "is_demo": transcription.is_demo,
+        "message": "Tab generation started.",
+    }
 
 
 @router.post("/{transcription_id}/retry")
@@ -2461,6 +2945,7 @@ async def get_transcription_midi(
             detail=f"Transcription failed: {blocking_error}"
         )
 
+    _require_transcription_export_supported(transcription, "midi")
     try:
         _ensure_derived_outputs(transcription, db_session)
     except Exception as e:
@@ -2550,6 +3035,7 @@ async def get_transcription_musicxml(
             detail=f"Transcription failed: {blocking_error}"
         )
 
+    _require_transcription_export_supported(transcription, "musicxml")
     try:
         _ensure_derived_outputs(transcription, db_session)
     except Exception as e:
@@ -2630,6 +3116,7 @@ async def get_transcription_tab(
             detail=f"Transcription failed: {blocking_error}"
         )
 
+    _require_transcription_export_supported(transcription, "tab")
     try:
         _ensure_derived_outputs(transcription, db_session)
     except Exception as e:

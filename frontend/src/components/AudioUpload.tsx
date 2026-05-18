@@ -1,14 +1,18 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import gsap from "gsap";
 import {
   AudioWaveform,
   CloudUpload,
+  Clock3,
   Folder,
   Guitar,
+  Lightbulb,
   Mic2,
+  RotateCw,
   ShieldCheck,
   SlidersHorizontal,
+  UsersRound,
   Video,
 } from "lucide-react";
 import audioService, {
@@ -32,9 +36,10 @@ const AudioUpload: React.FC = () => {
   const [selectedStem, setSelectedStem] = useState<StemSelection | "">("");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(0);
-  const [hasActiveTranscription, setHasActiveTranscription] = useState(false);
   const [isActiveTranscriptionLoading, setIsActiveTranscriptionLoading] =
     useState(true);
+  const [processingSlotBusy, setProcessingSlotBusy] = useState(false);
+  const [isCheckingSlot, setIsCheckingSlot] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -167,43 +172,74 @@ const AudioUpload: React.FC = () => {
     return () => ctx.revert();
   }, [isUploading]);
 
-  useEffect(() => {
+  const hasBlockingActiveTranscription = (
+    transcriptions: Transcription[],
+  ): boolean =>
+    transcriptions.some(
+      (transcription: Transcription) =>
+        !transcription.is_processed &&
+        transcription.processing_status !== "failed" &&
+        (!transcription.processing_error ||
+          isNonBlockingProcessingWarning(transcription.processing_error)),
+    );
+
+  const loadActiveTranscriptions = useCallback(async (): Promise<boolean> => {
     if (!token) {
-      setHasActiveTranscription(false);
       setIsActiveTranscriptionLoading(false);
+      return false;
+    }
+
+    try {
+      const transcriptions = await audioService.listTranscriptions(token);
+      const active = hasBlockingActiveTranscription(transcriptions);
+      return active;
+    } catch (error) {
+      return false;
+    } finally {
+      setIsActiveTranscriptionLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    loadActiveTranscriptions();
+  }, [loadActiveTranscriptions]);
+
+  const fallbackErrorMessage = (err: any, fallback: string): string => {
+    const detail = err.response?.data?.detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object" && typeof detail.error === "string") {
+      return detail.error;
+    }
+    return err.message || fallback;
+  };
+
+  const showProcessingSlotBusy = () => {
+    setProcessingSlotBusy(true);
+    setError(null);
+  };
+
+  const clearProcessingSlotBusy = () => {
+    setProcessingSlotBusy(false);
+  };
+
+  const handleCheckAgain = async () => {
+    if (!token) {
+      setError("Authentication error. Please log in again.");
+      clearProcessingSlotBusy();
       return;
     }
 
-    let isCancelled = false;
-    const loadActiveTranscriptions = async () => {
-      try {
-        const transcriptions = await audioService.listTranscriptions(token);
-        if (isCancelled) return;
-        const active = transcriptions.some(
-          (transcription: Transcription) =>
-            !transcription.is_processed &&
-            transcription.processing_status !== "failed" &&
-            (!transcription.processing_error ||
-              isNonBlockingProcessingWarning(transcription.processing_error)),
-        );
-        setHasActiveTranscription(active);
-      } catch (error) {
-        if (!isCancelled) {
-          setHasActiveTranscription(false);
-        }
-      } finally {
-        if (!isCancelled) {
-          setIsActiveTranscriptionLoading(false);
-        }
+    setIsCheckingSlot(true);
+    setError(null);
+    try {
+      const active = await loadActiveTranscriptions();
+      if (!active) {
+        clearProcessingSlotBusy();
       }
-    };
-
-    loadActiveTranscriptions();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [token]);
+    } finally {
+      setIsCheckingSlot(false);
+    }
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -302,9 +338,11 @@ const AudioUpload: React.FC = () => {
       }, 1500);
     } catch (err: any) {
       setUploadProgress(0);
-      setError(
-        err.response?.data?.detail || "Upload failed. Please try again.",
-      );
+      if (err.response?.status === 409) {
+        showProcessingSlotBusy();
+      } else {
+        setError(fallbackErrorMessage(err, "Upload failed. Please try again."));
+      }
     } finally {
       setIsUploading(false);
     }
@@ -370,10 +408,16 @@ const AudioUpload: React.FC = () => {
       }, 1500);
     } catch (err: any) {
       setUploadProgress(0);
-      setError(
-        err.response?.data?.detail ||
-          "Failed to extract audio from YouTube. Please try again.",
-      );
+      if (err.response?.status === 409) {
+        showProcessingSlotBusy();
+      } else {
+        setError(
+          fallbackErrorMessage(
+            err,
+            "Failed to extract audio from YouTube. Please try again.",
+          ),
+        );
+      }
     } finally {
       setIsUploading(false);
     }
@@ -386,6 +430,7 @@ const AudioUpload: React.FC = () => {
     setUploadProgress(0);
     setError(null);
     setSuccess(null);
+    setProcessingSlotBusy(false);
   };
   const fileUploadStatus = "Upload audio";
   const fileProgressValue = isUploading
@@ -401,11 +446,15 @@ const AudioUpload: React.FC = () => {
       : null;
   const fileUploadStatusDetail = uploadPercentLabel ?? "We'll handle the rest";
   const fileUploadDisabled =
-    isUploading || isActiveTranscriptionLoading || !selectedStem;
+    isUploading ||
+    isActiveTranscriptionLoading ||
+    processingSlotBusy ||
+    !selectedStem;
   const youtubeSubmitDisabled =
     isUploading ||
     !youtubeUrl.trim() ||
     isActiveTranscriptionLoading ||
+    processingSlotBusy ||
     !selectedStem;
 
   return (
@@ -463,15 +512,6 @@ const AudioUpload: React.FC = () => {
                 <div className="upload-lock-banner upload-info-banner">
                   <p>
                     Checking current transcription status. Please wait a moment.
-                  </p>
-                </div>
-              )}
-              {hasActiveTranscription && !isUploading && (
-                <div className="upload-lock-banner">
-                  <p>
-                    Another selected-stem job is processing. New uploads will
-                    be queued and will start when the single Railway worker is
-                    free.
                   </p>
                 </div>
               )}
@@ -609,6 +649,12 @@ const AudioUpload: React.FC = () => {
                   </p>
                 </div>
               )}
+              {processingSlotBusy && (
+                <ProcessingSlotBusyCard
+                  isChecking={isCheckingSlot}
+                  onCheckAgain={handleCheckAgain}
+                />
+              )}
             </div>
 
             <aside className="upload-help-column" aria-label="Upload guidance">
@@ -669,6 +715,51 @@ const HelpItem = ({
       <small>{body}</small>
     </span>
   </div>
+);
+
+const ProcessingSlotBusyCard = ({
+  isChecking,
+  onCheckAgain,
+}: {
+  isChecking: boolean;
+  onCheckAgain: () => void;
+}) => (
+  <section
+    className="processing-slot-busy-card"
+    aria-labelledby="processing-slot-busy-title"
+  >
+    <div className="processing-slot-busy-main">
+      <span className="processing-slot-busy-icon" aria-hidden="true">
+        <UsersRound className="processing-slot-users" />
+        <Clock3 className="processing-slot-clock" />
+      </span>
+      <div className="processing-slot-busy-copy">
+        <h3 id="processing-slot-busy-title">Processing slot is busy</h3>
+        <p>
+          Another user is currently processing a transcription. Please try again
+          in a few minutes.
+        </p>
+      </div>
+    </div>
+    <div className="processing-slot-busy-footer">
+      <p>
+        <Lightbulb aria-hidden="true" />
+        <span>
+          Transcriptions are processed one at a time to ensure the best possible
+          quality.
+        </span>
+      </p>
+      <button
+        type="button"
+        className="processing-slot-check-button"
+        onClick={onCheckAgain}
+        disabled={isChecking}
+      >
+        <RotateCw aria-hidden="true" />
+        {isChecking ? "Checking..." : "Check again"}
+      </button>
+    </div>
+  </section>
 );
 
 const stemOptions: Array<{

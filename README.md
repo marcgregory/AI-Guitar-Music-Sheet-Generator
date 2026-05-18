@@ -22,15 +22,17 @@ Audio Upload / YouTube URL
 -> Trigger Modal/serverless GPU worker or expose worker pull endpoint
 -> Modal worker downloads original audio from Cloudinary
 -> Modal worker runs Demucs selected-stem separation on GPU
--> Pitch/rhythm detection runs on separated stem
--> Generate instrument-aware tabs/notation/rhythm data
+-> Modal worker normalizes selected separated stem volume
+-> Spotify Basic Pitch runs only for melodic stems (`other`, `bass`, future melodic `vocals`)
+-> Onset/rhythm analysis runs for `drums`
+-> Generate instrument-aware tabs/notation/rhythm data where supported
 -> Modal worker uploads selected separated stem and supported exports to Cloudinary
 -> Modal worker calls backend complete/failed endpoint
 -> Backend updates transcription status and output references
 -> Frontend renders synchronized playback with playhead/waveform and export/download controls
 ```
 
-Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar transcription, use the `other` stem as the target because guitar and piano are commonly grouped there by the default model. True separate guitar, rhythm guitar, lead guitar, and piano separation may require better specialist models later.
+Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar/accompaniment transcription, use the `other` stem as the target because guitar, piano, synths, melody, and accompaniment are commonly grouped there by the default model. The UI/API should say this plainly. True separate guitar, rhythm guitar, lead guitar, and piano separation may require better specialist models later, and the MVP should not be marketed as isolated lead guitar transcription.
 
 Recommended MVP limits:
 - Process one selected stem per job.
@@ -49,10 +51,10 @@ Duplicate detection should run before starting a new processing job. Uploaded au
 
 ## Stem Support Matrix
 
-- `vocals`: playback only for MVP; future roadmap: melody extraction.
-- `drums`: analyze drum stem, detect hits/onsets, generate drum rhythm lane/percussion tab where possible, support synchronized playback highlighting, and support drum MIDI export when possible.
-- `bass`: analyze bass stem, generate 4-string bass tablature with standard E A D G tuning, generate bass score data, and support synchronized playback/playhead highlighting.
-- `other`: primary guitar transcription target, generating guitar tablature, score notation, and synchronized playback/playhead highlighting.
+- `vocals`: playback only for MVP; future roadmap: Basic Pitch or specialist melody extraction.
+- `drums`: analyze drum stem with onset/rhythm detection only; do not use Basic Pitch; generate drum rhythm lane/percussion tab where possible, support synchronized playback highlighting, and support drum MIDI export when possible.
+- `bass`: analyze bass stem with Basic Pitch, generate 4-string bass tablature with standard E A D G tuning, generate bass score data, and support synchronized playback/playhead highlighting.
+- `other`: primary guitar/accompaniment target, analyzed with Basic Pitch and rendered as guitar-oriented tablature, score notation, and synchronized playback/playhead highlighting.
 
 ## Playback and Rendering
 
@@ -73,6 +75,8 @@ All views use shared playback synchronization:
 - selected-stem playback
 
 The app should use one shared `currentTime` for waveform, tabs, score, and stem playback. Separate timers for waveform, tabs, and score are out of scope.
+
+The selected stem should always be visible in the viewer. Stem confidence, low-confidence warnings, and the `other` stem explanation should be shown without blocking separated-stem playback. If Basic Pitch finds no notes after retry, playback remains available and score/TAB/MIDI/MusicXML exports are disabled or hidden as needed.
 
 ## Selected-Stem API
 
@@ -114,7 +118,7 @@ Cloudinary is the durable storage layer for uploaded audio and generated outputs
 - MusicXML export files
 - TAB files
 
-Persist both the Cloudinary `secure_url` and `public_id` for each stored asset so the app can display/download files and later delete or replace them. Railway filesystem paths are only temporary processing paths and should be cleaned up after each job reaches `completed` or `failed`.
+Persist both the Cloudinary `secure_url` and `public_id` for each stored asset so the app can display/download files and later delete or replace them. Railway filesystem paths are only temporary processing paths and should be cleaned up after each job reaches `completed`, `completed_with_warning`, or `failed`.
 
 Record deletion should delete related Cloudinary assets when safe: original audio, separated stem audio, MIDI file, MusicXML file, and TAB file. If Cloudinary deletion fails, keep the database deletion safe and log the cleanup error for retry or manual follow-up.
 
@@ -152,7 +156,7 @@ See [tech-stack.md](tech-stack.md) for detailed technology recommendations.
 - [queue-worker.md](queue-worker.md) - Celery/Redis queue behavior and concurrency policy
 - [deployment.md](deployment.md) - Railway, Cloudinary, Modal, and environment variable notes
 - [setup.md](setup.md) - local setup checklist
-- [roadmap.md](roadmap.md) - MVP-to-Songsterr-like phased roadmap
+- [roadmap.md](roadmap.md) - selected-stem MVP and future advanced workflow roadmap
 
 ## Implementation Plan
 

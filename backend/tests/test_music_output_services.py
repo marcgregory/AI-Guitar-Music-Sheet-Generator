@@ -14,6 +14,7 @@ from app.tasks import (
     copy_and_persist_instrument_tracks,
     estimate_stem_confidence,
     generate_single_track_transcription_output,
+    generate_tab_from_separated_stem,
     generate_track_transcription_outputs,
     process_audio_transcription,
     reprocess_instrument_track,
@@ -385,7 +386,7 @@ def test_generate_track_transcription_outputs_stores_guitar_bass_and_piano_data(
         session.add_all(tracks)
         session.commit()
 
-        def fake_detect_pitch(stem_path, output_dir):
+        def fake_detect_pitch(stem_path, output_dir, **_kwargs):
             pitch_by_name = {
                 "bass.wav": 28,
                 "piano.wav": 60,
@@ -797,18 +798,18 @@ def test_process_audio_transcription_persists_selected_other_stem_and_analyzes_a
         refreshed = session.query(models.Transcription).filter(
             models.Transcription.id == transcription_id
         ).first()
-        analyzed_path = pitch_mock.call_args.args[0]
-
-        assert result["status"] == "completed"
+        assert result["status"] == "stem_ready"
         assert [track.instrument_type for track in tracks] == ["guitar"]
-        assert all(track.processing_status == "completed" for track in tracks)
+        assert all(track.processing_status == "stem_ready" for track in tracks)
         assert all(track.stem_audio_path and Path(track.stem_audio_path).exists() for track in tracks)
-        assert analyzed_path.endswith("other.wav")
+        assert pitch_mock.call_count == 0
         assert refreshed.is_processed is True
-        assert refreshed.processing_status == "completed"
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.can_play_stem is True
+        assert refreshed.can_generate_score is False
         assert refreshed.audio_file_path is None
         assert refreshed.preprocessed_audio_file_path is None
-        assert refreshed.separated_audio_file_path == analyzed_path
+        assert refreshed.separated_audio_file_path == tracks[0].stem_audio_path
     finally:
         session.close()
 
@@ -867,19 +868,198 @@ def test_process_audio_transcription_no_notes_completes_with_warning_and_keeps_s
             models.InstrumentTrack.transcription_id == transcription_id
         ).one()
 
-        assert result["status"] == "completed"
-        assert result["warning"] == "No note events detected for this stem."
+        assert result["status"] == "stem_ready"
+        assert result["warning"] is None
         assert result["can_play_stem"] is True
         assert result["can_generate_score"] is False
         assert refreshed.is_processed is True
-        assert refreshed.processing_status == "completed_with_warning"
-        assert refreshed.warning_message == "No note events detected for this stem."
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.warning_message is None
         assert refreshed.can_play_stem is True
         assert refreshed.can_generate_score is False
         assert refreshed.processing_error is None
-        assert track.processing_status == "completed_with_warning"
+        assert track.processing_status == "stem_ready"
         assert track.stem_audio_path and Path(track.stem_audio_path).exists()
-        assert pitch_mock.call_count == 2
+        assert pitch_mock.call_count == 0
+    finally:
+        session.close()
+
+
+def test_generate_tab_from_separated_stem_runs_pitch_after_user_confirmation(tmp_path):
+    session = create_test_session()
+    try:
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"other")
+        transcription = models.Transcription(
+            title="Confirmed tab generation",
+            separated_audio_file_path=str(stem_path),
+            selected_stem="other",
+            user_id=1,
+            is_processed=True,
+            processing_status="stem_ready",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="guitar",
+            display_name="Guitar / Other",
+            stem_audio_path=str(stem_path),
+            processing_status="stem_ready",
+        )
+        session.add(track)
+        session.commit()
+
+        pitch_mock = Mock(return_value={
+            "notes": [
+                {"onset": 0.0, "offset": 0.5, "pitch": 64, "velocity": 90, "confidence": 0.8}
+            ]
+        })
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.settings") as settings_mock:
+                settings_mock.UPLOAD_DIR = str(tmp_path / "uploads")
+                settings_mock.NOTE_DETECTION_SENSITIVITY = "normal"
+                with patch("app.tasks.audio.normalize_audio_volume", return_value=str(stem_path)):
+                    with patch("app.tasks.audio.detect_pitch", pitch_mock):
+                        with patch("app.tasks.midi.save_midi_from_transcription", return_value=str(tmp_path / "out.mid")):
+                            with patch("app.tasks.midi.midi_to_musicxml", return_value="<score />"):
+                                with patch("app.tasks.tablature.save_tablature_from_transcription", return_value=str(tmp_path / "tab.json")):
+                                    with patch("app.tasks.tablature.notes_to_tablature", return_value={"tablature": []}):
+                                        with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
+                                            with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
+                                                with patch("app.tasks.audio.detect_rhythm", return_value={"total_duration": 1.0}):
+                                                    with patch("app.tasks.audio.detect_chords", return_value={"chords": []}):
+                                                        with patch("app.tasks.chord_chart.chord_data_to_chord_chart_json", return_value="[]"):
+                                                            result = generate_tab_from_separated_stem.run(transcription.id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription.id
+        ).first()
+        assert result["status"] == "completed"
+        assert pitch_mock.call_count == 1
+        assert refreshed.processing_status == "completed"
+        assert refreshed.can_play_stem is True
+        assert refreshed.can_generate_score is True
+        assert refreshed.tablature_data
+    finally:
+        session.close()
+
+
+def test_process_audio_transcription_selected_drums_uses_rhythm_not_pitch(tmp_path):
+    session = create_test_session()
+    try:
+        upload_path = tmp_path / "upload.wav"
+        preprocessed_path = tmp_path / "upload_preprocessed.wav"
+        drum_stem = tmp_path / "drums.wav"
+        upload_path.write_bytes(b"upload")
+        preprocessed_path.write_bytes(b"preprocessed")
+        drum_stem.write_bytes(b"drums")
+
+        transcription = models.Transcription(
+            title="Drum task flow",
+            audio_file_path=str(upload_path),
+            selected_stem="drums",
+            user_id=1,
+            is_processed=False,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        transcription_id = transcription.id
+        upload_dir = tmp_path / "uploads"
+        drum_result = {
+            "drum_hits": [{"onset": 0.0, "offset": 0.12, "confidence": 0.9}],
+            "rhythm_analysis": {"source": "drum_stem_onset_detection", "total_duration": 1.0},
+        }
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.settings") as settings_mock:
+                settings_mock.UPLOAD_DIR = str(upload_dir)
+                with patch("app.tasks.audio.preprocess_audio", return_value=str(preprocessed_path)):
+                    with patch("app.tasks.audio.separate_selected_stem", return_value=str(drum_stem)):
+                        with patch("app.tasks.audio.detect_pitch") as pitch_mock:
+                            with patch("app.tasks.audio.analyze_drum_rhythm", return_value=drum_result) as drum_mock:
+                                with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
+                                    with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
+                                        result = process_audio_transcription.run(transcription_id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription_id
+        ).one()
+
+        assert result["status"] == "stem_ready"
+        assert pitch_mock.call_count == 0
+        assert drum_mock.call_count == 0
+        assert track.instrument_type == "drums"
+        assert track.notes_json is None
+        assert refreshed.notes_data is None
+        assert refreshed.can_play_stem is True
+        assert refreshed.can_generate_score is False
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.midi_file_path is None
+        assert refreshed.tab_file_path is None
+    finally:
+        session.close()
+
+
+def test_process_audio_transcription_selected_vocals_is_playback_only(tmp_path):
+    session = create_test_session()
+    try:
+        upload_path = tmp_path / "upload.wav"
+        preprocessed_path = tmp_path / "upload_preprocessed.wav"
+        vocal_stem = tmp_path / "vocals.wav"
+        upload_path.write_bytes(b"upload")
+        preprocessed_path.write_bytes(b"preprocessed")
+        vocal_stem.write_bytes(b"vocals")
+
+        transcription = models.Transcription(
+            title="Vocal task flow",
+            audio_file_path=str(upload_path),
+            selected_stem="vocals",
+            user_id=1,
+            is_processed=False,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        transcription_id = transcription.id
+        upload_dir = tmp_path / "uploads"
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.settings") as settings_mock:
+                settings_mock.UPLOAD_DIR = str(upload_dir)
+                with patch("app.tasks.audio.preprocess_audio", return_value=str(preprocessed_path)):
+                    with patch("app.tasks.audio.separate_selected_stem", return_value=str(vocal_stem)):
+                        with patch("app.tasks.audio.detect_pitch") as pitch_mock:
+                            with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
+                                with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
+                                    result = process_audio_transcription.run(transcription_id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription_id
+        ).one()
+
+        assert result["status"] == "stem_ready"
+        assert pitch_mock.call_count == 0
+        assert track.instrument_type == "vocals"
+        assert track.tab_json is None
+        assert track.notation_json is None
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.warning_message is None
+        assert refreshed.can_play_stem is True
+        assert refreshed.can_generate_score is False
+        assert refreshed.midi_file_path is None
+        assert refreshed.tab_file_path is None
     finally:
         session.close()
 

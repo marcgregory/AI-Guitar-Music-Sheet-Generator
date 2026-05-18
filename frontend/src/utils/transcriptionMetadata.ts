@@ -137,7 +137,7 @@ export const buildTranscriptionMetadata = (
   const isImport = Boolean(importType);
   const selectedStem = transcription.selected_stem || "other";
   const trackCount = Number(transcription.track_count ?? tracks.length ?? 0);
-  const isMultiTrack = trackCount > 1 || Boolean(transcription.output_mode === "multi_track");
+  const isMultiTrack = Boolean(importType && (trackCount > 1 || transcription.output_mode === "multi_track"));
   const hasNotes = Boolean(transcription.can_generate_score || hasNoteEvents(transcription.notes_data));
   const hasTabs = Boolean(transcription.can_generate_tab ?? hasTabData(transcription.tablature_data));
   const hasRhythm = Boolean(transcription.can_generate_rhythm ?? hasDrumHits(transcription.notes_data));

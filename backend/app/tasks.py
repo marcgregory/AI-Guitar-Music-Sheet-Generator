@@ -12,6 +12,7 @@ import os
 import shutil
 import tempfile
 import logging
+import urllib.request
 from pathlib import Path
 from sqlalchemy.orm import Session
 from typing import Dict, Any
@@ -34,11 +35,12 @@ STAFF_NOTATION_INSTRUMENTS = ("piano",)
 DRUM_RHYTHM_INSTRUMENTS = ("drums",)
 NOTE_TRANSCRIPTION_INSTRUMENTS = TAB_TRANSCRIPTION_INSTRUMENTS + STAFF_NOTATION_INSTRUMENTS
 TRACK_REPROCESS_INSTRUMENTS = NOTE_TRANSCRIPTION_INSTRUMENTS + DRUM_RHYTHM_INSTRUMENTS
-PLAYBACK_ONLY_INSTRUMENTS = ("vocals", "drums")
+PLAYBACK_ONLY_INSTRUMENTS = ("vocals",)
 NO_NOTES_WARNING = "No note events detected for this stem."
 UNSUPPORTED_STEM_WARNING = (
     "Stem separated successfully, but notation generation is not supported for this stem in the MVP."
 )
+STEM_READY_MESSAGE = "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
 
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
 STEM_TO_ANALYSIS_INSTRUMENT = {
@@ -109,6 +111,12 @@ def stem_can_generate_score(selected_stem: str, analysis_instrument: str) -> boo
     return analysis_instrument in NOTE_TRANSCRIPTION_INSTRUMENTS
 
 
+def stem_available_exports(selected_stem: str, has_notes: bool) -> list[str]:
+    if selected_stem in {"other", "bass"} and has_notes:
+        return ["tab", "midi", "musicxml"]
+    return []
+
+
 def stem_playback_available(transcription) -> bool:
     if getattr(transcription, "separated_audio_url", None):
         return True
@@ -132,6 +140,36 @@ def set_transcription_warning(
     transcription.can_play_stem = True
 
 
+def set_transcription_stem_ready(transcription, track: models.InstrumentTrack | None = None) -> None:
+    transcription.processing_status = "stem_ready"
+    transcription.is_processed = True
+    transcription.processing_error = None
+    transcription.warning_message = None
+    transcription.can_play_stem = True
+    transcription.can_generate_score = False
+    transcription.queue_position = None
+    transcription.estimated_wait_time = None
+    transcription.celery_task_id = None
+    transcription.notes_data = None
+    transcription.chords_data = None
+    transcription.tablature_data = None
+    transcription.notation_data = None
+    transcription.chord_chart_data = None
+    transcription.midi_file_path = None
+    transcription.midi_file_url = None
+    transcription.midi_file_public_id = None
+    transcription.tab_file_path = None
+    transcription.tab_file_url = None
+    transcription.tab_file_public_id = None
+    if track:
+        track.processing_status = "stem_ready"
+        track.notes_json = None
+        track.chords_json = None
+        track.tab_json = None
+        track.notation_json = None
+        track.confidence_notes = None
+
+
 def pitch_debug_payload(stem_path: str, selected_stem: str, result: dict | None = None) -> dict:
     try:
         stats = audio.audio_debug_stats(stem_path)
@@ -147,6 +185,18 @@ def pitch_debug_payload(stem_path: str, selected_stem: str, result: dict | None 
         "confidence_stats": result.get("confidence_stats") or audio.note_confidence_stats(notes),
         "model_outputs": result.get("model_outputs"),
         "total_notes_detected": result.get("total_notes_detected", len(notes)),
+    }
+
+
+def _note_detection_attempt_summary(pitch_result: dict, attempt: int) -> dict:
+    model_outputs = pitch_result.get("model_outputs", {}) or {}
+    return {
+        "attempt": attempt,
+        "backend": model_outputs.get("backend"),
+        "sensitivity": model_outputs.get("sensitivity"),
+        "confidence_threshold": model_outputs.get("confidence_threshold"),
+        "total_notes_detected": pitch_result.get("total_notes_detected", len(pitch_result.get("notes", []))),
+        "confidence_stats": pitch_result.get("confidence_stats"),
     }
 
 
@@ -232,6 +282,10 @@ def generate_single_track_transcription_output(
                     normalize_error,
                 )
                 normalized_stem_path = track.stem_audio_path
+
+            audio_stats = audio.audio_debug_stats(normalized_stem_path)
+            note_detection_attempts = []
+
             logger.info(
                 "Starting note detection for transcription track %s with stats %s",
                 track.id,
@@ -242,6 +296,9 @@ def generate_single_track_transcription_output(
                 pitch_temp_dir,
                 sensitivity=detection_sensitivity,
             )
+            note_detection_attempts.append(_note_detection_attempt_summary(pitch_result, 1))
+            pitch_result["audio_debug_stats"] = audio_stats
+            pitch_result["note_detection_attempts"] = note_detection_attempts
             logger.info(
                 "Note detection output for transcription track %s: %s",
                 track.id,
@@ -252,11 +309,15 @@ def generate_single_track_transcription_output(
                     "Retrying note detection for transcription track %s with fallback sensitivity",
                     track.id,
                 )
-                pitch_result = audio.detect_pitch(
+                fallback_result = audio.detect_pitch(
                     normalized_stem_path,
                     pitch_temp_dir,
                     sensitivity="high",
                 )
+                note_detection_attempts.append(_note_detection_attempt_summary(fallback_result, 2))
+                fallback_result["audio_debug_stats"] = audio_stats
+                fallback_result["note_detection_attempts"] = note_detection_attempts
+                pitch_result = fallback_result
                 logger.info(
                     "Fallback note detection output for transcription track %s: %s",
                     track.id,
@@ -336,6 +397,263 @@ def generate_track_transcription_outputs(
         generate_single_track_transcription_output(track, db_session)
 
 
+def sync_selected_track_to_transcription(
+    transcription: models.Transcription,
+    track: models.InstrumentTrack,
+    db_session: Session,
+) -> None:
+    selected_stem = (transcription.selected_stem or "other").lower()
+    analysis_instrument = STEM_TO_ANALYSIS_INSTRUMENT.get(selected_stem)
+    if analysis_instrument != track.instrument_type:
+        return
+
+    transcription.notes_data = track.notes_json
+    transcription.chords_data = track.chords_json
+    transcription.tablature_data = track.tab_json
+    transcription.notation_data = track.notation_json
+    transcription.processing_error = None
+    transcription.can_play_stem = stem_playback_available(transcription)
+    transcription.can_generate_score = bool(
+        stem_can_generate_score(selected_stem, track.instrument_type)
+        and has_note_events(track.notes_json)
+    )
+
+    if track.processing_status == "completed_with_warning":
+        transcription.warning_message = track.confidence_notes or NO_NOTES_WARNING
+    elif track.instrument_type == "vocals":
+        transcription.warning_message = UNSUPPORTED_STEM_WARNING
+    else:
+        transcription.warning_message = None
+
+    if not transcription.can_generate_score:
+        transcription.midi_file_path = None
+        transcription.midi_file_url = None
+        transcription.midi_file_public_id = None
+        transcription.tab_file_path = None
+        transcription.tab_file_url = None
+        transcription.tab_file_public_id = None
+
+    transcription.is_processed = True
+    transcription.processing_status = (
+        "completed_with_warning"
+        if transcription.warning_message and not transcription.can_generate_score
+        else "completed"
+    )
+    db_session.add(transcription)
+    db_session.commit()
+
+
+def ensure_local_separated_stem(
+    transcription: models.Transcription,
+    selected_stem: str,
+) -> str:
+    if transcription.separated_audio_file_path:
+        local_path = Path(storage.normalize_local_path(transcription.separated_audio_file_path))
+        if local_path.exists() and local_path.is_file():
+            return storage.normalize_local_path(local_path)
+
+    if not transcription.separated_audio_url:
+        raise FileNotFoundError("Separated stem is missing. Run stem separation before generating tabs.")
+
+    uploads_dir = Path(storage.normalize_local_path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"))
+    stem_upload_dir = uploads_dir / "separated" / f"transcription_{transcription.id}"
+    stem_upload_dir.mkdir(parents=True, exist_ok=True)
+    destination_path = stem_upload_dir / f"{selected_stem}.wav"
+    urllib.request.urlretrieve(transcription.separated_audio_url, destination_path)
+    transcription.separated_audio_file_path = storage.normalize_local_path(destination_path)
+    return transcription.separated_audio_file_path
+
+
+def generate_tab_outputs_for_transcription(
+    transcription: models.Transcription,
+    db_session: Session,
+    *,
+    detection_sensitivity: str = "normal",
+) -> None:
+    selected_stem = (transcription.selected_stem or "other").strip().lower()
+    if selected_stem not in VALID_SELECTED_STEMS:
+        raise ValueError(f"selected_stem must be one of: {', '.join(sorted(VALID_SELECTED_STEMS))}")
+    if selected_stem == "vocals":
+        raise ValueError("Vocal stems are playback-only in this MVP.")
+
+    analysis_instrument = STEM_TO_ANALYSIS_INSTRUMENT[selected_stem]
+    separated_path = ensure_local_separated_stem(transcription, selected_stem)
+    track = db_session.query(models.InstrumentTrack).filter(
+        models.InstrumentTrack.transcription_id == transcription.id,
+        models.InstrumentTrack.instrument_type == analysis_instrument,
+    ).first()
+    if not track:
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type=analysis_instrument,
+            display_name=INSTRUMENT_DISPLAY_NAMES.get(selected_stem, selected_stem.title()),
+        )
+    track.stem_audio_path = separated_path
+    db_session.add(track)
+    db_session.commit()
+
+    generate_single_track_transcription_output(
+        track,
+        db_session,
+        clear_existing=True,
+        detection_sensitivity=detection_sensitivity,
+        selected_stem=selected_stem,
+    )
+    db_session.refresh(track)
+
+    transcription.notes_data = track.notes_json
+    transcription.tablature_data = track.tab_json
+    transcription.notation_data = track.notation_json
+    transcription.chords_data = track.chords_json
+    transcription.can_play_stem = stem_playback_available(transcription)
+
+    if track.processing_status == "failed":
+        raise RuntimeError(track.confidence_notes or "Selected stem analysis failed.")
+
+    if track.processing_status == "completed_with_warning":
+        set_transcription_warning(
+            transcription,
+            track.confidence_notes or (
+                "No drum hits detected for this stem." if selected_stem == "drums" else NO_NOTES_WARNING
+            ),
+            can_generate_score=False,
+        )
+
+    if selected_stem in {"other", "bass"} and has_note_events(transcription.notes_data):
+        transcription.can_generate_score = True
+        try:
+            midi_file_path = midi.save_midi_from_transcription(
+                transcription.notes_data,
+                transcription.id,
+                settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
+            )
+            transcription.midi_file_path = midi_file_path
+            midi_upload = upload_transcription_artifact(
+                transcription,
+                midi_file_path,
+                folder_name="exports",
+            )
+            if midi_upload:
+                transcription.midi_file_url = midi_upload["secure_url"]
+                transcription.midi_file_public_id = midi_upload["public_id"]
+            if not transcription.notation_data:
+                transcription.notation_data = midi.midi_to_musicxml(midi_file_path)
+        except Exception as midi_e:
+            print(f"Failed to generate MIDI for transcription {transcription.id}: {str(midi_e)}")
+
+        try:
+            tablature.save_tablature_from_transcription(
+                transcription.notes_data,
+                transcription.id,
+                settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
+            )
+            transcription.tablature_data = json.dumps(
+                tablature.notes_to_tablature(
+                    transcription.notes_data,
+                    instrument_type=analysis_instrument,
+                )
+            )
+            transcription.tab_file_path = save_ascii_tab_artifact(
+                transcription,
+                transcription.tablature_data,
+                settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads",
+            )
+            tab_upload = upload_transcription_artifact(
+                transcription,
+                transcription.tab_file_path,
+                folder_name="exports",
+            )
+            if tab_upload:
+                transcription.tab_file_url = tab_upload["secure_url"]
+                transcription.tab_file_public_id = tab_upload["public_id"]
+        except Exception as tab_e:
+            print(f"Failed to generate tablature for transcription {transcription.id}: {str(tab_e)}")
+    elif selected_stem == "drums" and has_drum_hits(transcription.notes_data):
+        transcription.can_generate_score = False
+        transcription.warning_message = None
+    else:
+        transcription.can_generate_score = False
+        transcription.midi_file_path = None
+        transcription.midi_file_url = None
+        transcription.midi_file_public_id = None
+        transcription.tab_file_path = None
+        transcription.tab_file_url = None
+        transcription.tab_file_public_id = None
+
+    try:
+        beat_result = audio.detect_beat_and_tempo(separated_path)
+        transcription.detected_tempo = int(round(beat_result["tempo"]))
+        transcription.tempo_confidence = beat_result.get("tempo_confidence", 0)
+    except Exception:
+        pass
+
+    try:
+        key_result = audio.detect_key(separated_path)
+        transcription.detected_key = key_result["key"]
+        transcription.key_confidence = key_result.get("confidence", 0)
+    except Exception:
+        pass
+
+    if selected_stem != "drums":
+        try:
+            rhythm_result = audio.detect_rhythm(separated_path)
+            existing_notes = json.loads(transcription.notes_data) if transcription.notes_data else {}
+            pitch_info = []
+            if isinstance(existing_notes, dict):
+                pitch_info = existing_notes.get("notes", [])
+            elif isinstance(existing_notes, list):
+                pitch_info = existing_notes
+            enhanced_notes_data = {
+                "pitch_info": pitch_info,
+                "rhythm_analysis": rhythm_result,
+                "analysis_timestamp": datetime.now().isoformat(),
+            }
+            if isinstance(existing_notes, dict) and existing_notes.get("error"):
+                enhanced_notes_data["error"] = existing_notes["error"]
+            transcription.notes_data = json.dumps(enhanced_notes_data)
+            track.notes_json = transcription.notes_data
+            if rhythm_result.get("total_duration") is not None:
+                transcription.duration = int(round(rhythm_result["total_duration"]))
+        except Exception:
+            pass
+
+    if selected_stem in {"other", "bass"}:
+        try:
+            chord_result = audio.detect_chords(separated_path)
+            transcription.chords_data = json.dumps(chord_result)
+            track.chords_json = transcription.chords_data
+            try:
+                transcription.chord_chart_data = chord_chart.chord_data_to_chord_chart_json(
+                    transcription.chords_data
+                )
+            except Exception as chart_e:
+                print(f"Failed to generate chord charts for transcription {transcription.id}: {str(chart_e)}")
+        except Exception:
+            transcription.chords_data = json.dumps({})
+    else:
+        transcription.chords_data = json.dumps({})
+        transcription.chord_chart_data = None
+
+    transcription.is_processed = True
+    transcription.processing_status = (
+        "completed_with_warning"
+        if transcription.warning_message and not transcription.can_generate_score
+        else "completed"
+    )
+    transcription.processing_error = None
+    transcription.queue_position = None
+    transcription.estimated_wait_time = None
+    transcription.celery_task_id = None
+    transcription.can_play_stem = stem_playback_available(transcription)
+    transcription.can_generate_score = bool(
+        stem_can_generate_score(selected_stem, analysis_instrument)
+        and has_note_events(transcription.notes_data)
+    )
+    db_session.add(track)
+    db_session.add(transcription)
+    db_session.commit()
+
+
 def get_db_session() -> Session:
     """Create a new database session for Celery tasks."""
     db_session = db.SessionLocal()
@@ -351,6 +669,71 @@ def update_task_state(task, state: str, meta: Dict[str, Any]) -> None:
         task.update_state(state=state, meta=meta)
     except Exception as e:
         print(f"Skipping task state update ({state}/{meta.get('step')}): {str(e)}")
+
+
+def task_request_id(task) -> str:
+    request = getattr(task, "request", None)
+    task_id = getattr(request, "id", None)
+    return str(task_id) if task_id else "local"
+
+
+def transcription_temp_dir(transcription_id: int, task_id: str | None = None) -> Path:
+    safe_task_id = re_safe_task_id(task_id or "local")
+    root = Path(tempfile.gettempdir()) / "transcriptions" / str(transcription_id)
+    path = root / safe_task_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def re_safe_task_id(task_id: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in task_id)
+
+
+def file_debug_snapshot(path_value: str | None) -> dict:
+    if not path_value:
+        return {"path": None, "exists": False}
+    path = Path(storage.normalize_local_path(path_value))
+    snapshot = {"path": storage.normalize_local_path(path), "exists": path.exists()}
+    if path.exists():
+        try:
+            stat = path.stat()
+            snapshot.update({
+                "is_file": path.is_file(),
+                "size": stat.st_size,
+                "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+        except OSError as exc:
+            snapshot["stat_error"] = str(exc)
+    return snapshot
+
+
+def directory_debug_listing(path_value: str | Path | None, *, limit: int = 200) -> list[dict]:
+    if not path_value:
+        return []
+    root = Path(storage.normalize_local_path(path_value))
+    if not root.exists():
+        return [{"path": storage.normalize_local_path(root), "exists": False}]
+
+    entries = []
+    for path in list(root.rglob("*"))[:limit]:
+        item = {"path": storage.normalize_local_path(path), "is_file": path.is_file()}
+        if path.is_file():
+            try:
+                item["size"] = path.stat().st_size
+            except OSError as exc:
+                item["stat_error"] = str(exc)
+        entries.append(item)
+    return entries
+
+
+def log_file_lifecycle(transcription_id: int, task_id: str, event: str, **details) -> None:
+    logger.info(
+        "Transcription file lifecycle: transcription_id=%s task_id=%s event=%s details=%s",
+        transcription_id,
+        task_id,
+        event,
+        details,
+    )
 
 
 def upload_transcription_artifact(
@@ -447,6 +830,18 @@ def generate_derived_outputs(transcription, db_session: Session) -> None:
 
 def cleanup_transient_audio_files(transcription, db_session: Session) -> None:
     """Delete source scratch files while retaining separated stems for playback/retry."""
+    task_id = getattr(transcription, "celery_task_id", None) or "local"
+    if (
+        transcription.processing_status
+        and transcription.processing_status not in {"stem_ready", "completed", "completed_with_warning"}
+    ):
+        logger.info(
+            "Skipping transient cleanup for transcription %s because status is %s",
+            transcription.id,
+            transcription.processing_status,
+        )
+        return
+
     path_fields = [
         "audio_file_path",
         "preprocessed_audio_file_path",
@@ -463,13 +858,29 @@ def cleanup_transient_audio_files(transcription, db_session: Session) -> None:
             continue
 
         try:
-            path = Path(path_value)
+            path = Path(storage.normalize_local_path(path_value))
+            log_file_lifecycle(
+                transcription.id,
+                task_id,
+                "cleanup_before_delete",
+                field=field_name,
+                file=file_debug_snapshot(str(path)),
+            )
             if path.exists() and path.is_file():
                 path.unlink()
+                log_file_lifecycle(
+                    transcription.id,
+                    task_id,
+                    "cleanup_deleted",
+                    field=field_name,
+                    path=storage.normalize_local_path(path),
+                )
         except OSError as cleanup_error:
-            print(
-                f"Failed to delete {field_name} for transcription "
-                f"{transcription.id}: {cleanup_error}"
+            logger.warning(
+                "Failed to delete %s for transcription %s: %s",
+                field_name,
+                transcription.id,
+                cleanup_error,
             )
             continue
 
@@ -554,6 +965,11 @@ def persist_selected_stem_track(
     """
     source_path = Path(storage.normalize_local_path(source_path_value))
     if not source_path.exists() or not source_path.is_file():
+        logger.error(
+            "Demucs selected stem disappeared before persistence for transcription %s: %s",
+            transcription.id,
+            file_debug_snapshot(source_path_value),
+        )
         raise FileNotFoundError(f"Selected stem audio file not found: {source_path_value}")
 
     uploads_dir = Path(storage.normalize_local_path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"))
@@ -561,7 +977,23 @@ def persist_selected_stem_track(
     stem_upload_dir.mkdir(parents=True, exist_ok=True)
 
     destination_path = stem_upload_dir / f"{selected_stem}{source_path.suffix or '.wav'}"
+    logger.info(
+        "Persisting selected stem for transcription %s stem=%s source=%s destination=%s",
+        transcription.id,
+        selected_stem,
+        file_debug_snapshot(str(source_path)),
+        storage.normalize_local_path(destination_path),
+    )
     shutil.copy2(source_path, destination_path)
+    if not destination_path.exists() or not destination_path.is_file():
+        logger.error(
+            "Selected stem copy disappeared before upload for transcription %s: %s",
+            transcription.id,
+            file_debug_snapshot(str(destination_path)),
+        )
+        raise FileNotFoundError(
+            f"Selected stem copy disappeared before upload: {destination_path}"
+        )
 
     instrument_type = STEM_TO_ANALYSIS_INSTRUMENT[selected_stem]
     track = db_session.query(models.InstrumentTrack).filter(
@@ -582,6 +1014,12 @@ def persist_selected_stem_track(
 
     transcription.separated_audio_file_path = storage.normalize_local_path(destination_path)
     try:
+        logger.info(
+            "Uploading selected stem for transcription %s stem=%s file=%s",
+            transcription.id,
+            selected_stem,
+            file_debug_snapshot(str(destination_path)),
+        )
         stem_upload = upload_transcription_artifact(
             transcription,
             str(destination_path),
@@ -590,6 +1028,12 @@ def persist_selected_stem_track(
         if stem_upload:
             transcription.separated_audio_url = stem_upload["secure_url"]
             transcription.separated_audio_public_id = stem_upload["public_id"]
+        logger.info(
+            "Selected stem upload complete for transcription %s stem=%s uploaded=%s",
+            transcription.id,
+            selected_stem,
+            bool(stem_upload),
+        )
     except Exception as exc:
         logger.warning(
             "Failed to upload selected stem for transcription %s: %s",
@@ -656,6 +1100,8 @@ def process_audio_transcription(
         Dict with processing results and status
     """
     db_session = None
+    task_id = task_request_id(self)
+    job_temp_dir = transcription_temp_dir(transcription_id, task_id)
     try:
         # Update task state to show progress
         update_task_state(self, state="PROGRESS", meta={"step": "loading_transcription"})
@@ -670,6 +1116,17 @@ def process_audio_transcription(
 
         if not transcription:
             raise ValueError(f"Transcription with ID {transcription_id} not found")
+
+        log_file_lifecycle(
+            transcription_id,
+            task_id,
+            "task_loaded",
+            temp_dir=storage.normalize_local_path(job_temp_dir),
+            audio_file=file_debug_snapshot(transcription.audio_file_path),
+            preprocessed_file=file_debug_snapshot(transcription.preprocessed_audio_file_path),
+            original_audio_url=transcription.original_audio_url,
+            separated_audio_url=transcription.separated_audio_url,
+        )
 
         if transcription.is_deleted:
             return {
@@ -722,6 +1179,13 @@ def process_audio_transcription(
         # the preprocessed WAV.
         audio_file_path = transcription.audio_file_path
         preprocessed_path = transcription.preprocessed_audio_file_path
+        log_file_lifecycle(
+            transcription_id,
+            task_id,
+            "before_preprocess",
+            audio_file=file_debug_snapshot(audio_file_path),
+            preprocessed_file=file_debug_snapshot(preprocessed_path),
+        )
         if (
             (not preprocessed_path or not os.path.exists(preprocessed_path)) and
             (not audio_file_path or not os.path.exists(audio_file_path)) and
@@ -743,13 +1207,29 @@ def process_audio_transcription(
             preprocessed_path = None
         elif not preprocessed_path or not os.path.exists(preprocessed_path):
             if not audio_file_path or not os.path.exists(audio_file_path):
+                logger.error(
+                    "Downloaded/source audio disappeared before preprocessing for transcription %s task %s: %s",
+                    transcription_id,
+                    task_id,
+                    file_debug_snapshot(audio_file_path),
+                )
                 raise ValueError(f"Audio file not found: {audio_file_path}")
             # Preprocess the audio
-            preprocessed_path = audio.preprocess_audio(audio_file_path)
+            preprocessed_output_path = job_temp_dir / "preprocessed.wav"
+            preprocessed_path = audio.preprocess_audio(
+                audio_file_path,
+                storage.normalize_local_path(preprocessed_output_path),
+            )
             # Update transcription record
             transcription.preprocessed_audio_file_path = preprocessed_path
             db_session.add(transcription)
             db_session.commit()
+            log_file_lifecycle(
+                transcription_id,
+                task_id,
+                "after_preprocess",
+                preprocessed_file=file_debug_snapshot(preprocessed_path),
+            )
 
         if preprocessed_path:
             detected_duration = ensure_duration_within_mvp_limit(preprocessed_path)
@@ -770,12 +1250,38 @@ def process_audio_transcription(
             db_session.add(transcription)
             db_session.commit()
         else:
-            sep_temp_dir = tempfile.mkdtemp()
+            sep_temp_dir = job_temp_dir / "demucs"
+            sep_temp_dir.mkdir(parents=True, exist_ok=True)
             try:
+                if not preprocessed_path or not Path(storage.normalize_local_path(preprocessed_path)).exists():
+                    logger.error(
+                        "Preprocessed audio disappeared before Demucs for transcription %s task %s: %s",
+                        transcription_id,
+                        task_id,
+                        file_debug_snapshot(preprocessed_path),
+                    )
+                    raise FileNotFoundError(
+                        f"Preprocessed audio file disappeared before Demucs: {preprocessed_path}"
+                    )
+                log_file_lifecycle(
+                    transcription_id,
+                    task_id,
+                    "before_demucs",
+                    demucs_output_dir=storage.normalize_local_path(sep_temp_dir),
+                    preprocessed_file=file_debug_snapshot(preprocessed_path),
+                )
                 selected_stem_path = audio.separate_selected_stem(
                     preprocessed_path,
                     selected_stem,
-                    sep_temp_dir,
+                    storage.normalize_local_path(sep_temp_dir),
+                )
+                log_file_lifecycle(
+                    transcription_id,
+                    task_id,
+                    "after_demucs",
+                    selected_stem=selected_stem,
+                    selected_stem_file=file_debug_snapshot(selected_stem_path),
+                    demucs_listing=directory_debug_listing(sep_temp_dir),
                 )
                 selected_track = persist_selected_stem_track(
                     transcription,
@@ -787,21 +1293,66 @@ def process_audio_transcription(
                 transcription.can_play_stem = True
                 db_session.add(transcription)
                 db_session.commit()
+                log_file_lifecycle(
+                    transcription_id,
+                    task_id,
+                    "after_selected_stem_persist",
+                    separated_file=file_debug_snapshot(separated_path),
+                    separated_audio_url=transcription.separated_audio_url,
+                    db_committed=True,
+                )
             except Exception as e:
                 update_task_state(self, state="PROGRESS", meta={"step": "source_separation_failed"})
                 logger.exception(
-                    "Selected-stem separation failed for transcription %s using stem %s",
+                    "Selected-stem separation failed for transcription %s using stem %s task_id=%s temp_dir=%s demucs_listing=%s",
                     transcription_id,
                     selected_stem,
+                    task_id,
+                    storage.normalize_local_path(sep_temp_dir),
+                    directory_debug_listing(sep_temp_dir),
                 )
                 raise RuntimeError(
                     "Could not isolate the selected stem. "
                     "Try a shorter or clearer song section, or choose a different stem."
                 ) from e
             finally:
+                log_file_lifecycle(
+                    transcription_id,
+                    task_id,
+                    "before_demucs_cleanup",
+                    demucs_output_dir=storage.normalize_local_path(sep_temp_dir),
+                    demucs_listing=directory_debug_listing(sep_temp_dir),
+                    separated_file=file_debug_snapshot(
+                        locals().get("separated_path")
+                    ),
+                )
                 shutil.rmtree(sep_temp_dir, ignore_errors=True)
+                log_file_lifecycle(
+                    transcription_id,
+                    task_id,
+                    "after_demucs_cleanup",
+                    demucs_output_dir=storage.normalize_local_path(sep_temp_dir),
+                    exists=sep_temp_dir.exists(),
+                )
         db_session.refresh(transcription)
         ensure_transcription_not_deleted(transcription)
+
+        set_transcription_stem_ready(transcription, selected_track)
+        db_session.add(selected_track)
+        db_session.add(transcription)
+        db_session.commit()
+        db_session.refresh(transcription)
+        cleanup_transient_audio_files(transcription, db_session)
+
+        return {
+            "status": "stem_ready",
+            "warning": None,
+            "transcription_id": transcription_id,
+            "selected_stem": selected_stem,
+            "can_play_stem": transcription.can_play_stem,
+            "can_generate_score": False,
+            "message": STEM_READY_MESSAGE,
+        }
 
         # Update task state
         update_task_state(self, state="PROGRESS", meta={"step": "pitch_detection"})
@@ -944,79 +1495,87 @@ def process_audio_transcription(
         # Update task state
         update_task_state(self, state="PROGRESS", meta={"step": "rhythm_analysis"})
 
-        # Detect rhythm information (onsets, durations) from the separated audio
-        try:
-            rhythm_result = audio.detect_rhythm(separated_path)
-            # Store rhythm data in the transcription by enhancing notes_data with rhythm information
-            # or by storing it in a structured way that doesn't conflict with existing usage
+        # Detect rhythm information for melodic stems. Drum rhythm data is
+        # already the primary selected-stem result and must not be wrapped away.
+        if selected_stem == "drums":
+            update_task_state(self, state="PROGRESS", meta={"step": "drum_rhythm_preserved"})
+        else:
+            try:
+                rhythm_result = audio.detect_rhythm(separated_path)
+                existing_notes = {}
+                if transcription.notes_data:
+                    try:
+                        existing_notes = json.loads(transcription.notes_data)
+                    except json.JSONDecodeError:
+                        existing_notes = {}
 
-            # Get existing notes data if any
-            existing_notes = {}
-            if transcription.notes_data:
-                try:
-                    existing_notes = json.loads(transcription.notes_data)
-                except json.JSONDecodeError:
-                    existing_notes = {}
+                enhanced_notes_data = {
+                    "pitch_info": existing_notes.get(
+                        "notes",
+                        existing_notes
+                        if (
+                            isinstance(existing_notes, list)
+                            and len(existing_notes) > 0
+                            and isinstance(existing_notes[0], dict)
+                            and "pitch" in existing_notes[0]
+                        )
+                        else [],
+                    ),
+                    "rhythm_analysis": rhythm_result,
+                    "analysis_timestamp": datetime.now().isoformat(),
+                }
+                if isinstance(existing_notes, dict) and existing_notes.get("error"):
+                    enhanced_notes_data["error"] = existing_notes["error"]
 
-            # Create enhanced notes data that includes both pitch and rhythm information
-            enhanced_notes_data = {
-                "pitch_info": existing_notes.get("notes", existing_notes if isinstance(existing_notes, list) and len(existing_notes) > 0 and isinstance(existing_notes[0], dict) and "pitch" in existing_notes[0] else []),
-                "rhythm_analysis": rhythm_result,
-                "analysis_timestamp": datetime.now().isoformat() if 'datetime' in globals() else None
-            }
-            if isinstance(existing_notes, dict) and existing_notes.get("error"):
-                enhanced_notes_data["error"] = existing_notes["error"]
+                if isinstance(existing_notes, dict) and isinstance(existing_notes.get("notes"), list):
+                    enhanced_notes_data["pitch_info"] = existing_notes["notes"]
+                elif (
+                    isinstance(existing_notes, list)
+                    and len(existing_notes) > 0
+                    and isinstance(existing_notes[0], dict)
+                    and "pitch" in existing_notes[0]
+                ):
+                    enhanced_notes_data["pitch_info"] = existing_notes
 
-            # If existing notes data had a different structure, preserve it
-            if "notes" in existing_notes and isinstance(existing_notes["notes"], list):
-                enhanced_notes_data["pitch_info"] = existing_notes["notes"]
-            elif isinstance(existing_notes, list) and len(existing_notes) > 0 and isinstance(existing_notes[0], dict) and "pitch" in existing_notes[0]:
-                enhanced_notes_data["pitch_info"] = existing_notes
+                transcription.notes_data = json.dumps(enhanced_notes_data)
+                if rhythm_result.get("total_duration") is not None:
+                    transcription.duration = int(round(rhythm_result["total_duration"]))
 
-            # Update transcription record with enhanced notes data
-            transcription.notes_data = json.dumps(enhanced_notes_data)
-
-            # Store audio duration
-            if rhythm_result.get("total_duration") is not None:
-                transcription.duration = int(round(rhythm_result["total_duration"]))
-
-            db_session.add(transcription)
-            db_session.commit()
-        except Exception as e:
-            # If rhythm detection fails, we'll continue with existing notes data
-            update_task_state(self, state="PROGRESS", meta={"step": "rhythm_analysis_failed"})
-            # Continue processing without updating notes data for rhythm
+                db_session.add(transcription)
+                db_session.commit()
+            except Exception:
+                update_task_state(self, state="PROGRESS", meta={"step": "rhythm_analysis_failed"})
 
         # Update task state
         update_task_state(self, state="PROGRESS", meta={"step": "chord_recognition"})
 
-        # Detect chords from the separated audio
-        try:
-            chord_result = audio.detect_chords(separated_path)
-            # Update transcription record with chord data
-            transcription.chords_data = json.dumps(chord_result)
+        # Detect chords only for melodic tab-capable selected stems.
+        if selected_stem in {"drums", "vocals"}:
+            transcription.chords_data = json.dumps({})
+            transcription.chord_chart_data = None
             db_session.add(transcription)
             db_session.commit()
-
-            # Generate chord charts from the detected chords
+        else:
             try:
-                chord_chart_json = chord_chart.chord_data_to_chord_chart_json(
-                    transcription.chords_data
-                )
-                transcription.chord_chart_data = chord_chart_json
+                chord_result = audio.detect_chords(separated_path)
+                transcription.chords_data = json.dumps(chord_result)
                 db_session.add(transcription)
                 db_session.commit()
-            except Exception as chart_e:
-                # Log the error but don't fail the chord detection step
-                print(f"Failed to generate chord charts for transcription {transcription.id}: {str(chart_e)}")
-                # Leave chord_chart_data as None
-        except Exception as e:
-            # If chord detection fails, we'll continue without setting chord data
-            update_task_state(self, state="PROGRESS", meta={"step": "chord_recognition_failed"})
-            # Set empty chords data to avoid None
-            transcription.chords_data = json.dumps({})
-            db_session.add(transcription)
-            db_session.commit()
+
+                try:
+                    chord_chart_json = chord_chart.chord_data_to_chord_chart_json(
+                        transcription.chords_data
+                    )
+                    transcription.chord_chart_data = chord_chart_json
+                    db_session.add(transcription)
+                    db_session.commit()
+                except Exception as chart_e:
+                    print(f"Failed to generate chord charts for transcription {transcription.id}: {str(chart_e)}")
+            except Exception:
+                update_task_state(self, state="PROGRESS", meta={"step": "chord_recognition_failed"})
+                transcription.chords_data = json.dumps({})
+                db_session.add(transcription)
+                db_session.commit()
 
         # Update task state
         update_task_state(self, state="PROGRESS", meta={"step": "completing_processing"})
@@ -1101,6 +1660,98 @@ def process_audio_transcription(
 
 
 @celery_app.task(bind=True)
+def generate_tab_from_separated_stem(
+    self,
+    transcription_id: int,
+    detection_sensitivity: str | None = None,
+):
+    """Generate notation outputs from an already separated selected stem."""
+    db_session = None
+    try:
+        update_task_state(self, state="PROGRESS", meta={"step": "loading_stem"})
+        db_session = get_db_session()
+        transcription = db_session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        if not transcription:
+            raise ValueError(f"Transcription with ID {transcription_id} not found")
+        if transcription.is_deleted:
+            return {
+                "status": transcription.processing_status or "cancelled",
+                "transcription_id": transcription_id,
+                "message": "Transcription was deleted before tab generation started",
+            }
+
+        selected_stem = (transcription.selected_stem or "other").strip().lower()
+        if selected_stem == "vocals":
+            raise ValueError("Vocal stems are playback-only in this MVP.")
+        if not stem_playback_available(transcription):
+            raise ValueError("Separated stem is missing. Run stem separation before generating tabs.")
+
+        transcription.processing_status = "processing"
+        transcription.processing_error = None
+        transcription.warning_message = None
+        transcription.can_generate_score = False
+        transcription.can_play_stem = True
+        transcription.queue_position = 0
+        transcription.estimated_wait_time = 0
+        db_session.add(transcription)
+        db_session.commit()
+
+        update_task_state(self, state="PROGRESS", meta={"step": "tab_generation"})
+        generate_tab_outputs_for_transcription(
+            transcription,
+            db_session,
+            detection_sensitivity=detection_sensitivity or getattr(
+                settings,
+                "NOTE_DETECTION_SENSITIVITY",
+                "normal",
+            ),
+        )
+        db_session.refresh(transcription)
+        cleanup_transient_audio_files(transcription, db_session)
+
+        return {
+            "status": transcription.processing_status,
+            "warning": transcription.warning_message,
+            "transcription_id": transcription_id,
+            "selected_stem": selected_stem,
+            "can_play_stem": transcription.can_play_stem,
+            "can_generate_score": transcription.can_generate_score,
+            "message": "Tab generation completed.",
+        }
+    except Exception as e:
+        if db_session:
+            try:
+                transcription = db_session.query(models.Transcription).filter(
+                    models.Transcription.id == transcription_id
+                ).first()
+                if transcription:
+                    if transcription.is_deleted:
+                        transcription.processing_status = "cancelled"
+                    else:
+                        transcription.processing_status = "failed"
+                        transcription.processing_error = str(e)
+                        transcription.is_processed = False
+                    transcription.queue_position = None
+                    transcription.estimated_wait_time = None
+                    db_session.add(transcription)
+                    db_session.commit()
+            except Exception:
+                pass
+
+        update_task_state(
+            self,
+            state="FAILURE",
+            meta={"exc_type": type(e).__name__, "exc_message": str(e)},
+        )
+        raise
+    finally:
+        if db_session:
+            db_session.close()
+
+
+@celery_app.task(bind=True)
 def reprocess_instrument_track(self, track_id: int):
     """Regenerate analysis output for one retained guitar or bass stem."""
     db_session = None
@@ -1121,6 +1772,11 @@ def reprocess_instrument_track(self, track_id: int):
             clear_existing=True,
         )
         db_session.refresh(track)
+        transcription = db_session.query(models.Transcription).filter(
+            models.Transcription.id == track.transcription_id
+        ).first()
+        if transcription:
+            sync_selected_track_to_transcription(transcription, track, db_session)
 
         return {
             "status": track.processing_status,
