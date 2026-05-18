@@ -20,10 +20,7 @@ from datetime import datetime, timedelta, timezone
 from .... import db, core, models
 from ....core.security import get_current_user
 from .. import schemas
-from ....services import audio
-from ....services import midi
 from ....services import storage
-from ....services import tablature as tablature_service
 from ....services.tablature import tablature_to_ascii_tab
 from ....celery import celery_app
 
@@ -74,67 +71,27 @@ def _run_transcription_locally(
     detection_sensitivity: str | None = None,
     selected_stem_override: str | None = None,
 ):
-    """Run transcription without a Celery broker for local development."""
-    from ....tasks import process_audio_transcription
-
-    original_update_state = process_audio_transcription.update_state
-    process_audio_transcription.update_state = lambda *args, **kwargs: None
-    try:
-        process_audio_transcription.run(
-            transcription_id,
-            detection_sensitivity,
-            selected_stem_override,
-        )
-    except Exception as e:
-        logger.error(
-            "Local transcription task failed for transcription %s: %s",
-            transcription_id,
-            e,
-        )
-    finally:
-        process_audio_transcription.update_state = original_update_state
+    """Deprecated: heavy transcription must run on Modal."""
+    logger.error(
+        "Refusing local heavy transcription for %s; dispatch Modal instead.",
+        transcription_id,
+    )
 
 
 def _run_instrument_track_reprocess_locally(track_id: int):
-    """Run one track reprocess without a Celery broker for local development."""
-    from ....tasks import reprocess_instrument_track
-
-    original_update_state = reprocess_instrument_track.update_state
-    reprocess_instrument_track.update_state = lambda *args, **kwargs: None
-    try:
-        reprocess_instrument_track.run(track_id)
-    except Exception as e:
-        logger.error(
-            "Local instrument track reprocess failed for track %s: %s",
-            track_id,
-            e,
-        )
-    finally:
-        reprocess_instrument_track.update_state = original_update_state
+    """Deprecated: heavy track reprocessing must run on Modal."""
+    logger.error("Refusing local heavy track reprocess for %s; dispatch Modal instead.", track_id)
 
 
 def _run_tab_generation_locally(
     transcription_id: int,
     detection_sensitivity: str | None = None,
 ):
-    """Run tab generation without a Celery broker for local development."""
-    from ....tasks import generate_tab_from_separated_stem
-
-    original_update_state = generate_tab_from_separated_stem.update_state
-    generate_tab_from_separated_stem.update_state = lambda *args, **kwargs: None
-    try:
-        generate_tab_from_separated_stem.run(
-            transcription_id,
-            detection_sensitivity,
-        )
-    except Exception as e:
-        logger.error(
-            "Local tab generation task failed for transcription %s: %s",
-            transcription_id,
-            e,
-        )
-    finally:
-        generate_tab_from_separated_stem.update_state = original_update_state
+    """Deprecated: heavy tab generation must run on Modal."""
+    logger.error(
+        "Refusing local heavy tab generation for %s; dispatch Modal instead.",
+        transcription_id,
+    )
 
 
 def _start_transcription_processing(
@@ -145,42 +102,15 @@ def _start_transcription_processing(
     detection_sensitivity: str | None = None,
     selected_stem_override: str | None = None,
 ) -> str | None:
-    """Start processing through Celery, with an in-process fallback for dev."""
-    if _should_use_local_worker_fallback() and not _celery_has_available_worker():
-        logger.warning(
-            "No Celery worker is available; running transcription %s as a local background task",
-            transcription_id,
-        )
-        background_tasks.add_task(
-            _run_transcription_locally,
-            transcription_id,
-            detection_sensitivity,
-            selected_stem_override,
-        )
-        return None
-
-    try:
-        task_args = [transcription_id]
-        if detection_sensitivity or selected_stem_override:
-            task_args.extend([detection_sensitivity, selected_stem_override])
-        result = celery_app.send_task(
-            "app.tasks.process_audio_transcription",
-            args=task_args
-        )
-        task_id = getattr(result, "id", None)
-        return str(task_id) if isinstance(task_id, (str, int)) else None
-    except Exception as e:
-        logger.warning(
-            "Celery broker unavailable; falling back to local background task: %s",
-            e,
-        )
-        background_tasks.add_task(
-            _run_transcription_locally,
-            transcription_id,
-            detection_sensitivity,
-            selected_stem_override,
-        )
-        return None
+    """Start heavy transcription by dispatching Modal only."""
+    background_tasks.add_task(
+        _trigger_modal_worker,
+        transcription_id,
+        "process",
+        detection_sensitivity,
+        None,
+    )
+    return None
 
 
 def _start_tab_generation(
@@ -189,40 +119,15 @@ def _start_tab_generation(
     *,
     detection_sensitivity: str | None = None,
 ) -> str | None:
-    """Start tab generation through Celery, with an in-process fallback for dev."""
-    if _should_use_local_worker_fallback() and not _celery_has_available_worker():
-        logger.warning(
-            "No Celery worker is available; running tab generation %s as a local background task",
-            transcription_id,
-        )
-        background_tasks.add_task(
-            _run_tab_generation_locally,
-            transcription_id,
-            detection_sensitivity,
-        )
-        return None
-
-    try:
-        task_args = [transcription_id]
-        if detection_sensitivity:
-            task_args.append(detection_sensitivity)
-        result = celery_app.send_task(
-            "app.tasks.generate_tab_from_separated_stem",
-            args=task_args,
-        )
-        task_id = getattr(result, "id", None)
-        return str(task_id) if isinstance(task_id, (str, int)) else None
-    except Exception as e:
-        logger.warning(
-            "Celery broker unavailable; falling back to local tab generation: %s",
-            e,
-        )
-        background_tasks.add_task(
-            _run_tab_generation_locally,
-            transcription_id,
-            detection_sensitivity,
-        )
-        return None
+    """Start TAB/score generation by dispatching Modal only."""
+    background_tasks.add_task(
+        _trigger_modal_worker,
+        transcription_id,
+        "generate_tab",
+        detection_sensitivity,
+        None,
+    )
+    return None
 
 
 def _processing_mode() -> str:
@@ -233,13 +138,24 @@ def _processing_mode() -> str:
     return mode
 
 
-def _build_worker_payload_for_modal(transcription: models.Transcription) -> dict[str, str | int | None]:
+def _build_worker_payload_for_modal(
+    transcription: models.Transcription,
+    *,
+    job_type: str = "process",
+    detection_sensitivity: str | None = None,
+    track_id: int | None = None,
+) -> dict[str, str | int | None]:
     selected_stem = transcription.selected_stem or "other"
     return {
         "transcription_id": transcription.id,
+        "job_type": job_type,
+        "modal_request_id": transcription.modal_request_id,
         "selected_stem": selected_stem,
         "demucs_stem": selected_stem,
         "original_audio_url": transcription.original_audio_url,
+        "separated_audio_url": transcription.separated_audio_url,
+        "detection_sensitivity": detection_sensitivity,
+        "track_id": track_id,
         "source_type": transcription.source_type,
         "source_url": transcription.source_url or transcription.youtube_url,
         "normalized_source_id": transcription.normalized_source_id,
@@ -247,7 +163,52 @@ def _build_worker_payload_for_modal(transcription: models.Transcription) -> dict
     }
 
 
-def _trigger_modal_worker(transcription_id: int) -> None:
+def _modal_retry_delay_seconds(retry_count: int) -> int:
+    base = max(1, int(core.config.settings.MODAL_RATE_LIMIT_BASE_BACKOFF_SECONDS))
+    ceiling = max(base, int(core.config.settings.MODAL_RATE_LIMIT_MAX_BACKOFF_SECONDS))
+    return min(ceiling, base * (2 ** max(0, retry_count - 1)))
+
+
+def _mark_modal_retry(
+    transcription: models.Transcription,
+    session: Session,
+    *,
+    error: str,
+    retry_after_seconds: int | None = None,
+    rate_limited: bool = False,
+) -> None:
+    next_retry_count = int(transcription.modal_retry_count or 0) + 1
+    max_retries = max(1, int(core.config.settings.MODAL_MAX_DISPATCH_RETRIES))
+    if next_retry_count > max_retries:
+        transcription.processing_status = "failed"
+        transcription.processing_error = (
+            "Modal dispatch failed repeatedly. Please retry manually."
+        )
+        transcription.modal_dispatch_status = "failed"
+        transcription.modal_retry_at = None
+        transcription.queue_position = None
+        transcription.estimated_wait_time = None
+        transcription.is_processed = False
+    else:
+        delay = retry_after_seconds or _modal_retry_delay_seconds(next_retry_count)
+        transcription.processing_status = "queued"
+        transcription.processing_error = error
+        transcription.modal_dispatch_status = "rate_limited" if rate_limited else "retry_queued"
+        transcription.modal_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        transcription.modal_retry_count = next_retry_count
+        transcription.queue_position = None
+        transcription.estimated_wait_time = delay
+    transcription.celery_task_id = None
+    session.add(transcription)
+    session.commit()
+
+
+def _trigger_modal_worker(
+    transcription_id: int,
+    job_type: str = "process",
+    detection_sensitivity: str | None = None,
+    track_id: int | None = None,
+) -> None:
     modal_trigger_url = core.config.settings.MODAL_TRIGGER_URL
     session = db.SessionLocal()
     try:
@@ -256,10 +217,38 @@ def _trigger_modal_worker(transcription_id: int) -> None:
         ).first()
         if not transcription or transcription.is_deleted:
             return
+        if transcription.processing_status != "processing":
+            logger.info(
+                "Skipping Modal dispatch for transcription %s with status %s.",
+                transcription_id,
+                transcription.processing_status,
+            )
+            return
+        retry_at = _as_aware_utc(transcription.modal_retry_at)
+        if retry_at and retry_at > datetime.now(timezone.utc):
+            logger.info(
+                "Skipping Modal dispatch for transcription %s until retry time %s.",
+                transcription_id,
+                retry_at,
+            )
+            return
+        if (
+            transcription.modal_dispatch_status == "dispatched"
+            and transcription.modal_request_id
+            and transcription.modal_job_type == job_type
+        ):
+            logger.info(
+                "Skipping duplicate Modal dispatch for transcription %s request %s.",
+                transcription_id,
+                transcription.modal_request_id,
+            )
+            return
         if not modal_trigger_url:
             transcription.processing_status = "queued"
             transcription.queue_position = None
             transcription.estimated_wait_time = None
+            transcription.modal_dispatch_status = "missing_trigger_url"
+            transcription.modal_job_type = job_type
             session.add(transcription)
             session.commit()
             logger.info(
@@ -269,16 +258,46 @@ def _trigger_modal_worker(transcription_id: int) -> None:
             )
             return
 
+        transcription.modal_request_id = transcription.modal_request_id or str(uuid.uuid4())
+        transcription.modal_job_type = job_type
+        transcription.modal_dispatch_status = "dispatched"
+        transcription.modal_dispatched_at = datetime.now(timezone.utc)
+        transcription.modal_retry_at = None
+        transcription.celery_task_id = None
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
         headers = {}
         if core.config.settings.WORKER_API_TOKEN:
             headers["Authorization"] = f"Bearer {core.config.settings.WORKER_API_TOKEN}"
 
         response = httpx.post(
             modal_trigger_url,
-            json=_build_worker_payload_for_modal(transcription),
+            json=_build_worker_payload_for_modal(
+                transcription,
+                job_type=job_type,
+                detection_sensitivity=detection_sensitivity,
+                track_id=track_id,
+            ),
             headers=headers,
             timeout=120.0,
-)
+        )
+        if response.status_code == 429:
+            retry_after_header = response.headers.get("Retry-After")
+            try:
+                retry_after = int(retry_after_header) if retry_after_header else None
+            except ValueError:
+                retry_after = None
+            _mark_modal_retry(
+                transcription,
+                session,
+                error="Modal is rate limited. This job will retry automatically.",
+                retry_after_seconds=retry_after,
+                rate_limited=True,
+            )
+            logger.warning("Modal rate limited transcription %s; queued retry.", transcription_id)
+            return
         response.raise_for_status()
         logger.info("Triggered Modal worker for transcription %s", transcription_id)
     except Exception as exc:
@@ -287,11 +306,11 @@ def _trigger_modal_worker(transcription_id: int) -> None:
                 models.Transcription.id == transcription_id
             ).first()
             if transcription and transcription.processing_status == "processing":
-                transcription.processing_status = "queued"
-                transcription.queue_position = None
-                transcription.estimated_wait_time = None
-                session.add(transcription)
-                session.commit()
+                _mark_modal_retry(
+                    transcription,
+                    session,
+                    error="Modal dispatch failed. This job will retry automatically.",
+                )
         except Exception:
             session.rollback()
         logger.error(
@@ -316,15 +335,20 @@ def _dispatch_transcription_processing(
         return None
 
     mode = _processing_mode()
-    if mode == "local":
-        return _start_transcription_processing(
-            transcription.id,
-            background_tasks,
-            db_session,
-        )
     if mode == "modal":
         logger.info("Dispatching transcription %s to Modal", transcription.id)
-        background_tasks.add_task(_trigger_modal_worker, transcription.id)
+        background_tasks.add_task(_trigger_modal_worker, transcription.id, "process", None, None)
+        return None
+    if mode == "local":
+        logger.warning(
+            "PROCESSING_MODE=local is no longer allowed for heavy processing; "
+            "transcription %s remains queued until Modal is configured.",
+            transcription.id,
+        )
+        transcription.processing_status = "queued"
+        transcription.modal_dispatch_status = "modal_required"
+        db_session.add(transcription)
+        db_session.commit()
         return None
 
     logger.info(
@@ -373,8 +397,13 @@ def _active_celery_task_ids() -> set[str]:
 
 def _cleanup_stale_active_transcription_jobs(db_session: Session) -> int:
     cutoff = _stale_active_cutoff()
-    active_task_ids = _active_celery_task_ids()
-    active_jobs = _active_transcription_query(db_session).all()
+    active_task_ids = set() if _processing_mode() == "modal" else _active_celery_task_ids()
+    active_jobs = (
+        db_session.query(models.Transcription)
+        .filter(models.Transcription.is_deleted == False)
+        .filter(models.Transcription.processing_status == "processing")
+        .all()
+    )
     stale_jobs = []
     for transcription in active_jobs:
         if transcription.celery_task_id and str(transcription.celery_task_id) in active_task_ids:
@@ -385,7 +414,11 @@ def _cleanup_stale_active_transcription_jobs(db_session: Session) -> int:
             )
             continue
 
-        last_activity = _as_aware_utc(transcription.updated_at) or _as_aware_utc(transcription.created_at)
+        last_activity = (
+            _as_aware_utc(transcription.modal_dispatched_at)
+            or _as_aware_utc(transcription.updated_at)
+            or _as_aware_utc(transcription.created_at)
+        )
         if not last_activity:
             logger.info(
                 "Skipping stale cleanup for transcription %s because no timestamp is available",
@@ -406,6 +439,8 @@ def _cleanup_stale_active_transcription_jobs(db_session: Session) -> int:
         transcription.queue_position = None
         transcription.estimated_wait_time = None
         transcription.celery_task_id = None
+        transcription.modal_dispatch_status = "failed"
+        transcription.modal_retry_at = None
         transcription.is_processed = False
         db_session.add(transcription)
 
@@ -420,6 +455,10 @@ def _promote_oldest_queued_transcription(db_session: Session) -> models.Transcri
             db_session.query(models.Transcription)
             .filter(models.Transcription.processing_status.in_(QUEUE_WAITING_STATUSES))
             .filter(models.Transcription.is_deleted == False)
+            .filter(or_(
+                models.Transcription.modal_retry_at == None,
+                models.Transcription.modal_retry_at <= datetime.now(timezone.utc),
+            ))
             .order_by(models.Transcription.created_at.asc(), models.Transcription.id.asc())
             .first()
         )
@@ -443,6 +482,7 @@ def _promote_oldest_queued_transcription(db_session: Session) -> models.Transcri
                 queue_position=0,
                 estimated_wait_time=0,
                 processing_error=None,
+                modal_dispatch_status=None,
             ),
             execution_options={"synchronize_session": False},
         )
@@ -484,29 +524,18 @@ def _trigger_next_queued_transcription(
 
 
 def _start_instrument_track_reprocess(
+    transcription_id: int,
     track_id: int,
     background_tasks: BackgroundTasks,
 ):
-    """Start one track reprocess through Celery, with an in-process dev fallback."""
-    if _should_use_local_worker_fallback() and not _celery_has_available_worker():
-        logger.warning(
-            "No Celery worker is available; running track %s reprocess as a local background task",
-            track_id,
-        )
-        background_tasks.add_task(_run_instrument_track_reprocess_locally, track_id)
-        return
-
-    try:
-        celery_app.send_task(
-            "app.tasks.reprocess_instrument_track",
-            args=[track_id]
-        )
-    except Exception as e:
-        logger.warning(
-            "Celery broker unavailable; falling back to local track reprocess: %s",
-            e,
-        )
-        background_tasks.add_task(_run_instrument_track_reprocess_locally, track_id)
+    """Start one track reprocess by dispatching Modal only."""
+    background_tasks.add_task(
+        _trigger_modal_worker,
+        transcription_id,
+        "reprocess_track",
+        None,
+        track_id,
+    )
 
 
 def _has_note_events(notes_data: str | None) -> bool:
@@ -1026,6 +1055,10 @@ def _celery_has_available_worker() -> bool:
 
 def _blocking_processing_error(transcription: models.Transcription) -> str | None:
     error = transcription.processing_error
+    if transcription.processing_status in {"pending", "queued", "processing"}:
+        return None
+    if transcription.modal_dispatch_status in {"rate_limited", "retry_queued"}:
+        return None
     if _is_non_blocking_processing_warning(error):
         return None
     return error
@@ -1280,6 +1313,8 @@ def _status_payload(
         "is_demo": transcription.is_demo,
         "queue_position": None,
         "estimated_wait_time": None,
+        "modal_dispatch_status": transcription.modal_dispatch_status,
+        "modal_retry_at": transcription.modal_retry_at,
     }
     if message:
         payload["message"] = message
@@ -1337,44 +1372,8 @@ def _ensure_transcription_access(
 
 
 def _ensure_derived_outputs(transcription: models.Transcription, db_session: Session) -> None:
-    """Regenerate downloadable/viewable outputs from stored notes when possible."""
-    if not _has_note_events(transcription.notes_data):
-        return
-
-    changed = False
-
-    if not transcription.midi_file_path or not os.path.exists(storage.normalize_local_path(transcription.midi_file_path)):
-        transcription.midi_file_path = midi.save_midi_from_transcription(
-            transcription.notes_data,
-            transcription.id,
-            str(UPLOAD_DIR),
-        )
-        changed = True
-
-    if not transcription.notation_data and transcription.midi_file_path and os.path.exists(storage.normalize_local_path(transcription.midi_file_path)):
-        try:
-            transcription.notation_data = midi.midi_to_musicxml(storage.normalize_local_path(transcription.midi_file_path))
-            changed = True
-        except Exception as e:
-            logger.warning(
-                "Could not regenerate MusicXML for transcription %s: %s",
-                transcription.id,
-                e,
-            )
-
-    if not transcription.tablature_data:
-        transcription.tablature_data = json.dumps(
-            tablature_service.notes_to_tablature(
-                transcription.notes_data,
-                instrument_type="bass" if (transcription.selected_stem or "other") == "bass" else "guitar",
-            )
-        )
-        changed = True
-
-    if changed:
-        db_session.add(transcription)
-        db_session.commit()
-        db_session.refresh(transcription)
+    """Modal owns derived output generation; API endpoints only serve stored outputs."""
+    return
 
 
 def _require_note_events_for_export(transcription: models.Transcription) -> None:
@@ -1621,7 +1620,11 @@ def _ensure_track_export_ready(
     _require_track_note_events_for_export(track)
 
 
-def _prepare_track_reprocess(track: models.InstrumentTrack, db_session: Session) -> None:
+def _prepare_track_reprocess(
+    transcription: models.Transcription,
+    track: models.InstrumentTrack,
+    db_session: Session,
+) -> None:
     if track.instrument_type not in {"guitar", "bass", "drums", "vocals"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1631,7 +1634,10 @@ def _prepare_track_reprocess(track: models.InstrumentTrack, db_session: Session)
             )
         )
 
-    if not track.stem_audio_path or not os.path.exists(track.stem_audio_path):
+    if (
+        not transcription.separated_audio_url
+        and (not track.stem_audio_path or not os.path.exists(track.stem_audio_path))
+    ):
         track.processing_status = "failed"
         track.confidence_notes = "Stem audio file is missing; track reprocessing skipped."
         db_session.add(track)
@@ -1662,17 +1668,10 @@ def _track_export_filename(
 
 
 def _track_notes_to_midi_bytes(track: models.InstrumentTrack) -> bytes:
-    with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as temp_file:
-        temp_path = temp_file.name
-    try:
-        midi.notes_to_midi(track.notes_json, temp_path)
-        with open(temp_path, "rb") as f:
-            return f.read()
-    finally:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Per-track MIDI export must be generated by Modal and is not available for this track.",
+    )
 
 @router.post("/upload", response_model=schemas.TranscriptionInDB)
 async def upload_audio_file(
@@ -2213,6 +2212,8 @@ async def get_transcription_status(
         )
 
     _ensure_transcription_access(transcription, db_session, current_user)
+    _cleanup_stale_active_transcription_jobs(db_session)
+    db_session.refresh(transcription)
     _repair_playback_only_stem_ready(transcription, db_session)
 
     selected_stem = transcription.selected_stem or "other"
@@ -2232,6 +2233,8 @@ async def get_transcription_status(
             "message": "This transcription record was deleted.",
             "queue_position": None,
             "estimated_wait_time": None,
+            "modal_dispatch_status": transcription.modal_dispatch_status,
+            "modal_retry_at": transcription.modal_retry_at,
         }
 
     blocking_error = _blocking_processing_error(transcription)
@@ -2250,6 +2253,8 @@ async def get_transcription_status(
             "is_demo": transcription.is_demo,
             "queue_position": None,
             "estimated_wait_time": None,
+            "modal_dispatch_status": transcription.modal_dispatch_status,
+            "modal_retry_at": transcription.modal_retry_at,
         }
 
     # Return status based on transcription record
@@ -2279,8 +2284,7 @@ async def get_transcription_status(
         message = None
         if current_status == "queued":
             message = (
-                "Queued behind another selected-stem job. "
-                "The Railway MVP worker intentionally runs one job at a time."
+                "Queued for Modal processing. It will start when capacity is available."
             )
         elif current_status == "pending":
             message = "Waiting for the selected-stem job to start."
@@ -2298,6 +2302,8 @@ async def get_transcription_status(
             "message": message,
             "queue_position": transcription.queue_position,
             "estimated_wait_time": transcription.estimated_wait_time,
+            "modal_dispatch_status": transcription.modal_dispatch_status,
+            "modal_retry_at": transcription.modal_retry_at,
         }
 
 
@@ -2459,6 +2465,10 @@ async def generate_tab(
     transcription.can_play_stem = True
     transcription.queue_position = 0
     transcription.estimated_wait_time = 0
+    transcription.modal_request_id = None
+    transcription.modal_dispatch_status = None
+    transcription.modal_job_type = None
+    transcription.modal_retry_at = None
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(transcription)
@@ -2538,6 +2548,10 @@ async def retry_transcription(
     transcription.can_play_stem = _can_play_stem(transcription)
     transcription.queue_position = 0
     transcription.estimated_wait_time = 0
+    transcription.modal_request_id = None
+    transcription.modal_dispatch_status = None
+    transcription.modal_job_type = None
+    transcription.modal_retry_at = None
     transcription.midi_file_path = None
     transcription.midi_file_url = None
     transcription.midi_file_public_id = None
@@ -2759,14 +2773,25 @@ async def reprocess_instrument_track_endpoint(
     """
     Reprocess one supported instrument track from its retained separated stem.
     """
-    _transcription, track = _get_accessible_track(
+    transcription, track = _get_accessible_track(
         transcription_id,
         track_id,
         db_session,
         current_user,
     )
-    _prepare_track_reprocess(track, db_session)
-    _start_instrument_track_reprocess(track.id, background_tasks)
+    _prepare_track_reprocess(transcription, track, db_session)
+    transcription.processing_status = "processing"
+    transcription.is_processed = False
+    transcription.processing_error = None
+    transcription.warning_message = None
+    transcription.queue_position = 0
+    transcription.estimated_wait_time = 0
+    transcription.modal_request_id = None
+    transcription.modal_dispatch_status = None
+    db_session.add(transcription)
+    db_session.commit()
+    db_session.refresh(track)
+    _start_instrument_track_reprocess(transcription.id, track.id, background_tasks)
     return track
 
 
@@ -2861,25 +2886,10 @@ async def get_instrument_track_musicxml(
     _ensure_track_export_ready(transcription, track, format_name="musicxml")
 
     if not track.notation_json:
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as temp_file:
-                temp_path = temp_file.name
-            try:
-                midi.notes_to_midi(track.notes_json, temp_path)
-                track.notation_json = midi.midi_to_musicxml(temp_path)
-            finally:
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
-            db_session.add(track)
-            db_session.commit()
-            db_session.refresh(track)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not generate {track.display_name} MusicXML data: {str(e)}"
-            )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{track.display_name} MusicXML data is not available.",
+        )
 
     return Response(
         content=track.notation_json,

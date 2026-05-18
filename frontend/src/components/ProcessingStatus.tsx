@@ -288,7 +288,7 @@ const ProcessingStatus: React.FC = () => {
           <div className="processing-details">
             {statusMessage && <p>{statusMessage}</p>}
             <p>This process may take several minutes depending on the length and complexity of your audio file.</p>
-            <p>You can safely close this tab and return later - we'll notify you when processing is complete.</p>
+            <p>You can safely close this tab and return later to check whether it is queued, processing, failed, or completed.</p>
           </div>
         </div>
       )}

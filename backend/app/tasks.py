@@ -2,23 +2,40 @@ from celery import current_task
 from app.celery import celery_app
 from app.core.config import settings
 from app import db, models
-from app.services import audio
-from app.services import midi
 from app.services import storage
-from app.services import tablature
-from app.services import chord_chart
 import json
 import os
 import shutil
 import tempfile
 import logging
 import urllib.request
+import importlib
 from pathlib import Path
 from sqlalchemy.orm import Session
 from typing import Dict, Any
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+class _LazyService:
+    def __init__(self, module_name: str):
+        self.module_name = module_name
+        self._module = None
+
+    def _load(self):
+        if self._module is None:
+            self._module = importlib.import_module(self.module_name)
+        return self._module
+
+    def __getattr__(self, name: str):
+        return getattr(self._load(), name)
+
+
+audio = _LazyService("app.services.audio")
+midi = _LazyService("app.services.midi")
+tablature = _LazyService("app.services.tablature")
+chord_chart = _LazyService("app.services.chord_chart")
 
 
 INSTRUMENT_DISPLAY_NAMES = {
@@ -671,6 +688,33 @@ def update_task_state(task, state: str, meta: Dict[str, Any]) -> None:
         print(f"Skipping task state update ({state}/{meta.get('step')}): {str(e)}")
 
 
+def fail_heavy_celery_task(transcription_id: int | None, message: str) -> dict:
+    """Refuse heavy Celery execution; production processing belongs on Modal."""
+    if transcription_id is not None:
+        session = get_db_session()
+        try:
+            transcription = session.query(models.Transcription).filter(
+                models.Transcription.id == transcription_id
+            ).first()
+            if transcription and not transcription.is_deleted:
+                transcription.processing_status = "failed"
+                transcription.processing_error = message
+                transcription.queue_position = None
+                transcription.estimated_wait_time = None
+                transcription.celery_task_id = None
+                transcription.modal_dispatch_status = (
+                    getattr(transcription, "modal_dispatch_status", None)
+                    or "celery_blocked"
+                )
+                transcription.is_processed = False
+                session.add(transcription)
+                session.commit()
+        finally:
+            session.close()
+    logger.error(message)
+    return {"status": "failed", "message": message, "transcription_id": transcription_id}
+
+
 def task_request_id(task) -> str:
     request = getattr(task, "request", None)
     task_id = getattr(request, "id", None)
@@ -1079,6 +1123,10 @@ def process_audio_transcription(
     detection_sensitivity: str | None = None,
     selected_stem_override: str | None = None,
 ):
+    return fail_heavy_celery_task(
+        transcription_id,
+        "Local Celery audio processing is disabled in production. Dispatch this job to Modal.",
+    )
     """
     Process audio transcription asynchronously.
 
@@ -1666,6 +1714,10 @@ def generate_tab_from_separated_stem(
     detection_sensitivity: str | None = None,
 ):
     """Generate notation outputs from an already separated selected stem."""
+    return fail_heavy_celery_task(
+        transcription_id,
+        "Local Celery TAB/score generation is disabled in production. Dispatch this job to Modal.",
+    )
     db_session = None
     try:
         update_task_state(self, state="PROGRESS", meta={"step": "loading_stem"})
@@ -1754,6 +1806,18 @@ def generate_tab_from_separated_stem(
 @celery_app.task(bind=True)
 def reprocess_instrument_track(self, track_id: int):
     """Regenerate analysis output for one retained guitar or bass stem."""
+    db_session = get_db_session()
+    try:
+        track = db_session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.id == track_id
+        ).first()
+        transcription_id = track.transcription_id if track else None
+    finally:
+        db_session.close()
+    return fail_heavy_celery_task(
+        transcription_id,
+        "Local Celery track reprocessing is disabled in production. Dispatch this job to Modal.",
+    )
     db_session = None
     try:
         update_task_state(self, state="PROGRESS", meta={"step": "loading_instrument_track"})

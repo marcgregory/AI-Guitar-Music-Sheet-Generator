@@ -92,7 +92,7 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
           : status === "stem_ready"
             ? "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
             : status === "queued"
-              ? "Queued because another Railway MVP job is processing"
+              ? "Queued for Modal processing"
               : status === "pending"
                 ? "Waiting for the selected-stem job to start"
                 : status === "completed"

@@ -99,9 +99,12 @@ def _build_worker_job(transcription: models.Transcription, request: Request) -> 
     base_url = str(request.base_url).rstrip("/")
     return schemas.WorkerJob(
         transcription_id=transcription.id,
+        job_type=transcription.modal_job_type or "process",
+        modal_request_id=transcription.modal_request_id,
         selected_stem=selected_stem,
         demucs_stem=selected_stem,
         original_audio_url=transcription.original_audio_url,
+        separated_audio_url=transcription.separated_audio_url,
         source_type=transcription.source_type,
         source_url=transcription.source_url or transcription.youtube_url,
         normalized_source_id=transcription.normalized_source_id,
@@ -155,33 +158,52 @@ async def complete_worker_job(
             detail="Transcription was deleted before worker completion.",
         )
 
-    transcription.separated_audio_url = payload.separated_audio_url
-    transcription.separated_audio_public_id = payload.separated_audio_public_id
-    transcription.midi_file_url = None
-    transcription.midi_file_public_id = None
-    transcription.tab_file_url = None
-    transcription.tab_file_public_id = None
+    transcription.separated_audio_url = payload.separated_audio_url or transcription.separated_audio_url
+    transcription.separated_audio_public_id = (
+        payload.separated_audio_public_id or transcription.separated_audio_public_id
+    )
+    transcription.midi_file_url = payload.midi_file_url
+    transcription.midi_file_public_id = payload.midi_file_public_id
+    transcription.tab_file_url = payload.tab_file_url
+    transcription.tab_file_public_id = payload.tab_file_public_id
     transcription.duration = payload.duration if payload.duration is not None else transcription.duration
     transcription.detected_tempo = payload.detected_tempo
     transcription.tempo_confidence = payload.tempo_confidence
     transcription.detected_key = payload.detected_key
     transcription.key_confidence = payload.key_confidence
-    transcription.notes_data = None
-    transcription.chords_data = None
-    transcription.tablature_data = None
-    transcription.notation_data = None
-    transcription.chord_chart_data = None
+    transcription.notes_data = _json_or_text(payload.notes_data)
+    transcription.chords_data = _json_or_text(payload.chords_data)
+    transcription.tablature_data = _json_or_text(payload.tablature_data)
+    transcription.notation_data = _json_or_text(payload.notation_data)
+    transcription.chord_chart_data = _json_or_text(payload.chord_chart_data)
     selected_stem = transcription.selected_stem or "other"
+    has_notes = _payload_has_note_events(payload.notes_data)
+    has_drum_hits = _payload_has_drum_hits(payload.notes_data)
     warning_message = None
+    if selected_stem in {"vocals"}:
+        warning_message = "Stem separated successfully, but notation generation is not supported for this stem in the MVP."
+    elif selected_stem == "drums" and not has_drum_hits:
+        warning_message = "Drum stem separated successfully, but no usable hits were detected."
+    elif selected_stem in {"bass", "other"} and not has_notes:
+        warning_message = "No note events detected for this stem."
     transcription.warning_message = warning_message
-    transcription.can_play_stem = bool(payload.separated_audio_url)
-    transcription.can_generate_score = False
-    transcription.processing_status = "stem_ready"
+    transcription.can_play_stem = bool(transcription.separated_audio_url)
+    transcription.can_generate_score = bool(selected_stem in {"bass", "other"} and has_notes)
+    transcription.processing_status = (
+        "completed"
+        if transcription.can_generate_score or (selected_stem == "drums" and has_drum_hits)
+        else "completed_with_warning"
+        if warning_message
+        else "stem_ready"
+    )
     transcription.is_processed = True
     transcription.processing_error = None
     transcription.queue_position = None
     transcription.estimated_wait_time = None
     transcription.celery_task_id = None
+    transcription.modal_dispatch_status = "completed"
+    transcription.modal_retry_at = None
+    transcription.modal_retry_count = 0
 
     selected_stem = transcription.selected_stem or "other"
     instrument_type = STEM_TO_ANALYSIS_INSTRUMENT.get(selected_stem, selected_stem)
@@ -201,12 +223,12 @@ async def complete_worker_job(
     if payload.track_metadata:
         track.display_name = str(payload.track_metadata.get("display_name") or track.display_name)
         track.confidence_notes = payload.track_metadata.get("confidence_notes")
-    track.notes_json = None
-    track.chords_json = None
-    track.tab_json = None
-    track.notation_json = None
+    track.notes_json = transcription.notes_data
+    track.chords_json = transcription.chords_data
+    track.tab_json = transcription.tablature_data
+    track.notation_json = transcription.notation_data
     track.confidence_score = payload.confidence
-    track.processing_status = "stem_ready"
+    track.processing_status = transcription.processing_status
     if not track.confidence_notes:
         track.confidence_notes = "Selected stem separated by worker."
     db_session.add(track)
@@ -266,6 +288,8 @@ async def fail_worker_job(
         transcription.queue_position = None
         transcription.estimated_wait_time = None
         transcription.celery_task_id = None
+        transcription.modal_dispatch_status = "failed"
+        transcription.modal_retry_at = None
         db_session.add(transcription)
         db_session.commit()
         db_session.refresh(transcription)

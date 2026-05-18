@@ -47,6 +47,12 @@ class Transcription(Base):
     queue_position = Column(Integer, nullable=True)
     estimated_wait_time = Column(Integer, nullable=True)
     celery_task_id = Column(String, nullable=True)
+    modal_dispatch_status = Column(String, nullable=True)
+    modal_job_type = Column(String, nullable=True)
+    modal_dispatched_at = Column(DateTime(timezone=True), nullable=True)
+    modal_request_id = Column(String, nullable=True)
+    modal_retry_at = Column(DateTime(timezone=True), nullable=True)
+    modal_retry_count = Column(Integer, default=0, nullable=False)
     separated_audio_file_path = Column(String, nullable=True)
     midi_file_path = Column(String, nullable=True)  # Path to generated MIDI file
     tab_file_path = Column(String, nullable=True)  # Path to generated ASCII/JSON tab file

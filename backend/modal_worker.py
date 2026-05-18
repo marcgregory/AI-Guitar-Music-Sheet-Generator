@@ -27,6 +27,8 @@ image = (
     "demucs==4.0.1",
     "librosa==0.10.1",
     "basic-pitch==0.4.0",
+    "mido==1.2.0",
+    "music21==9.9.2",
     "fastapi[standard]==0.115.6",
     "cloudinary==1.44.1",
     "requests==2.32.3",
@@ -41,10 +43,6 @@ secrets = [
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
 DEFAULT_DEMUCS_MODEL = "htdemucs"
 DEFAULT_TIMEOUT_SECONDS = 1800
-
-from demucs.pretrained import get_model
-
-MODEL = get_model(DEFAULT_DEMUCS_MODEL)
 
 def _worker_headers() -> dict[str, str]:
     token = os.environ.get("WORKER_API_TOKEN")
@@ -156,16 +154,22 @@ def _configure_cloudinary() -> None:
     cloudinary.config(**config)
 
 
-def _upload_stem(stem_path: Path, transcription_id: int, selected_stem: str) -> dict[str, str | None]:
+def _upload_file(
+    file_path: Path,
+    transcription_id: int,
+    folder_name: str,
+    *,
+    resource_type: str,
+) -> dict[str, str | None]:
     from cloudinary import uploader
 
     _configure_cloudinary()
     cloudinary_folder = os.environ.get("CLOUDINARY_FOLDER", "musicstudio").strip("/")
-    folder = f"{cloudinary_folder}/transcriptions/{transcription_id}/selected-stem"
+    folder = f"{cloudinary_folder}/transcriptions/{transcription_id}/{folder_name}"
     result = uploader.upload(
-        str(stem_path),
+        str(file_path),
         folder=folder,
-        resource_type="video",
+        resource_type=resource_type,
         use_filename=True,
         unique_filename=True,
         overwrite=False,
@@ -174,6 +178,15 @@ def _upload_stem(stem_path: Path, transcription_id: int, selected_stem: str) -> 
         "secure_url": result.get("secure_url"),
         "public_id": result.get("public_id"),
     }
+
+
+def _upload_stem(stem_path: Path, transcription_id: int, selected_stem: str) -> dict[str, str | None]:
+    return _upload_file(
+        stem_path,
+        transcription_id,
+        "selected-stem",
+        resource_type="video",
+    )
 
 
 def _normalize_audio_volume(input_path: Path) -> Path:
@@ -243,7 +256,7 @@ def _detect_pitch_basic_pitch(input_path: Path, sensitivity: str = "normal") -> 
 
 
 def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict[str, Any]:
-    tuning = [40, 45, 50, 55] if instrument_type == "bass" else [40, 45, 50, 55, 59, 64]
+    tuning = [28, 33, 38, 43] if instrument_type == "bass" else [40, 45, 50, 55, 59, 64]
     string_labels = ["E", "A", "D", "G"] if instrument_type == "bass" else ["E", "A", "D", "G", "B", "E"]
     tab_notes = []
     for note in notes_data.get("notes", []):
@@ -269,6 +282,99 @@ def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict
         "instrument": instrument_type,
         "tuning": string_labels,
         "tablature": tab_notes,
+    }
+
+
+def _notes_to_midi(notes_data: dict[str, Any], output_path: Path, tempo_bpm: float = 120.0) -> None:
+    import mido
+    from mido import Message, MidiFile, MidiTrack
+
+    ticks_per_beat = 480
+    tempo = int(60000000 / max(1.0, tempo_bpm))
+    seconds_per_tick = tempo / 1000000.0 / ticks_per_beat
+    mid = MidiFile(ticks_per_beat=ticks_per_beat)
+    track = MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.MetaMessage("set_tempo", tempo=tempo))
+
+    events = []
+    for note in notes_data.get("notes", []):
+        onset = float(note.get("onset", 0))
+        offset = float(note.get("offset", onset + 0.1))
+        pitch = int(note.get("pitch", 0))
+        velocity = int(note.get("velocity", 64))
+        if 0 <= pitch <= 127:
+            events.append((int(onset / seconds_per_tick), 1, Message("note_on", note=pitch, velocity=velocity, time=0)))
+            events.append((int(offset / seconds_per_tick), 0, Message("note_off", note=pitch, velocity=0, time=0)))
+
+    previous_tick = 0
+    for tick, _order, message in sorted(events, key=lambda item: (item[0], item[1])):
+        message.time = max(0, tick - previous_tick)
+        track.append(message)
+        previous_tick = tick
+    mid.save(output_path)
+
+
+def _midi_to_musicxml(midi_path: Path) -> str | None:
+    try:
+        from music21 import converter
+
+        score = converter.parse(str(midi_path))
+        return score.write("musicxml")
+    except Exception as exc:
+        logger.warning("MusicXML conversion failed: %s", exc)
+        return None
+
+
+def _tablature_to_ascii(tab_data: dict[str, Any]) -> str:
+    labels = tab_data.get("tuning") or ["E", "A", "D", "G", "B", "E"]
+    notes = tab_data.get("tablature") or []
+    lines = {label: [f"{label}|"] for label in labels}
+    for note in sorted(notes, key=lambda item: float(item.get("startTime", item.get("onset", 0)))):
+        string_number = int(note.get("string", 1))
+        fret = str(note.get("fret", ""))
+        label_index = max(0, min(len(labels) - 1, len(labels) - string_number))
+        for index, label in enumerate(labels):
+            lines[label].append(fret if index == label_index else "-" * max(1, len(fret)))
+            lines[label].append("-")
+    return "\n".join("".join(lines[label]) for label in reversed(labels))
+
+
+def _detect_tempo_key_duration(input_path: Path) -> dict[str, Any]:
+    import librosa
+    import numpy as np
+
+    y, sr = librosa.load(input_path, sr=None, mono=True)
+    duration = int(round(float(librosa.get_duration(y=y, sr=sr)))) if y.size else None
+    tempo = None
+    tempo_confidence = None
+    try:
+        tempo_fn = getattr(librosa.feature, "tempo", None) or librosa.beat.tempo
+        tempo_values = tempo_fn(y=y, sr=sr)
+        tempo = int(round(float(tempo_values[0]))) if len(tempo_values) else None
+        tempo_confidence = 75 if tempo else None
+    except Exception:
+        pass
+
+    detected_key = None
+    key_confidence = None
+    try:
+        chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+        chroma_mean = np.mean(chroma, axis=1)
+        names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        index = int(np.argmax(chroma_mean))
+        total = float(np.sum(chroma_mean))
+        detected_key = names[index]
+        key_confidence = int(round((float(chroma_mean[index]) / total) * 100)) if total > 0 else None
+    except Exception:
+        pass
+
+    return {
+        "duration": duration,
+        "detected_tempo": tempo,
+        "tempo_confidence": tempo_confidence,
+        "detected_key": detected_key,
+        "key_confidence": key_confidence,
     }
 
 
@@ -350,14 +456,30 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any] | None:
 def _complete_job(
     job: dict[str, Any],
     upload_result: dict[str, str | None],
+    analysis_result: dict[str, Any],
 ) -> None:
+    track_metadata = analysis_result.get("track_metadata") or {}
+    if upload_result.get("secure_url"):
+        track_metadata.setdefault("confidence_notes", "Selected stem separated by Modal/Demucs.")
     payload = {
         "separated_audio_url": upload_result.get("secure_url"),
         "separated_audio_public_id": upload_result.get("public_id"),
-        "confidence": 90,
-        "track_metadata": {
-            "confidence_notes": "Selected stem separated by Modal/Demucs.",
-        },
+        "midi_file_url": analysis_result.get("midi_file_url"),
+        "midi_file_public_id": analysis_result.get("midi_file_public_id"),
+        "tab_file_url": analysis_result.get("tab_file_url"),
+        "tab_file_public_id": analysis_result.get("tab_file_public_id"),
+        "confidence": analysis_result.get("confidence", 90),
+        "duration": analysis_result.get("duration"),
+        "detected_tempo": analysis_result.get("detected_tempo"),
+        "tempo_confidence": analysis_result.get("tempo_confidence"),
+        "detected_key": analysis_result.get("detected_key"),
+        "key_confidence": analysis_result.get("key_confidence"),
+        "notes_data": analysis_result.get("notes_data"),
+        "chords_data": analysis_result.get("chords_data"),
+        "tablature_data": analysis_result.get("tablature_data"),
+        "notation_data": analysis_result.get("notation_data"),
+        "chord_chart_data": analysis_result.get("chord_chart_data"),
+        "track_metadata": track_metadata,
     }
     _post_json(_complete_url(job), payload)
 
@@ -376,7 +498,10 @@ def _normalize_job(job: dict[str, Any]) -> dict[str, Any]:
     if not job.get("transcription_id"):
         raise ValueError("transcription_id is required")
     if not job.get("original_audio_url"):
-        raise ValueError("original_audio_url is required")
+        if str(job.get("job_type") or "process") == "process":
+            raise ValueError("original_audio_url is required")
+    if str(job.get("job_type") or "process") in {"generate_tab", "reprocess_track"} and not job.get("separated_audio_url"):
+        raise ValueError("separated_audio_url is required for this Modal job")
 
     selected_stem = str(job.get("selected_stem") or job.get("demucs_stem") or "other").strip().lower()
     if selected_stem not in VALID_SELECTED_STEMS:
@@ -388,27 +513,82 @@ def _normalize_job(job: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _generate_analysis_and_exports(
+    stem_path: Path,
+    transcription_id: int,
+    selected_stem: str,
+    *,
+    sensitivity: str = "normal",
+) -> dict[str, Any]:
+    analysis = _analyze_selected_stem(stem_path, selected_stem)
+    analysis.update(_detect_tempo_key_duration(stem_path))
+
+    notes_data = analysis.get("notes_data")
+    if selected_stem in {"bass", "other"} and isinstance(notes_data, dict) and notes_data.get("notes"):
+        instrument_type = "bass" if selected_stem == "bass" else "guitar"
+        if sensitivity == "high" and notes_data.get("model_outputs"):
+            notes_data["model_outputs"]["requested_sensitivity"] = "high"
+        tab_data = analysis.get("tablature_data") or _note_to_tablature(notes_data, instrument_type)
+        analysis["tablature_data"] = tab_data
+
+        midi_path = stem_path.with_name(f"transcription_{transcription_id}.mid")
+        _notes_to_midi(notes_data, midi_path, tempo_bpm=float(analysis.get("detected_tempo") or 120))
+        midi_upload = _upload_file(midi_path, transcription_id, "exports", resource_type="raw")
+        analysis["midi_file_url"] = midi_upload.get("secure_url")
+        analysis["midi_file_public_id"] = midi_upload.get("public_id")
+
+        musicxml_path_text = _midi_to_musicxml(midi_path)
+        if musicxml_path_text:
+            musicxml_path = Path(musicxml_path_text)
+            if musicxml_path.exists():
+                analysis["notation_data"] = musicxml_path.read_text(encoding="utf-8", errors="ignore")
+
+        tab_path = stem_path.with_name(f"transcription_{transcription_id}.tab")
+        tab_path.write_text(_tablature_to_ascii(tab_data), encoding="utf-8")
+        tab_upload = _upload_file(tab_path, transcription_id, "exports", resource_type="raw")
+        analysis["tab_file_url"] = tab_upload.get("secure_url")
+        analysis["tab_file_public_id"] = tab_upload.get("public_id")
+
+    return analysis
+
+
 def _process_job(job: dict[str, Any]) -> dict[str, Any]:
     job = _normalize_job(job)
     transcription_id = int(job["transcription_id"])
     selected_stem = str(job["selected_stem"])
+    job_type = str(job.get("job_type") or "process")
+    sensitivity = str(job.get("detection_sensitivity") or "normal")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        input_path = temp_path / f"original_{transcription_id}{_download_suffix(str(job['original_audio_url']))}"
-        output_dir = temp_path / "demucs"
+        upload_result = {"secure_url": job.get("separated_audio_url"), "public_id": None}
 
-        _download_file(str(job["original_audio_url"]), input_path)
-        selected_stem_path = _run_demucs(input_path, output_dir, selected_stem)
-        upload_result = _upload_stem(selected_stem_path, transcription_id, selected_stem)
-        _complete_job(job, upload_result)
+        if job_type == "process":
+            input_path = temp_path / f"original_{transcription_id}{_download_suffix(str(job['original_audio_url']))}"
+            output_dir = temp_path / "demucs"
+            _download_file(str(job["original_audio_url"]), input_path)
+            selected_stem_path = _run_demucs(input_path, output_dir, selected_stem)
+            upload_result = _upload_stem(selected_stem_path, transcription_id, selected_stem)
+        else:
+            selected_stem_path = temp_path / f"selected_{transcription_id}{_download_suffix(str(job['separated_audio_url']))}"
+            _download_file(str(job["separated_audio_url"]), selected_stem_path)
+
+        analysis_result = _generate_analysis_and_exports(
+            selected_stem_path,
+            transcription_id,
+            selected_stem,
+            sensitivity=sensitivity,
+        )
+        _complete_job(job, upload_result, analysis_result)
 
     return {
         "status": "completed",
+        "job_type": job_type,
         "transcription_id": transcription_id,
         "selected_stem": selected_stem,
         "separated_audio_url": upload_result.get("secure_url"),
         "separated_audio_public_id": upload_result.get("public_id"),
+        "can_generate_score": bool(analysis_result.get("notes_data", {}).get("notes")),
     }
 
 

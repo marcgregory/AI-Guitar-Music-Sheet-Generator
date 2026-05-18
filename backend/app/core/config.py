@@ -30,7 +30,10 @@ class Settings(BaseSettings):
     MODAL_TRIGGER_URL: str | None = None
     MODAL_TOKEN_ID: str | None = None
     MODAL_TOKEN_SECRET: str | None = None
-    STALE_TRANSCRIPTION_TIMEOUT_SECONDS: int = 7200
+    STALE_TRANSCRIPTION_TIMEOUT_SECONDS: int = 1800
+    MODAL_RATE_LIMIT_BASE_BACKOFF_SECONDS: int = 60
+    MODAL_RATE_LIMIT_MAX_BACKOFF_SECONDS: int = 900
+    MODAL_MAX_DISPATCH_RETRIES: int = 5
 
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"

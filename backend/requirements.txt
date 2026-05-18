@@ -11,22 +11,9 @@ alembic==1.10.0
 redis==5.0.1
 celery==5.3.4
 cloudinary==1.44.1
-# Audio processing libraries will be added in Phase 1
-
-
-# essentia==2.1b6
-numpy==1.26.4
-torch==2.2.2
-torchaudio==2.2.2
-demucs==4.0.1
-librosa==0.10.1
-# Optional TensorFlow-backed pitch detectors. These do not currently install
-# cleanly on the Microsoft Store Python 3.13 runtime used in local dev.
-# crepe==0.0.16
-# basic-pitch==0.4.0
-mido==1.2.0
-music21==9.9.2
-# weasyprint==61.2
+# Heavy audio/AI dependencies live in backend/modal_worker.py's Modal image.
+# Railway/FastAPI must not install or execute torch, demucs, librosa,
+# Basic Pitch, or local MIDI/score generation libraries in production.
 yt-dlp==2026.3.17
 pytest==7.4.3
 httpx==0.25.2

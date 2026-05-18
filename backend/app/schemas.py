@@ -77,6 +77,12 @@ class TranscriptionBase(BaseModel):
     queue_position: Optional[int] = None
     estimated_wait_time: Optional[int] = None
     celery_task_id: Optional[str] = None
+    modal_dispatch_status: Optional[str] = None
+    modal_job_type: Optional[str] = None
+    modal_dispatched_at: Optional[datetime] = None
+    modal_request_id: Optional[str] = None
+    modal_retry_at: Optional[datetime] = None
+    modal_retry_count: Optional[int] = 0
     separated_audio_file_path: Optional[str] = None
     midi_file_path: Optional[str] = None
     tab_file_path: Optional[str] = None
@@ -208,6 +214,11 @@ class WorkerJob(BaseModel):
     selected_stem: str
     demucs_stem: str
     original_audio_url: str
+    job_type: Optional[str] = "process"
+    modal_request_id: Optional[str] = None
+    separated_audio_url: Optional[str] = None
+    detection_sensitivity: Optional[str] = None
+    track_id: Optional[int] = None
     source_type: Optional[str] = None
     source_url: Optional[str] = None
     normalized_source_id: Optional[str] = None

@@ -2,27 +2,27 @@
 
 ## Recommended MVP Deployment
 
-Railway should run the lightweight backend/controller, not the primary Demucs workload.
+Railway should run the lightweight backend/controller only, never Demucs, Basic Pitch, librosa analysis, MIDI generation, or TAB/score generation.
 
 - Frontend: Vercel or the current frontend host
 - Backend/API: Railway FastAPI
 - Database: PostgreSQL
 - Durable storage: Cloudinary
 - AI processing: Modal/serverless GPU worker
-- Redis: only if needed for local fallback, queue metadata, or status coordination
+- Redis: optional for non-audio infrastructure; not required for production audio processing
 
 Railway trial/free resources are not reliable for Demucs production processing. Railway local storage must not be used as durable file storage. It is temporary scratch space only.
 
 The MVP is audio/YouTube selected-stem processing. MIDI import, Guitar Pro import, PowerTab import/export, imported project playback architecture, and imported multi-track workflows are future roadmap items only. MIDI export, MusicXML export, and TAB export remain in scope when generated from separated-stem transcription results.
 
-The backend runtime is Python 3.11. Both Dockerfiles use Python 3.11 images, and `railway.json` points to the root Dockerfile. Local selected-stem Demucs fallback requires the PyTorch audio stack from `backend/requirements.txt` (`demucs`, `torch`, and `torchaudio`) plus an `ffmpeg` executable on `PATH`.
+The backend runtime is Python 3.11. Both Dockerfiles use Python 3.11 images, and `railway.json` points to the root Dockerfile. Heavy audio/AI dependencies are installed in the Modal image, not Railway.
 
 ## Required Environment Variables
 
 Backend/API:
 
 - `DATABASE_URL`
-- `PROCESSING_MODE=local|external_worker|modal`
+- `PROCESSING_MODE=modal`
 - `WORKER_API_TOKEN`
 - `CLOUDINARY_CLOUD_NAME`
 - `CLOUDINARY_API_KEY`
@@ -30,9 +30,11 @@ Backend/API:
 - `SECRET_KEY`
 - `ALGORITHM`
 - `ACCESS_TOKEN_EXPIRE_MINUTES`
-- `REDIS_URL` if Redis is used for local fallback/status
-- `CELERY_BROKER_URL` if `PROCESSING_MODE=local`
-- `CELERY_RESULT_BACKEND` if `PROCESSING_MODE=local`
+- `MODAL_TRIGGER_URL`
+- `STALE_TRANSCRIPTION_TIMEOUT_SECONDS=1800`
+- `MODAL_RATE_LIMIT_BASE_BACKOFF_SECONDS`
+- `MODAL_RATE_LIMIT_MAX_BACKOFF_SECONDS`
+- `MODAL_MAX_DISPATCH_RETRIES`
 
 Modal worker:
 
@@ -51,11 +53,7 @@ Frontend:
 
 ### `PROCESSING_MODE=local`
 
-Development fallback only. Railway/Celery may process very short files, but this is not recommended for production. If local mode is enabled, run one active job at a time:
-
-```sh
-celery -A app.celery worker --loglevel=info --concurrency=1
-```
+Legacy/dev only. Heavy audio Celery tasks now fail closed and tell the caller to dispatch Modal. Do not use local mode for production audio processing.
 
 ### `PROCESSING_MODE=external_worker`
 
