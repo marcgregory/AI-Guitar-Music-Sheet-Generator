@@ -2484,11 +2484,6 @@ const TranscriptionViewer: React.FC = () => {
                 )}
               </div>
             </div>
-            {!isDemoTranscription && (
-              <button type="button" className="premium-change-source-button" onClick={() => navigate("/upload")}>
-                Change source
-              </button>
-            )}
           </div>
         </header>
 
@@ -2522,11 +2517,6 @@ const TranscriptionViewer: React.FC = () => {
                 <span className={`premium-completed-badge status-${displayedProcessingStatus}`}>
                   {displayedStatusLabel}
                 </span>
-                {transcription.processing_status === "completed_with_warning" && (
-                  <span className="premium-completed-badge premium-confidence-badge">
-                    {transcription.warning_message || "Playback available, but notation generation was limited."}
-                  </span>
-                )}
                 {capabilityBadges.map((badge) => (
                   <span className="premium-completed-badge" key={`status-${badge}`}>{badge}</span>
                 ))}
