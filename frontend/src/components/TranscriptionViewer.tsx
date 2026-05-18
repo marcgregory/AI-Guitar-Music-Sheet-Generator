@@ -1677,6 +1677,7 @@ const TranscriptionViewer: React.FC = () => {
   const [scoreViewMode, setScoreViewMode] = useState<"score" | "tab">("score");
   const [isRetryingTranscription, setIsRetryingTranscription] = useState(false);
   const [isGeneratingTab, setIsGeneratingTab] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [reprocessingTrackId, setReprocessingTrackId] = useState<number | null>(
     null,
   );
@@ -2001,6 +2002,15 @@ const TranscriptionViewer: React.FC = () => {
     return () => window.cancelAnimationFrame(frameId);
   }, [isPlaying]);
 
+  // Clean up generation polling interval on unmount
+  useEffect(() => {
+    return () => {
+      // Note: The polling interval is cleaned up in the handleGenerateTab function
+      // This effect is just a safety net in case the component unmounts unexpectedly
+      // while polling is active
+    };
+  }, []);
+
   useEffect(() => {
     if (!audioUrl) {
       queueMicrotask(() => setWaveformPeaks([]));
@@ -2227,13 +2237,23 @@ const TranscriptionViewer: React.FC = () => {
   const handleRetryTranscription = async () => {
     if (!token || !transcription?.id || transcription.is_demo) return;
 
+    // Prevent multiple concurrent retries
+    if (isRetryingTranscription) return;
+
     try {
       setError(null);
       setIsRetryingTranscription(true);
       await audioService.generateTab(transcription.id, token, {
         sensitivity: "high",
       });
-      navigate(`/processing/${transcription.id}`);
+      // Note: We don't navigate to processing screen here to stay on the transcription viewer
+      // The generation completion will be handled by the existing polling mechanism in handleGenerateTab
+      // or we could refactor to share logic, but for now we just update the transcription state
+      const result = await audioService.getTranscriptionResult(
+        transcription.id,
+        token,
+      );
+      setTranscription(result);
     } catch (err: unknown) {
       setError(
         errorMessageOf(
@@ -2249,11 +2269,88 @@ const TranscriptionViewer: React.FC = () => {
   const handleGenerateTab = async () => {
     if (!token || !transcription?.id || transcription.is_demo) return;
 
+    // Prevent multiple concurrent generations
+    if (isGeneratingTab) return;
+
+    // Set generation status based on stem type
+    const isRhythm = transcription.selected_stem === "drums";
+    setGenerationStatus(
+      isRhythm
+        ? "Generating Rhythm"
+        : "Generating Transcription",
+    );
+    setIsGeneratingTab(true);
+    setError(null);
+
+    // Start polling for completion
+    let pollingInterval: NodeJS.Timeout | null = null;
+
     try {
-      setError(null);
-      setIsGeneratingTab(true);
+      // Start the generation process
       await audioService.generateTab(transcription.id, token);
-      navigate(`/processing/${transcription.id}`);
+
+      // Set up polling to check for completion
+      pollingInterval = setInterval(async () => {
+        try {
+          // Fetch latest transcription data
+          const result = await audioService.getTranscriptionResult(
+            transcription.id,
+            token,
+          );
+
+          // Check for error conditions first
+          const hasError =
+            result.processing_status === "failed" ||
+            !!result.processing_error;
+
+          if (hasError) {
+            // Generation failed, stop polling
+            if (pollingInterval) {
+              clearInterval(pollingInterval);
+              pollingInterval = null;
+            }
+            // Update transcription state to show error
+            setTranscription(result);
+            // Reset generation states
+            setIsGeneratingTab(false);
+            setGenerationStatus(null);
+            setError(
+              transcription.selected_stem === "drums"
+                ? "Failed to generate rhythm from this stem"
+                : "Failed to generate tab from this stem",
+            );
+            return;
+          }
+
+          // Check if generation is complete based on stem type
+          let isComplete = false;
+
+          if (isRhythm) {
+            // For rhythm generation, check if notesData contains drum hits
+            isComplete = hasDrumHits(result.notes_data);
+          } else {
+            // For tab generation, check if tablature_data is populated
+            isComplete = !!result.tablature_data && result.tablature_data.length > 0;
+          }
+
+          if (isComplete) {
+            // Generation is complete, stop polling
+            if (pollingInterval) {
+              clearInterval(pollingInterval);
+              pollingInterval = null;
+            }
+            // Update transcription state to trigger UI refresh
+            setTranscription(result);
+            // Reset generation states
+            setIsGeneratingTab(false);
+            setGenerationStatus(null);
+          }
+        } catch (pollErr) {
+          // Continue polling on error, but log it
+          console.warn("Polling error:", pollErr);
+        }
+      }, 2000); // Poll every 2 seconds
+
     } catch (err: unknown) {
       setError(
         errorMessageOf(
@@ -2264,7 +2361,13 @@ const TranscriptionViewer: React.FC = () => {
         ),
       );
     } finally {
+      // Clean up polling
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+      }
       setIsGeneratingTab(false);
+      setGenerationStatus(null);
     }
   };
 
@@ -2812,15 +2915,29 @@ const TranscriptionViewer: React.FC = () => {
                 <p>{stemReadyMessage}</p>
               </div>
               {generateTabAllowed && (
-                <button
-                  type="button"
-                  className="button-primary premium-generate-tab-button"
-                  onClick={handleGenerateTab}
-                  disabled={isGeneratingTab}
-                >
-                  <FileDown aria-hidden="true" />
-                  {isGeneratingTab ? "Starting..." : generateTabLabel}
-                </button>
+                <div>
+                  <button
+                    type="button"
+                    className="button-primary premium-generate-tab-button"
+                    onClick={handleGenerateTab}
+                    disabled={isGeneratingTab}
+                  >
+                    <FileDown aria-hidden="true" />
+                    {isGeneratingTab
+                      ? generationStatus || "Starting..."
+                      : generateTabLabel}
+                  </button>
+                  {generationStatus && (
+                    <p className="generation-status-subtitle">
+                      {generationStatus}
+                      <span className="generation-status-details">
+                        {transcription.selected_stem === "drums"
+                          ? "Creating rhythm data from the isolated drum stem…"
+                          : "Creating tabs and score from the isolated stem…"}
+                      </span>
+                    </p>
+                  )}
+                </div>
               )}
             </section>
           )}
@@ -3082,14 +3199,29 @@ const TranscriptionViewer: React.FC = () => {
                       </p>
                       <div className="premium-inline-empty-actions">
                         {generateTabAllowed && (
-                          <button
-                            type="button"
-                            className="button-primary"
-                            onClick={handleGenerateTab}
-                            disabled={isGeneratingTab}
-                          >
-                            {isGeneratingTab ? "Starting..." : generateTabLabel}
-                          </button>
+                          <div>
+                            <button
+                              type="button"
+                              className="button-primary"
+                              onClick={handleGenerateTab}
+                              disabled={isGeneratingTab}
+                            >
+                              <FileDown aria-hidden="true" />
+                              {isGeneratingTab
+                                ? generationStatus || "Starting..."
+                                : generateTabLabel}
+                            </button>
+                            {generationStatus && (
+                              <p className="generation-status-subtitle">
+                                {generationStatus}
+                                <span className="generation-status-details">
+                                  {transcription.selected_stem === "drums"
+                                    ? "Creating rhythm data from the isolated drum stem…"
+                                    : "Creating tabs and score from the isolated stem…"}
+                                </span>
+                              </p>
+                            )}
+                          </div>
                         )}
                         {!isDemoTranscription && !selectedStemReady && (
                           <button

@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import audioService, { type Transcription } from "../../services/audioService";
-import { buildTranscriptionMetadata, type TranscriptionMetadata } from "../../utils/transcriptionMetadata";
+import {
+  buildTranscriptionMetadata,
+  type TranscriptionMetadata,
+} from "../../utils/transcriptionMetadata";
 import { Icon } from "../Icon";
 import { useAuth } from "./AuthContext";
 
@@ -11,7 +14,14 @@ interface Project {
   description: string;
   createdAt: string;
   audioFileName: string;
-  status: "pending" | "queued" | "processing" | "stem_ready" | "completed" | "warning" | "failed";
+  status:
+    | "pending"
+    | "queued"
+    | "processing"
+    | "stem_ready"
+    | "completed"
+    | "warning"
+    | "failed";
   duration: number;
   difficulty: "beginner" | "intermediate" | "advanced";
   processingError?: string | null;
@@ -23,9 +33,15 @@ const filenameFromPath = (path?: string | null): string =>
   path?.split(/[\\/]/).pop() || "Audio source";
 
 const isNonBlockingProcessingWarning = (error?: string | null): boolean =>
-  Boolean(error?.startsWith("Source separation unavailable; processed the full mix instead."));
+  Boolean(
+    error?.startsWith(
+      "Source separation unavailable; processed the full mix instead.",
+    ),
+  );
 
-const getTranscriptionStatus = (transcription: Transcription): Project["status"] => {
+const getTranscriptionStatus = (
+  transcription: Transcription,
+): Project["status"] => {
   if (
     transcription.processing_status === "pending" ||
     transcription.processing_status === "queued" ||
@@ -40,7 +56,10 @@ const getTranscriptionStatus = (transcription: Transcription): Project["status"]
     }
     return transcription.processing_status;
   }
-  if (transcription.processing_error && !isNonBlockingProcessingWarning(transcription.processing_error)) {
+  if (
+    transcription.processing_error &&
+    !isNonBlockingProcessingWarning(transcription.processing_error)
+  ) {
     return "failed";
   }
   return transcription.is_processed ? "completed" : "processing";
@@ -59,34 +78,38 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
     ? "YouTube audio"
     : transcription.is_demo
       ? "Bundled demo stem"
-    : filenameFromPath(transcription.audio_file_path);
+      : filenameFromPath(transcription.audio_file_path);
 
   return {
     id: transcription.id,
     title: transcription.title || `Transcription ${transcription.id}`,
-    description:
-      transcription.is_demo
-        ? "Try the demo transcription with playable stem audio, TAB, and notation."
+    description: transcription.is_demo
+      ? "Try the demo transcription with playable stem audio, TAB, and notation."
       : status === "failed"
         ? transcription.processing_error || "Processing failed"
-      : status === "warning"
+        : status === "warning"
           ? transcription.warning_message || metadata.description
-      : status === "stem_ready"
-          ? "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
-        : status === "queued"
-          ? "Queued because another Railway MVP job is processing"
-        : status === "pending"
-          ? "Waiting for the selected-stem job to start"
-        : status === "completed"
-          ? transcription.processing_error && isNonBlockingProcessingWarning(transcription.processing_error)
-            ? "Score and exports are ready from the full mix"
-            : metadata.description
-          : "Analysis is running in the background",
+          : status === "stem_ready"
+            ? "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+            : status === "queued"
+              ? "Queued because another Railway MVP job is processing"
+              : status === "pending"
+                ? "Waiting for the selected-stem job to start"
+                : status === "completed"
+                  ? transcription.processing_error &&
+                    isNonBlockingProcessingWarning(
+                      transcription.processing_error,
+                    )
+                    ? "Score and exports are ready from the full mix"
+                    : metadata.description
+                  : "Analysis is running in the background",
     createdAt: transcription.created_at || new Date().toISOString(),
     audioFileName,
     status,
     duration: metadata.durationSeconds || transcription.duration || 0,
-    difficulty: getDifficulty(metadata.durationSeconds || transcription.duration),
+    difficulty: getDifficulty(
+      metadata.durationSeconds || transcription.duration,
+    ),
     processingError: transcription.processing_error,
     isDemo: Boolean(transcription.is_demo),
     metadata,
@@ -139,11 +162,7 @@ type ToastState = {
   message: string;
 } | null;
 
-type ProjectAction =
-  | "open"
-  | "source"
-  | "delete"
-  | "error";
+type ProjectAction = "open" | "source" | "delete" | "error";
 
 type ProjectActionMenuItem = {
   action: ProjectAction;
@@ -152,10 +171,16 @@ type ProjectActionMenuItem = {
   dangerous?: boolean;
 };
 
-const getProjectActionMenuItems = (project: Project): ProjectActionMenuItem[] => {
+const getProjectActionMenuItems = (
+  project: Project,
+): ProjectActionMenuItem[] => {
   const items: ProjectActionMenuItem[] = [];
 
-  if (project.status === "completed" || project.status === "warning" || project.status === "stem_ready") {
+  if (
+    project.status === "completed" ||
+    project.status === "warning" ||
+    project.status === "stem_ready"
+  ) {
     items.push({ action: "source", label: "Open source audio", icon: "music" });
   }
 
@@ -168,7 +193,11 @@ const getProjectActionMenuItems = (project: Project): ProjectActionMenuItem[] =>
   }
 
   if (project.status === "failed") {
-    items.push({ action: "error", label: "View processing error", icon: "alert" });
+    items.push({
+      action: "error",
+      label: "View processing error",
+      icon: "alert",
+    });
   }
 
   if (!project.isDemo) {
@@ -262,7 +291,9 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(!cachedTranscriptions);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
-  const [openMenuProjectId, setOpenMenuProjectId] = useState<number | null>(null);
+  const [openMenuProjectId, setOpenMenuProjectId] = useState<number | null>(
+    null,
+  );
   const [deleteCandidate, setDeleteCandidate] = useState<Project | null>(null);
   const [errorCandidate, setErrorCandidate] = useState<Project | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -278,7 +309,7 @@ const Dashboard: React.FC = () => {
       ? `/transcription/${project.id}`
       : project.status === "warning"
         ? `/transcription/${project.id}`
-      : `/processing/${project.id}`;
+        : `/processing/${project.id}`;
 
   const showToast = (nextToast: ToastState) => {
     setToast(nextToast);
@@ -287,7 +318,10 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const handleProjectAction = async (project: Project, action: ProjectAction) => {
+  const handleProjectAction = async (
+    project: Project,
+    action: ProjectAction,
+  ) => {
     setOpenMenuProjectId(null);
 
     if (action === "open") {
@@ -302,7 +336,10 @@ const Dashboard: React.FC = () => {
 
     if (action === "delete") {
       if (project.isDemo) {
-        showToast({ tone: "error", message: "Demo transcriptions are shared examples." });
+        showToast({
+          tone: "error",
+          message: "Demo transcriptions are shared examples.",
+        });
         return;
       }
       setDeleteCandidate(project);
@@ -319,7 +356,8 @@ const Dashboard: React.FC = () => {
       } catch (error: any) {
         showToast({
           tone: "error",
-          message: error.response?.data?.detail || "Source audio could not be opened.",
+          message:
+            error.response?.data?.detail || "Source audio could not be opened.",
         });
       }
     }
@@ -338,7 +376,8 @@ const Dashboard: React.FC = () => {
     } catch (error: any) {
       showToast({
         tone: "error",
-        message: error.response?.data?.detail || "Could not delete transcription.",
+        message:
+          error.response?.data?.detail || "Could not delete transcription.",
       });
     } finally {
       setIsDeleting(false);
@@ -350,10 +389,11 @@ const Dashboard: React.FC = () => {
     let refreshTimer: number | undefined;
 
     const hasProcessingProject = (projectList: Project[]) =>
-      projectList.some((project) =>
-        project.status === "pending" ||
-        project.status === "queued" ||
-        project.status === "processing",
+      projectList.some(
+        (project) =>
+          project.status === "pending" ||
+          project.status === "queued" ||
+          project.status === "processing",
       );
 
     const stopAutoRefresh = () => {
@@ -387,7 +427,9 @@ const Dashboard: React.FC = () => {
         return nextProjects;
       } catch (error: any) {
         if (isMounted) {
-          setLoadError(error.response?.data?.detail || "Failed to load transcriptions");
+          setLoadError(
+            error.response?.data?.detail || "Failed to load transcriptions",
+          );
           if (showLoading) setProjects([]);
           setLoading(false);
         }
@@ -453,20 +495,50 @@ const Dashboard: React.FC = () => {
     return null;
   }
 
-  const completedCount = projects.filter((project) =>
-    project.status === "completed" || project.status === "warning" || project.status === "stem_ready",
+  const completedCount = projects.filter(
+    (project) =>
+      project.status === "completed" ||
+      project.status === "warning" ||
+      project.status === "stem_ready",
   ).length;
-  const processingCount = projects.filter((project) =>
-    project.status === "pending" || project.status === "queued" || project.status === "processing",
+  const processingCount = projects.filter(
+    (project) =>
+      project.status === "pending" ||
+      project.status === "queued" ||
+      project.status === "processing",
   ).length;
-  const totalMinutes = Math.floor(projects.reduce((sum, project) => sum + project.duration, 0) / 60);
+  const totalMinutes = Math.floor(
+    projects.reduce((sum, project) => sum + project.duration, 0) / 60,
+  );
   const featuredProject = projects[0];
-  const sectionTitle = featuredProject?.isDemo ? "Try the demo transcription" : "Recent project";
+  const sectionTitle = featuredProject?.isDemo
+    ? "Try the demo transcription"
+    : "Recent project";
   const statCards = [
-    { label: "Total projects", value: projects.length, icon: "folder" as const, tone: "amber" },
-    { label: "Completed", value: completedCount, icon: "check" as const, tone: "green" },
-    { label: "Processing", value: processingCount, icon: "clock" as const, tone: "gold" },
-    { label: "Analyzed audio", value: `${totalMinutes}m`, icon: "waveform" as const, tone: "blue" },
+    {
+      label: "Total projects",
+      value: projects.length,
+      icon: "folder" as const,
+      tone: "amber",
+    },
+    {
+      label: "Completed",
+      value: completedCount,
+      icon: "check" as const,
+      tone: "green",
+    },
+    {
+      label: "Processing",
+      value: processingCount,
+      icon: "clock" as const,
+      tone: "gold",
+    },
+    {
+      label: "Analyzed audio",
+      value: `${totalMinutes}m`,
+      icon: "waveform" as const,
+      tone: "blue",
+    },
   ];
   const quickActions = [
     {
@@ -494,8 +566,17 @@ const Dashboard: React.FC = () => {
       onClick: () => alert("Template library coming soon."),
     },
   ];
-  const ProjectCover = ({ title, tone }: { title: string; tone: TranscriptionMetadata["tone"] }) => (
-    <div className={`project-cover project-cover-${tone}`} aria-label={`${title} audio artwork`}>
+  const ProjectCover = ({
+    title,
+    tone,
+  }: {
+    title: string;
+    tone: TranscriptionMetadata["tone"];
+  }) => (
+    <div
+      className={`project-cover project-cover-${tone}`}
+      aria-label={`${title} audio artwork`}
+    >
       <span className="project-cover-orbit" aria-hidden="true" />
       <span className="project-cover-play" aria-hidden="true">
         <Icon name="arrow" />
@@ -512,10 +593,17 @@ const Dashboard: React.FC = () => {
     ] as const;
 
     return (
-      <div className="project-capability-preview" aria-label="Output capabilities">
+      <div
+        className="project-capability-preview"
+        aria-label="Output capabilities"
+      >
         {capabilities.map(([label, available]) => (
           <span className={available ? "available" : "unavailable"} key={label}>
-            {available ? <Icon name="check" /> : <span aria-hidden="true">x</span>}
+            {available ? (
+              <Icon name="check" />
+            ) : (
+              <span aria-hidden="true">x</span>
+            )}
             {label}
           </span>
         ))}
@@ -526,19 +614,29 @@ const Dashboard: React.FC = () => {
   const ProjectMetadataBlock = ({ project }: { project: Project }) => (
     <>
       <div className="project-badge-row" aria-label="Transcription metadata">
-        <span className={`project-stem-badge stem-tone-${project.metadata.tone}`}>
+        <span
+          className={`project-stem-badge stem-tone-${project.metadata.tone}`}
+        >
           {project.metadata.sourceBadge}
         </span>
         {project.metadata.outputBadges.map((badge) => (
-          <span className="project-output-badge" key={badge}>{badge}</span>
+          <span className="project-output-badge" key={badge}>
+            {badge}
+          </span>
         ))}
       </div>
 
       <div className="project-instrument-row">
-        <span>Stem: <strong>{project.metadata.stemLabel}</strong></span>
-        <span>Instrument: <strong>{project.metadata.instrumentLabel}</strong></span>
+        <span>
+          Stem: <strong>{project.metadata.stemLabel}</strong>
+        </span>
+        <span>
+          Instrument: <strong>{project.metadata.instrumentLabel}</strong>
+        </span>
         {project.metadata.isMultiTrack && (
-          <span>Tracks: <strong>{project.metadata.trackCount}</strong></span>
+          <span>
+            Tracks: <strong>{project.metadata.trackCount}</strong>
+          </span>
         )}
       </div>
 
@@ -548,7 +646,11 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="dashboard-page" ref={dashboardRef}>
-      {toast && <div className={`studio-toast studio-toast-${toast.tone}`}>{toast.message}</div>}
+      {toast && (
+        <div className={`studio-toast studio-toast-${toast.tone}`}>
+          {toast.message}
+        </div>
+      )}
       <div className="dashboard-content">
         <header className="dashboard-header cinematic-dashboard-hero">
           <div className="dashboard-hero-art" aria-hidden="true">
@@ -565,19 +667,27 @@ const Dashboard: React.FC = () => {
           <div className="dashboard-header-content">
             <h1 className="dashboard-title">MusicSheet Studio</h1>
             <p className="dashboard-subtitle">
-              Welcome back, {user.username}. Turn rough audio into readable guitar scores, clean tabs, and exportable practice files.
+              Welcome back, {user.username}. Turn rough audio into readable
+              guitar scores, clean tabs, and exportable practice files.
             </p>
           </div>
           <div className="dashboard-header-actions">
             <button
               onClick={() => setViewMode(viewMode === "grid" ? "list" : "grid")}
               className={`view-mode-button icon-button ${viewMode === "list" ? "active" : ""}`}
-              aria-label={viewMode === "grid" ? "Switch to list view" : "Switch to grid view"}
+              aria-label={
+                viewMode === "grid"
+                  ? "Switch to list view"
+                  : "Switch to grid view"
+              }
               title={viewMode === "grid" ? "List view" : "Grid view"}
             >
               <Icon name={viewMode === "grid" ? "list" : "grid"} />
             </button>
-            <button onClick={handleNewTranscription} className="new-transcription-button">
+            <button
+              onClick={handleNewTranscription}
+              className="new-transcription-button"
+            >
               <Icon name="plus" />
               <span>New transcription</span>
             </button>
@@ -587,7 +697,10 @@ const Dashboard: React.FC = () => {
         <main className="dashboard-main">
           <div className="dashboard-stats">
             {statCards.map((stat) => (
-              <div className={`stat-card stat-card-${stat.tone}`} key={stat.label}>
+              <div
+                className={`stat-card stat-card-${stat.tone}`}
+                key={stat.label}
+              >
                 <Icon name={stat.icon} />
                 <div className="stat-content">
                   <h3 className="stat-value">{stat.value}</h3>
@@ -605,15 +718,23 @@ const Dashboard: React.FC = () => {
             {loading ? (
               <div className="loading-state">
                 <div className="loading-spinner"></div>
-                <p className="loading-text">Loading your transcription library...</p>
+                <p className="loading-text">
+                  Loading your transcription library...
+                </p>
               </div>
             ) : projects.length === 0 ? (
               <div className="empty-state">
-                <h3 className="empty-state-title">Your first score is waiting</h3>
+                <h3 className="empty-state-title">
+                  Your first score is waiting
+                </h3>
                 <p className="empty-state-description">
-                  Upload an MP3, WAV, or YouTube link and let the studio generate guitar notation from it.
+                  Upload an MP3, WAV, or YouTube link and let the studio
+                  generate guitar notation from it.
                 </p>
-                <button onClick={handleNewTranscription} className="primary-action-button">
+                <button
+                  onClick={handleNewTranscription}
+                  className="primary-action-button"
+                >
                   Start first transcription
                 </button>
               </div>
@@ -622,11 +743,19 @@ const Dashboard: React.FC = () => {
                 className={`project-card featured-project-card project-card-${featuredProject.status}`}
                 onDoubleClick={() => navigate(getProjectRoute(featuredProject))}
               >
-                <ProjectCover title={featuredProject.title} tone={featuredProject.metadata.tone} />
+                <ProjectCover
+                  title={featuredProject.title}
+                  tone={featuredProject.metadata.tone}
+                />
                 <div className="project-body">
                   <div className="project-card-header">
                     <h3 className="project-title">{featuredProject.title}</h3>
-                    <div className="project-status-badge" style={{ background: getStatusGradient(featuredProject.status) }}>
+                    <div
+                      className="project-status-badge"
+                      style={{
+                        background: getStatusGradient(featuredProject.status),
+                      }}
+                    >
                       {getStatusDisplay(featuredProject.status)}
                     </div>
                     <ProjectActionMenu
@@ -634,28 +763,38 @@ const Dashboard: React.FC = () => {
                       isOpen={openMenuProjectId === featuredProject.id}
                       onToggle={() =>
                         setOpenMenuProjectId((currentId) =>
-                          currentId === featuredProject.id ? null : featuredProject.id,
+                          currentId === featuredProject.id
+                            ? null
+                            : featuredProject.id,
                         )
                       }
                       onAction={handleProjectAction}
                     />
                   </div>
 
-                  <p className="project-description">{featuredProject.description}</p>
+                  <p className="project-description">
+                    {featuredProject.description}
+                  </p>
                   <ProjectMetadataBlock project={featuredProject} />
 
                   <div className="project-meta">
                     <div className="meta-item">
                       <span className="meta-label">Source</span>
-                      <span className="meta-value">{featuredProject.audioFileName}</span>
+                      <span className="meta-value">
+                        {featuredProject.audioFileName}
+                      </span>
                     </div>
                     <div className="meta-item">
                       <span className="meta-label">Duration</span>
-                      <span className="meta-value">{formatDuration(featuredProject.duration)}</span>
+                      <span className="meta-value">
+                        {formatDuration(featuredProject.duration)}
+                      </span>
                     </div>
                     <div className="meta-item">
                       <span className="meta-label">Created</span>
-                      <span className="meta-value">{formatCreatedDate(featuredProject.createdAt)}</span>
+                      <span className="meta-value">
+                        {formatCreatedDate(featuredProject.createdAt)}
+                      </span>
                     </div>
                   </div>
 
@@ -669,19 +808,25 @@ const Dashboard: React.FC = () => {
                       <Icon name="gauge" />
                       {featuredProject.difficulty}
                     </span>
-                    {(featuredProject.status === "completed" || featuredProject.status === "warning") && (
+                    {(featuredProject.status === "completed" ||
+                      featuredProject.status === "warning") && (
                       <span className="quality-badge">
                         <Icon name="check" />
                         {featuredProject.isDemo
                           ? "example"
-                          : featuredProject.status === "warning" ? "Stem Ready" : "export ready"}
+                          : featuredProject.status === "warning"
+                            ? "Stem Ready"
+                            : "export ready"}
                       </span>
                     )}
                   </div>
                 </div>
 
                 <div className="project-actions">
-                  <button onClick={() => navigate(getProjectRoute(featuredProject))} className="action-button view-button">
+                  <button
+                    onClick={() => navigate(getProjectRoute(featuredProject))}
+                    className="action-button view-button"
+                  >
                     <Icon name="eye" />
                     <span>View</span>
                   </button>
@@ -697,11 +842,19 @@ const Dashboard: React.FC = () => {
                         className={`project-card project-card-${project.status}`}
                         onDoubleClick={() => navigate(getProjectRoute(project))}
                       >
-                        <ProjectCover title={project.title} tone={project.metadata.tone} />
+                        <ProjectCover
+                          title={project.title}
+                          tone={project.metadata.tone}
+                        />
                         <div className="project-body">
                           <div className="project-card-header">
                             <h3 className="project-title">{project.title}</h3>
-                            <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
+                            <div
+                              className="project-status-badge"
+                              style={{
+                                background: getStatusGradient(project.status),
+                              }}
+                            >
                               {getStatusDisplay(project.status)}
                             </div>
                             <ProjectActionMenu
@@ -715,21 +868,29 @@ const Dashboard: React.FC = () => {
                               onAction={handleProjectAction}
                             />
                           </div>
-                          <p className="project-description">{project.description}</p>
+                          <p className="project-description">
+                            {project.description}
+                          </p>
                           <ProjectMetadataBlock project={project} />
 
                           <div className="project-meta">
                             <div className="meta-item">
                               <span className="meta-label">Source</span>
-                              <span className="meta-value">{project.audioFileName}</span>
+                              <span className="meta-value">
+                                {project.audioFileName}
+                              </span>
                             </div>
                             <div className="meta-item">
                               <span className="meta-label">Duration</span>
-                              <span className="meta-value">{formatDuration(project.duration)}</span>
+                              <span className="meta-value">
+                                {formatDuration(project.duration)}
+                              </span>
                             </div>
                             <div className="meta-item">
                               <span className="meta-label">Created</span>
-                              <span className="meta-value">{formatCreatedDate(project.createdAt)}</span>
+                              <span className="meta-value">
+                                {formatCreatedDate(project.createdAt)}
+                              </span>
                             </div>
                           </div>
 
@@ -743,17 +904,25 @@ const Dashboard: React.FC = () => {
                               <Icon name="gauge" />
                               {project.difficulty}
                             </span>
-                            {(project.status === "completed" || project.status === "warning") && (
+                            {(project.status === "completed" ||
+                              project.status === "warning") && (
                               <span className="quality-badge">
                                 <Icon name="check" />
-                                {project.isDemo ? "example" : project.status === "warning" ? "Stem Ready" : "export ready"}
+                                {project.isDemo
+                                  ? "example"
+                                  : project.status === "warning"
+                                    ? "Stem Ready"
+                                    : "export ready"}
                               </span>
                             )}
                           </div>
                         </div>
 
                         <div className="project-actions">
-                          <button onClick={() => navigate(getProjectRoute(project))} className="action-button view-button">
+                          <button
+                            onClick={() => navigate(getProjectRoute(project))}
+                            className="action-button view-button"
+                          >
                             <Icon name="eye" />
                             <span>View</span>
                           </button>
@@ -764,12 +933,25 @@ const Dashboard: React.FC = () => {
                 ) : (
                   <div className="projects-list">
                     {projects.map((project) => (
-                      <article key={project.id} className={`project-list-item project-list-item-${project.status}`}>
-                        <ProjectCover title={project.title} tone={project.metadata.tone} />
+                      <article
+                        key={project.id}
+                        className={`project-list-item project-list-item-${project.status}`}
+                      >
+                        <ProjectCover
+                          title={project.title}
+                          tone={project.metadata.tone}
+                        />
                         <div className="project-list-content">
                           <div className="project-list-header">
-                            <h3 className="project-list-title">{project.title}</h3>
-                            <div className="project-list-status" style={{ background: getStatusGradient(project.status) }}>
+                            <h3 className="project-list-title">
+                              {project.title}
+                            </h3>
+                            <div
+                              className="project-list-status"
+                              style={{
+                                background: getStatusGradient(project.status),
+                              }}
+                            >
                               {getStatusDisplay(project.status)}
                             </div>
                             <ProjectActionMenu
@@ -785,34 +967,52 @@ const Dashboard: React.FC = () => {
                           </div>
 
                           <div className="project-list-body">
-                            <p className="project-list-description">{project.description}</p>
+                            <p className="project-list-description">
+                              {project.description}
+                            </p>
                             <ProjectMetadataBlock project={project} />
 
                             <div className="project-list-info">
                               <div className="info-row">
                                 <span className="info-label">File</span>
-                                <span className="info-value">{project.audioFileName}</span>
+                                <span className="info-value">
+                                  {project.audioFileName}
+                                </span>
                               </div>
                               <div className="info-row">
                                 <span className="info-label">Duration</span>
-                                <span className="info-value">{formatDuration(project.duration)}</span>
+                                <span className="info-value">
+                                  {formatDuration(project.duration)}
+                                </span>
                               </div>
                               <div className="info-row">
                                 <span className="info-label">Difficulty</span>
-                                <span className="info-value" style={{ color: getDifficultyColor(project.difficulty) }}>
+                                <span
+                                  className="info-value"
+                                  style={{
+                                    color: getDifficultyColor(
+                                      project.difficulty,
+                                    ),
+                                  }}
+                                >
                                   {project.difficulty}
                                 </span>
                               </div>
                               <div className="info-row">
                                 <span className="info-label">Created</span>
-                                <span className="info-value">{formatCreatedDateTime(project.createdAt)}</span>
+                                <span className="info-value">
+                                  {formatCreatedDateTime(project.createdAt)}
+                                </span>
                               </div>
                             </div>
                           </div>
                         </div>
 
                         <div className="project-list-actions">
-                          <button onClick={() => navigate(getProjectRoute(project))} className="action-button list-action-button">
+                          <button
+                            onClick={() => navigate(getProjectRoute(project))}
+                            className="action-button list-action-button"
+                          >
                             <Icon name="eye" />
                             <span>View</span>
                           </button>
@@ -836,11 +1036,19 @@ const Dashboard: React.FC = () => {
                       className={`project-card project-card-${project.status}`}
                       onDoubleClick={() => navigate(getProjectRoute(project))}
                     >
-                      <ProjectCover title={project.title} tone={project.metadata.tone} />
+                      <ProjectCover
+                        title={project.title}
+                        tone={project.metadata.tone}
+                      />
                       <div className="project-body">
                         <div className="project-card-header">
                           <h3 className="project-title">{project.title}</h3>
-                          <div className="project-status-badge" style={{ background: getStatusGradient(project.status) }}>
+                          <div
+                            className="project-status-badge"
+                            style={{
+                              background: getStatusGradient(project.status),
+                            }}
+                          >
                             {getStatusDisplay(project.status)}
                           </div>
                           <ProjectActionMenu
@@ -854,26 +1062,37 @@ const Dashboard: React.FC = () => {
                             onAction={handleProjectAction}
                           />
                         </div>
-                        <p className="project-description">{project.description}</p>
+                        <p className="project-description">
+                          {project.description}
+                        </p>
                         <ProjectMetadataBlock project={project} />
                         <div className="project-meta">
                           <div className="meta-item">
                             <span className="meta-label">Source</span>
-                            <span className="meta-value">{project.audioFileName}</span>
+                            <span className="meta-value">
+                              {project.audioFileName}
+                            </span>
                           </div>
                           <div className="meta-item">
                             <span className="meta-label">Duration</span>
-                            <span className="meta-value">{formatDuration(project.duration)}</span>
+                            <span className="meta-value">
+                              {formatDuration(project.duration)}
+                            </span>
                           </div>
                           <div className="meta-item">
                             <span className="meta-label">Created</span>
-                            <span className="meta-value">{formatCreatedDate(project.createdAt)}</span>
+                            <span className="meta-value">
+                              {formatCreatedDate(project.createdAt)}
+                            </span>
                           </div>
                         </div>
                       </div>
 
                       <div className="project-actions">
-                        <button onClick={() => navigate(getProjectRoute(project))} className="action-button view-button">
+                        <button
+                          onClick={() => navigate(getProjectRoute(project))}
+                          className="action-button view-button"
+                        >
                           <Icon name="eye" />
                           <span>View</span>
                         </button>
@@ -888,7 +1107,11 @@ const Dashboard: React.FC = () => {
           <section className="quick-actions-section">
             <div className="quick-actions-grid">
               {quickActions.map((action) => (
-                <button onClick={action.onClick} className="quick-action-button" key={action.title}>
+                <button
+                  onClick={action.onClick}
+                  className="quick-action-button"
+                  key={action.title}
+                >
                   <span className="quick-action-icon">
                     <Icon name={action.icon} />
                   </span>
@@ -922,7 +1145,8 @@ const Dashboard: React.FC = () => {
             </p>
             {deleteCandidate.status === "processing" && (
               <p className="studio-dialog-warning">
-                Active processing cancellation is best-effort and may finish silently.
+                Active processing cancellation is best-effort and may finish
+                silently.
               </p>
             )}
             <div className="studio-dialog-actions">
@@ -957,7 +1181,10 @@ const Dashboard: React.FC = () => {
             aria-labelledby="processing-error-title"
           >
             <h3 id="processing-error-title">Processing error</h3>
-            <p>{errorCandidate.processingError || "No detailed processing error was returned."}</p>
+            <p>
+              {errorCandidate.processingError ||
+                "No detailed processing error was returned."}
+            </p>
             <div className="studio-dialog-actions">
               <button
                 type="button"

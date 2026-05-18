@@ -207,7 +207,11 @@ const AudioUpload: React.FC = () => {
   const fallbackErrorMessage = (err: any, fallback: string): string => {
     const detail = err.response?.data?.detail;
     if (typeof detail === "string") return detail;
-    if (detail && typeof detail === "object" && typeof detail.error === "string") {
+    if (
+      detail &&
+      typeof detail === "object" &&
+      typeof detail.error === "string"
+    ) {
       return detail.error;
     }
     return err.message || fallback;
@@ -806,7 +810,11 @@ const StemSelector = ({
       <span id="stem-selector-title">Choose one target stem</span>
       <small>Demucs default stems: vocals, drums, bass, other.</small>
     </div>
-    <div className="stem-option-grid" role="radiogroup" aria-label="Target stem">
+    <div
+      className="stem-option-grid"
+      role="radiogroup"
+      aria-label="Target stem"
+    >
       {stemOptions.map((option) => (
         <button
           key={option.value}
