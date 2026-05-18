@@ -75,19 +75,56 @@ def _ensure_transcription_phase1_columns():
 
 
 def _demo_tablature_data() -> dict:
-    tab_notes = [
-        {"string": 6, "fret": 0, "onset": 0.0, "offset": 0.36, "time": 0.0, "confidence": 0.96},
-        {"string": 6, "fret": 3, "onset": 0.5, "offset": 0.86, "time": 0.5, "confidence": 0.95},
-        {"string": 5, "fret": 0, "onset": 1.0, "offset": 1.36, "time": 1.0, "confidence": 0.97},
-        {"string": 5, "fret": 2, "onset": 1.5, "offset": 1.86, "time": 1.5, "confidence": 0.95},
-        {"string": 4, "fret": 0, "onset": 2.0, "offset": 2.36, "time": 2.0, "confidence": 0.94},
-        {"string": 5, "fret": 2, "onset": 2.5, "offset": 2.86, "time": 2.5, "confidence": 0.94},
-        {"string": 5, "fret": 0, "onset": 3.0, "offset": 3.16, "time": 3.0, "confidence": 0.94},
+    tab_pattern = [
+        (6, 0, 0.0),
+        (6, 3, 0.5),
+        (5, 0, 1.0),
+        (5, 2, 1.5),
+        (4, 0, 2.0),
+        (5, 2, 2.5),
+        (5, 0, 3.0),
+        (6, 0, 3.5),
+        (6, 3, 4.0),
+        (5, 0, 4.5),
+        (5, 2, 5.0),
+        (4, 0, 5.5),
+        (4, 2, 6.0),
+        (4, 0, 6.5),
+        (5, 2, 7.0),
+        (5, 0, 7.5),
+        (6, 3, 8.0),
+        (6, 0, 8.5),
+        (6, 3, 9.0),
+        (5, 0, 9.5),
+        (5, 2, 10.0),
+        (4, 0, 10.5),
     ]
+    note_duration = 0.36
+    tab_notes = []
+    for index, (string, fret, onset) in enumerate(tab_pattern):
+        measure = int(onset // 2.0) + 1
+        beat = int((onset % 2.0) / 0.5) + 1
+        tab_notes.append(
+            {
+                "startTime": onset,
+                "duration": note_duration,
+                "string": string,
+                "fret": fret,
+                "measure": measure,
+                "beat": beat,
+                "onset": onset,
+                "offset": onset + note_duration,
+                "time": onset,
+                "confidence": 0.94 + (index % 4) * 0.01,
+            }
+        )
     return {
         "strings": ["e", "B", "G", "D", "A", "E"],
         "tuning": [40, 45, 50, 55, 59, 64],
-        "measures": [{"beats": tab_notes[:4]}, {"beats": tab_notes[4:]}],
+        "measures": [
+            {"beats": tab_notes[index:index + 4]}
+            for index in range(0, len(tab_notes), 4)
+        ],
         "tablature": tab_notes,
     }
 
@@ -128,7 +165,11 @@ def _seed_demo_transcription() -> None:
             "chords": [
                 {"chord": "E:min", "onset": 0.0, "offset": 1.0, "confidence": 0.82},
                 {"chord": "A:min", "onset": 1.0, "offset": 2.0, "confidence": 0.78},
-                {"chord": "D:maj", "onset": 2.0, "offset": 3.2, "confidence": 0.74},
+                {"chord": "D:maj", "onset": 2.0, "offset": 3.5, "confidence": 0.74},
+                {"chord": "E:min", "onset": 3.5, "offset": 5.0, "confidence": 0.8},
+                {"chord": "A:min", "onset": 5.0, "offset": 6.5, "confidence": 0.78},
+                {"chord": "D:maj", "onset": 6.5, "offset": 8.5, "confidence": 0.75},
+                {"chord": "E:min", "onset": 8.5, "offset": 11.0, "confidence": 0.82},
             ]
         }
         static_audio_path = Path(__file__).resolve().parent / "static" / "demo_guitar_riff.wav"
