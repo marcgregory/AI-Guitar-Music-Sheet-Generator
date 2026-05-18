@@ -47,7 +47,7 @@ For `PROCESSING_MODE=external_worker`, run the external/manual worker and use:
 - `POST /api/v1/worker/jobs/{transcription_id}/complete`
 - `POST /api/v1/worker/jobs/{transcription_id}/failed`
 
-For `PROCESSING_MODE=modal`, the Modal worker should use GPU, download `original_audio_url`, run Demucs for the selected stem, upload outputs to Cloudinary, and report completion/failure to the backend.
+For `PROCESSING_MODE=modal`, the Modal worker should use GPU, download `original_audio_url`, run Demucs for the selected stem, run stem-aware pitch/rhythm/onset detection, upload outputs to Cloudinary, and report completion/failure to the backend.
 
 ## MVP Test Flow
 
@@ -58,7 +58,21 @@ For `PROCESSING_MODE=modal`, the Modal worker should use GPU, download `original
 5. Confirm the original audio is uploaded to Cloudinary when no duplicate exists.
 6. Confirm status moves through `queued` or `processing`.
 7. Confirm the selected separated stem is uploaded to Cloudinary.
-8. Confirm MIDI/TAB outputs are uploaded only when supported.
-9. Confirm users can delete completed, failed, queued, and processing records.
-10. Confirm deletion cleans Cloudinary assets when safe and logs cleanup failures.
-11. Confirm temporary local files are cleaned after terminal or deleted/cancelled status.
+8. Confirm pitch/rhythm/onset detection runs on the separated selected stem.
+9. Confirm `other` renders as 6-string guitar tab/score where generated.
+10. Confirm `bass` renders as 4-string E A D G bass tab/score where generated.
+11. Confirm `drums` renders a rhythm lane/percussion tab where generated.
+12. Confirm `vocals` remains playback-only in the MVP.
+13. Confirm synchronized playback uses one shared `currentTime` for waveform, playhead, tabs, score, active notes/hits, and selected-stem audio.
+14. Confirm MIDI, MusicXML, and TAB exports are uploaded only when supported.
+15. Confirm users can delete completed, completed_with_warning, failed, queued, and processing records.
+16. Confirm deletion cleans Cloudinary assets when safe and logs cleanup failures.
+17. Confirm temporary local files are cleaned after terminal or deleted/cancelled status.
+
+Future roadmap only:
+
+- MIDI import.
+- Guitar Pro import.
+- PowerTab import/export.
+- Imported project editing.
+- Imported multi-track workflows.

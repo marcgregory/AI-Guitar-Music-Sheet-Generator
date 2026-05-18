@@ -804,6 +804,145 @@ def _can_generate_score(transcription: models.Transcription) -> bool:
     return bool(transcription.can_generate_score and _has_note_events(transcription.notes_data))
 
 
+def _json_field(value: str | None):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+
+def _has_tablature_events(value: str | None) -> bool:
+    parsed = _json_field(value)
+    if isinstance(parsed, dict):
+        tablature = parsed.get("tablature")
+        tracks = parsed.get("tracks")
+        return bool(
+            (isinstance(tablature, list) and tablature) or
+            (isinstance(tracks, list) and tracks)
+        )
+    if isinstance(parsed, list):
+        return bool(parsed)
+    return bool(value and value.strip())
+
+
+def _has_drum_hits(value: str | None) -> bool:
+    parsed = _json_field(value)
+    return bool(
+        isinstance(parsed, dict) and
+        isinstance(parsed.get("drum_hits"), list) and
+        parsed.get("drum_hits")
+    )
+
+
+def _duration_from_json(notes_data: str | None, tablature_data: str | None) -> int:
+    candidates: list[float] = []
+
+    def collect(items) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            start = item.get("startTime", item.get("onset", 0)) or 0
+            duration = item.get("duration", 0) or 0
+            end = item.get("offset", None)
+            try:
+                end_value = float(end) if end is not None else float(start) + float(duration)
+            except (TypeError, ValueError):
+                continue
+            if end_value > 0:
+                candidates.append(end_value)
+
+    parsed_notes = _json_field(notes_data)
+    if isinstance(parsed_notes, list):
+        collect(parsed_notes)
+    elif isinstance(parsed_notes, dict):
+        collect(parsed_notes.get("notes"))
+        collect(parsed_notes.get("pitch_info"))
+        collect(parsed_notes.get("drum_hits"))
+        rhythm_analysis = parsed_notes.get("rhythm_analysis")
+        if isinstance(rhythm_analysis, dict):
+            try:
+                total_duration = float(rhythm_analysis.get("total_duration") or 0)
+                if total_duration > 0:
+                    candidates.append(total_duration)
+            except (TypeError, ValueError):
+                pass
+
+    parsed_tab = _json_field(tablature_data)
+    if isinstance(parsed_tab, dict):
+        collect(parsed_tab.get("tablature"))
+
+    return int(max(candidates, default=0) + 0.999) if candidates else 0
+
+
+def _import_type(transcription: models.Transcription) -> str | None:
+    source_type = (transcription.source_type or "").lower()
+    if "midi" in source_type:
+        return "midi"
+    if "gp" in source_type or "guitar_pro" in source_type:
+        return "gp5"
+    if "tab" in source_type:
+        return "tab"
+    return None
+
+
+def _instrument_type_for(transcription: models.Transcription) -> str:
+    selected_stem = (transcription.selected_stem or "other").lower()
+    if selected_stem == "bass":
+        return "Bass Guitar"
+    if selected_stem == "drums":
+        return "Percussion"
+    if selected_stem == "vocals":
+        return "Vocal Stem"
+    return "Guitar/Accompaniment"
+
+
+def _tuning_for(transcription: models.Transcription) -> str | None:
+    selected_stem = (transcription.selected_stem or "other").lower()
+    if selected_stem == "bass":
+        return "E A D G"
+    if selected_stem == "other":
+        return "E A D G B E"
+    return None
+
+
+def _metadata_payload(transcription: models.Transcription) -> dict:
+    selected_stem = transcription.selected_stem or "other"
+    import_type = _import_type(transcription)
+    track_count = len(transcription.instrument_tracks or [])
+    can_generate_tab = _has_tablature_events(transcription.tablature_data)
+    can_generate_rhythm = selected_stem == "drums" and _has_drum_hits(transcription.notes_data)
+    can_generate_score = _can_generate_score(transcription)
+    can_play_stem = _can_play_stem(transcription)
+    output_mode = (
+        "multi_track" if track_count > 1 else
+        "rhythm" if can_generate_rhythm else
+        "tab_score" if can_generate_tab and can_generate_score else
+        "tab" if can_generate_tab else
+        "score" if can_generate_score else
+        "playback_only" if can_play_stem else
+        "metadata_only"
+    )
+    calculated_duration = _duration_from_json(transcription.notes_data, transcription.tablature_data)
+
+    return {
+        "selected_stem": selected_stem,
+        "instrument_type": _instrument_type_for(transcription),
+        "output_mode": output_mode,
+        "can_generate_tab": can_generate_tab,
+        "can_generate_score": can_generate_score,
+        "can_generate_rhythm": can_generate_rhythm,
+        "can_play_stem": can_play_stem,
+        "track_count": track_count,
+        "tuning": _tuning_for(transcription),
+        "import_type": import_type,
+        "duration": transcription.duration or calculated_duration or None,
+    }
+
+
 def _status_payload(
     transcription: models.Transcription,
     transcription_id: int,
@@ -833,6 +972,7 @@ def _status_payload(
 def _public_transcription_payload(transcription: models.Transcription) -> dict:
     """Serialize while keeping local demo filesystem paths out of browser playback fields."""
     payload = schemas.TranscriptionInDB.model_validate(transcription).model_dump(mode="json")
+    payload.update(_metadata_payload(transcription))
     if transcription.is_demo:
         payload["source_url"] = DEMO_AUDIO_URL
         payload["original_audio_url"] = DEMO_AUDIO_URL

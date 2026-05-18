@@ -2,7 +2,7 @@
 
 ## Processing Requests
 
-Upload and YouTube processing must include one selected target:
+Audio upload and YouTube processing must include one selected target:
 
 - `selected_stem`
 - or `selected_instrument`
@@ -15,6 +15,13 @@ Valid MVP values:
 - `other`
 
 For MVP guitar transcription, clients should submit `other`.
+
+Supported MVP input types:
+
+1. Audio upload
+2. YouTube URL
+
+MIDI import, Guitar Pro import, PowerTab import/export, imported project playback architecture, and imported multi-track workflows are future roadmap items only. MIDI export, MusicXML export, and TAB export remain in scope when generated from separated-stem transcription results.
 
 ## Endpoints
 
@@ -43,7 +50,7 @@ Before a new job is queued:
 ```txt
 User Upload / YouTube URL + selected stem
 -> Generate audio hash or normalize YouTube ID
--> Check existing completed record with same source + selected_stem
+-> Check existing completed/completed_with_warning record with same user + source identity + selected_stem
 -> If found, return existing result
 -> If not found, upload/process normally
 -> Save result for future reuse
@@ -54,7 +61,7 @@ Duplicate lookup keys:
 - uploaded file: `audio_hash` + `selected_stem`
 - YouTube URL: `source_type` + `normalized_source_id` + `selected_stem`
 
-If a duplicate completed record is found, do not run Demucs again. Return the existing result and let the frontend show: "This song and stem were already processed. Existing result was loaded."
+If a duplicate completed or completed_with_warning record is found, do not run Demucs again. Return the existing result and let the frontend show the appropriate reuse message.
 
 Same song plus a different selected stem may create a new processing job.
 
@@ -66,6 +73,7 @@ Duplicate responses include `duplicate_reused: true` and `duplicate_message`. Du
 - `queued`: waiting because another job is active or ahead in the queue
 - `processing`: local Celery, external worker, or Modal worker is actively processing the selected stem
 - `completed`: selected-stem outputs are available where supported
+- `completed_with_warning`: transcription succeeded but has limited generated output, such as a no-note stem
 - `failed`: processing ended with `processing_error`
 
 ## Response Fields
@@ -79,6 +87,8 @@ Result/status payloads should include:
 - `separated_audio_public_id`
 - `midi_file_url`
 - `midi_file_public_id`
+- `musicxml_file_url`
+- `musicxml_file_public_id`
 - `tab_file_url`
 - `tab_file_public_id`
 - `processing_status`
@@ -95,7 +105,20 @@ Result/status payloads should include:
 - `is_deleted`
 - `deleted_at`
 
-Cloudinary URL fields may be `null` when an output is unsupported for the selected stem. For example, `drums` may produce rhythm data but no TAB, and `vocals` may not produce a guitar-style TAB. `queue_position` is `0` for active processing, positive for pending/queued jobs, and `null` after terminal states.
+Cloudinary URL fields may be `null` when an output is unsupported for the selected stem. For example, `vocals` is playback-only in the MVP. `queue_position` is `0` for active processing, positive for pending/queued jobs, and `null` after terminal states.
+
+Valid MVP `source_type` values are:
+
+- `upload`
+- `youtube`
+- `demo`
+
+## Stem Output Semantics
+
+- `vocals`: preserve separated stem playback and metadata; generated notation is future roadmap.
+- `drums`: return drum hit/onset data for rhythm lane/percussion tab rendering and drum MIDI export when possible.
+- `bass`: return bass notes, 4-string E A D G tablature, score notation, and timing data where detected.
+- `other`: return guitar-oriented notes, 6-string tablature, score notation, and timing data where detected.
 
 ## Preview Semantics
 
@@ -103,7 +126,20 @@ Cloudinary URL fields may be `null` when an output is unsupported for the select
 
 ## Frontend Behavior
 
-The frontend must require one stem before submitting a processing request, display queue status, and show downloadable Cloudinary-hosted outputs only when the corresponding URL fields are present.
+The frontend must require one stem before submitting an audio/YouTube processing request, display queue status, and show downloadable Cloudinary-hosted outputs only when the corresponding URL fields are present.
+
+Highest frontend priorities:
+
+1. selected stem playback sync
+2. synchronized tab highlighting
+3. synchronized score highlighting
+4. waveform sync
+5. instrument-aware rendering
+6. stem metadata visibility
+7. drum rhythm lane rendering
+8. bass tab rendering
+
+The viewer should use one shared `currentTime` for waveform, playhead, tabs, score, active notes/hits, and selected-stem playback. Do not use separate timers for waveform, tabs, and score.
 
 ## Processing Modes
 
@@ -113,12 +149,12 @@ The frontend must require one stem before submitting a processing request, displ
 
 ## Delete Semantics
 
-Records may be deleted in `completed`, `failed`, `queued`, and `processing` states.
+Records may be deleted in `completed`, `completed_with_warning`, `failed`, `queued`, and `processing` states.
 
 - `completed` or `failed`: delete Cloudinary assets when safe, then mark deleted or remove the record.
 - `queued`: remove/cancel the queued Celery task when possible, then mark deleted.
 - `processing`: mark as cancelled/deleted and revoke/stop the Celery task if supported.
 
-Cloudinary cleanup uses `resource_type="video"` for original and separated audio and `resource_type="raw"` for MIDI/TAB/text exports. Before deleting a public ID, the API checks whether another transcription outside the current deletion set still references it; shared duplicate assets are skipped. Project deletion cascades through related transcriptions with the same cleanup strategy.
+Cloudinary cleanup uses `resource_type="video"` for original and separated audio and `resource_type="raw"` for MIDI/MusicXML/TAB/text exports. Before deleting a public ID, the API checks whether another transcription outside the current deletion set still references it; shared duplicate assets are skipped. Project deletion cascades through related transcriptions with the same cleanup strategy.
 
 MVP limitation: stopping an active Celery task may not be reliable. In that case, the API can hide/delete the UI record while the worker finishes silently. Temporary files should still be cleaned up. If Cloudinary deletion fails, keep the database deletion safe and log the cleanup error.

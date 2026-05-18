@@ -1,11 +1,19 @@
 # MusicStudio MVP Architecture
 
-## Selected-Stem MVP
+## Selected-Stem Audio/YouTube MVP
 
-MusicStudio is scoped as a selected-stem transcription MVP. Railway is the lightweight API/controller layer; it should not be treated as the primary Demucs processing environment for production-like use. The recommended AI processing layer is a Modal/serverless GPU worker. Local Railway/Celery Demucs remains a development fallback for very short files only.
+MusicStudio is scoped as a selected-stem transcription MVP for uploaded audio and YouTube sources. Railway is the lightweight API/controller layer; it should not be treated as the primary Demucs processing environment for production-like use. The recommended AI processing layer is a Modal/serverless GPU worker. Local Railway/Celery Demucs remains a development fallback for very short files only.
+
+Supported MVP input types:
+
+1. Audio upload
+2. YouTube URL
+
+Primary architecture:
 
 ```txt
-User Upload / YouTube URL + selected stem
+Audio Upload / YouTube URL
+-> User selects target stem
 -> Generate audio hash or normalize YouTube ID
 -> Check existing completed record with same source + selected stem
 -> If found, return existing result
@@ -15,11 +23,15 @@ User Upload / YouTube URL + selected stem
 -> Modal worker downloads original audio from Cloudinary
 -> Modal worker runs Demucs selected-stem separation on GPU
 -> Modal worker uploads selected separated stem to Cloudinary
--> Modal worker optionally generates MIDI/TAB/MusicXML if supported
+-> Pitch/rhythm detection runs on separated stem
+-> Generate instrument-aware tabs/notation/rhythm data
+-> Modal worker uploads supported MIDI/MusicXML/TAB exports to Cloudinary
 -> Modal worker calls backend complete/failed endpoint
 -> Backend updates status and output references
--> Frontend polls status and shows playback/export/download
+-> Frontend renders synchronized playback with waveform, playhead, tabs/score/rhythm, and exports
 ```
+
+MIDI import, Guitar Pro import, PowerTab import/export, imported project playback architecture, and imported multi-track workflows are not part of the MVP. They remain future roadmap items only. MIDI export, MusicXML export, and TAB export remain in scope when generated from separated-stem transcription results.
 
 ## Warning States vs Failures
 
@@ -35,12 +47,32 @@ Only hard blockers such as missing source audio, failed separation, deleted reco
 
 For the MVP:
 
-- `vocals`: playback only.
-- `drums`: playback only.
-- `bass`: playback plus simple notation when note detection succeeds.
-- `other`: playback plus guitar-style transcription attempt.
+- `vocals`: playback only. Future roadmap: melody extraction.
+- `drums`: analyze drum stem, detect drum hits/onsets, generate a drum rhythm lane and percussion/drum tab where possible, support synchronized playback highlighting, and support drum MIDI export when possible.
+- `bass`: analyze bass stem, generate 4-string bass tablature using standard E A D G tuning, generate bass score data, and support synchronized playback/playhead highlighting.
+- `other`: primary guitar transcription target; generate guitar tablature, score notation, and synchronized playback/playhead highlighting.
 
 Unsupported notation for a valid separated stem is a warning state, not a processing failure.
+
+## Instrument-Aware Rendering
+
+Viewer behavior:
+
+- `other`/guitar: 6-string tablature plus score notation where generated.
+- `bass`: 4-string bass tablature plus bass score notation where generated.
+- `drums`: rhythm lane/percussion tab with hit highlighting.
+- `vocals`: playback-only stem view.
+
+All rendered views must share playback synchronization:
+
+- waveform
+- playhead
+- tabs
+- score
+- active notes or drum hits
+- selected-stem audio
+
+The frontend should use one shared `currentTime` source for waveform, tabs, score, and stem playback. Do not create separate timers for waveform, tab, and score synchronization.
 
 ## Fallback Transcription and Retry Flow
 
@@ -74,11 +106,11 @@ Cloudinary is the durable storage layer for:
 
 - original audio
 - selected separated stem audio
-- MIDI files
-- TAB files
-- MusicXML files where generated
+- MIDI export files
+- MusicXML export files
+- TAB export files
 
-Persist both `secure_url` and `public_id` for every Cloudinary asset. Railway local storage is temporary only and should be used for worker downloads, Demucs scratch output, intermediate MIDI/TAB generation, and cleanup after `completed` or `failed`.
+Persist both `secure_url` and `public_id` for every Cloudinary asset. Use `resource_type="video"` for audio and separated stems, and `resource_type="raw"` for MIDI/TAB/MusicXML exports. Railway local storage is temporary only and should be used for upload buffering, worker downloads, Demucs scratch output, intermediate MIDI/TAB/MusicXML generation, and cleanup after `completed`, `completed_with_warning`, or `failed`.
 
 ## Backend/API
 
@@ -135,7 +167,7 @@ The Modal worker should:
 - support `vocals`, `drums`, `bass`, and `other`
 - download `original_audio_url` from Cloudinary
 - upload the selected separated stem to Cloudinary
-- optionally generate MIDI, TAB, and MusicXML outputs when supported
+- generate MIDI, MusicXML, and TAB outputs when supported by the selected stem transcription result
 - report completion or failure to the backend
 - keep full logs in Modal/backend while returning user-safe errors to the UI
 
@@ -150,7 +182,7 @@ Before queueing a new job, the backend should check whether the same source and 
 ```txt
 User Upload / YouTube URL + selected stem
 -> Generate audio hash or normalize YouTube ID
--> Check existing completed record with same source + selected_stem
+-> Check existing completed/completed_with_warning record with same source identity + selected_stem
 -> If found, return existing result
 -> If not found, upload/process normally
 -> Save result for future reuse
@@ -163,13 +195,14 @@ Duplicate identity should consider:
 - `source_type`
 - `selected_stem`
 
-The same song plus the same selected stem should reuse output. The same song plus a different selected stem may create a new job because the separated audio, MIDI, and TAB outputs will differ.
+The same song plus the same selected stem should reuse output. The same song plus a different selected stem may create a new job because the separated audio, transcription, and exports will differ.
 
 ## Deletion and Cancellation
 
 Users should be able to delete processing records with these statuses:
 
 - `completed`
+- `completed_with_warning`
 - `failed`
 - `queued`
 - `processing`
@@ -181,11 +214,12 @@ Deleting a record should also delete related Cloudinary assets when safe:
 - original audio: `resource_type="video"`
 - separated stem audio: `resource_type="video"`
 - MIDI file: `resource_type="raw"`
+- MusicXML file: `resource_type="raw"`
 - TAB/text export: `resource_type="raw"`
 
 Cloudinary lifecycle management is best-effort but must run before the database row is soft-deleted or hard-deleted. The cleanup service logs asset deleted, skipped, missing, and deletion-failure states. If Cloudinary deletion fails, database deletion should remain safe and the cleanup error should be logged.
 
-Duplicate asset protection is required because completed duplicate records may reuse the same Cloudinary public IDs. Before deleting a public ID, the API checks for references from transcriptions outside the current deletion set. Project deletion passes all project transcription IDs as the deletion set so assets shared only inside the deleted project can be removed, while assets still referenced elsewhere are skipped.
+Duplicate asset protection is required because completed duplicate records may reuse the same Cloudinary public IDs. Before deleting a public ID, the API checks for references from transcriptions outside the current deletion set.
 
 ## Data Model
 
@@ -205,6 +239,8 @@ Recommended transcription/job fields:
 - `separated_audio_public_id`
 - `midi_file_url`
 - `midi_file_public_id`
+- `musicxml_file_url`
+- `musicxml_file_public_id`
 - `tab_file_url`
 - `tab_file_public_id`
 - `processing_status`

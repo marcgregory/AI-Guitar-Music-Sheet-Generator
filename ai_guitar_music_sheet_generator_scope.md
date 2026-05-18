@@ -1,8 +1,25 @@
 # AI Guitar Music Sheet Generator / MusicStudio
 
-## 2026 MVP Scope Update: Selected-Stem Demucs Processing + Modal Worker
+## 2026 MVP Scope Update: Selected-Stem Audio/YouTube Transcription
 
-This project is now scoped as an MVP/portfolio-friendly selected-stem transcription app, not a full-scale multi-user AI processing system yet. Railway is the lightweight API/controller layer. Modal/serverless GPU is the preferred production-like AI processing layer. Railway/Celery Demucs remains fallback/dev only.
+This project is scoped as an MVP/portfolio-friendly selected-stem transcription and synchronized practice app. Railway is the lightweight API/controller layer. Modal/serverless GPU is the preferred production-like AI processing layer for Demucs jobs. Railway/Celery Demucs remains fallback/dev only.
+
+Supported MVP input types:
+
+1. Audio upload
+2. YouTube URL
+
+Primary MVP workflow:
+
+```txt
+Audio Upload / YouTube URL
+-> User selects target stem
+-> Demucs separates selected stem
+-> Pitch/rhythm detection runs on separated stem
+-> Generate instrument-aware tabs/notation/rhythm data
+-> Render synchronized playback with playhead/waveform
+-> Export generated outputs
+```
 
 The old pipeline:
 
@@ -13,7 +30,7 @@ Audio Upload
 -> Generate all tabs
 ```
 
-is replaced with:
+is replaced with one selected-stem job per request:
 
 ```txt
 Audio Upload / YouTube URL + selected stem
@@ -26,132 +43,222 @@ Audio Upload / YouTube URL + selected stem
 -> Modal/external worker downloads original audio from Cloudinary
 -> Worker runs Demucs selected-stem separation on GPU when available
 -> Worker uploads selected separated stem to Cloudinary
--> Worker optionally generates MIDI/TAB/MusicXML if supported
+-> Worker runs stem-aware pitch/rhythm/onset detection
+-> Worker generates tabs/notation/rhythm data based on selected stem
+-> Worker uploads supported MIDI/MusicXML/TAB exports to Cloudinary
 -> Worker calls backend complete/failed endpoint
 -> Backend updates transcription status and output references
--> Frontend polls status and shows playback/export/download
+-> Frontend renders synchronized playback and export/download controls
 ```
 
 Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar transcription, the app should use the `other` stem as the target because default Demucs models commonly group guitar, piano, synths, and accompaniment there. The UI must make this clear: guitar and piano may be inside `other` depending on the mix and model.
 
-The backend should accept `selected_stem` or `selected_instrument` in upload/process requests, upload the original source audio to Cloudinary, run Demucs only for the selected output needed, convert only that selected stem to MIDI/TAB/sheet output when applicable, upload durable outputs to Cloudinary, and save only the selected stem output unless explicit caching is needed.
+The backend should accept `selected_stem` or `selected_instrument` in audio/YouTube upload/process requests, upload the original source audio to Cloudinary, run Demucs only for the selected output needed, transcribe only that selected stem when applicable, upload durable outputs to Cloudinary, and save only the selected stem output unless explicit caching is needed.
 
 Jobs should be queued and status responses should explain when work is waiting. In `PROCESSING_MODE=local`, Celery worker concurrency should be `1` and local processing should be limited to very short development files. Production-like MVP processing should use `PROCESSING_MODE=modal`.
 
 Recommended MVP limits:
+
 - Process one selected stem per job.
+- Support audio upload and YouTube URL in the MVP.
 - Prefer 3-5 minute songs.
 - Avoid full multi-stem transcription by default.
 - Treat Railway local storage as temporary worker scratch space only.
-- Store Cloudinary `secure_url` and `public_id` references for original audio, selected separated stem audio, MIDI files, and TAB files.
+- Store Cloudinary `secure_url` and `public_id` references for original audio, selected separated stem audio, MIDI exports, MusicXML exports, and TAB files.
 - Detect duplicate same-song/same-stem requests before queueing work and reuse completed output.
-- Let users delete completed, failed, queued, and processing records.
+- Let users delete completed, completed_with_warning, failed, queued, and processing records.
 - Do not rely on Railway free/trial resources for Demucs production processing.
 - Use Kaggle only for optional/manual free GPU testing.
 - Treat full multi-instrument processing as a future premium or GPU-backed feature.
 
-Future roadmap:
-- Phase 1: selected-stem MVP, Cloudinary persistence, duplicate detection, delete/cancel, queue/status UX.
-- Phase 2: Modal/serverless GPU worker integration, worker endpoints, external worker authentication, status callback flow, selected-stem preview/export from Cloudinary outputs.
-- Phase 3: multiple selected stems, improved transcription quality, better retry/recovery.
-- Phase 4: full Songsterr-like multi-track tabs, lead/rhythm guitar separation, piano/guitar specialist models.
+Future roadmap only:
+
+- MIDI import
+- Guitar Pro import
+- PowerTab import/export
+- Imported project editing
+- Imported multi-track workflows
+- Lead/rhythm guitar separation
+- True isolated guitar models
+- Piano specialist models
+- Real-time transcription
+- Collaborative editing
+
+Do not remove or deprioritize:
+
+- MIDI export
+- MusicXML export
+- TAB export
+
+Exports should be generated from transcription results created from separated stems.
 
 ## Problem
 
 Musicians often struggle to turn finished audio into useful practice material. A song may contain vocals, drums, bass, guitar, piano, synths, and other instruments mixed together, making it difficult to hear one part clearly or transcribe it by ear.
 
-Existing tools tend to solve only part of the workflow. Stem splitters can isolate instruments but usually do not create playable notation. Tab and sheet music tools may provide notation, but often depend on manual entry, MIDI files, or a limited instrument focus. Learners and working musicians need a more connected workflow: separate the song, inspect each part, generate notation or tabs where possible, and practice with synchronized playback.
-
----
+Existing tools tend to solve only part of the workflow. Stem splitters can isolate instruments but usually do not create playable notation. Tab and sheet music tools may provide notation, but often depend on manual entry, imported files, or a limited instrument focus. Learners and working musicians need a more connected workflow: separate the target stem, inspect it, generate notation or tabs where possible, and practice with synchronized playback.
 
 ## Solution
 
-Develop an AI-powered web application that combines selective Demucs stem separation with Songsterr-style synchronized notation and playback for one selected target stem.
+Develop an AI-powered web application that combines selective Demucs stem separation and Songsterr-style synchronized notation/playback for one selected target stem.
 
-The system will analyze audio from MP3/WAV uploads or YouTube links, let the user choose a target stem, separate only the selected output needed, detect notes, chords, tempo, key, rhythm, and confidence levels for that selected stem where supported, then generate track-specific musical outputs.
+The system will analyze audio from MP3/WAV uploads or YouTube links, let the user choose a target stem, separate only the selected output needed, detect notes, chords, tempo, key, rhythm, onsets, and confidence levels for that selected stem where supported, then generate track-specific musical outputs.
 
 The application will provide:
+
 - Selected-stem playback for vocals, drums, bass, or other/accompaniment
-- Per-job selected-stem transcription tracks
 - Guitar-oriented tablature from the `other` stem for the MVP
 - Bass tablature when `bass` is selected
-- Drum rhythm lanes when `drums` is selected
-- Piano, vocal, and melodic staff notation where supported later
-- Chord progressions and chord charts
-- Synchronized playback, looping, speed control, and export options
+- Drum rhythm lanes and percussion/drum tab when `drums` is selected
+- Vocal playback-only results for the MVP
+- Chord progressions and chord charts where supported
+- Synchronized playback, looping, speed control, waveform sync, playhead sync, note highlighting, and export options
 
-The goal is a practical selected-stem transcription and practice studio first, with full multi-track Songsterr-like tabs as a later expansion.
+The goal is a practical selected-stem transcription and practice studio first, with imports and full multi-track project workflows as later expansion.
 
----
+## Stem Support Matrix
+
+### Vocals
+
+- Playback only for MVP.
+- Preserve separated stem playback and metadata.
+- Future roadmap: melody extraction.
+
+### Drums
+
+- Analyze the drum stem.
+- Detect drum hits and onsets.
+- Generate a drum rhythm lane.
+- Generate percussion/drum tab where possible.
+- Support synchronized playback highlighting.
+- Support drum MIDI export when possible.
+
+### Bass
+
+- Analyze the bass stem.
+- Generate 4-string bass tablature.
+- Use standard tuning E A D G.
+- Generate bass score data where possible.
+- Support synchronized playback/playhead highlighting.
+
+### Other
+
+- Primary guitar transcription target.
+- Generate guitar tablature.
+- Generate score notation.
+- Support synchronized playback/playhead highlighting.
+- Clearly explain that guitar, piano, synth, and accompaniment may be grouped together depending on the mix.
+
+## Instrument-Aware Rendering Architecture
+
+Viewer behavior:
+
+- Guitar/`other` -> 6-string tablature
+- `bass` -> 4-string bass tablature
+- `drums` -> rhythm lane/percussion tab
+- `vocals` -> playback-only
+
+All views use shared playback synchronization:
+
+- waveform
+- playhead
+- tabs
+- score
+- active notes or drum hits
+- selected-stem playback
+
+The playback system must support:
+
+- moving playhead
+- note highlighting
+- waveform sync
+- seek synchronization
+- shared `currentTime`
+- tab/score sync
+- stem playback sync
+
+Do not use separate timers for waveform, tabs, and score. One shared playback clock/current time source should drive the whole viewer.
 
 ## Features
 
 ### Audio Input
-- Upload MP3/WAV audio files
-- Paste YouTube video links
-- Audio preprocessing, normalization, and resampling
+
+- Upload MP3/WAV audio files.
+- Paste YouTube video links.
+- Audio preprocessing, normalization, and resampling.
+- Required target stem selection before processing.
 
 ### AI Audio Analysis
-- Source separation into broad stems
-- Pitch detection for melodic stems
-- Chord recognition
-- BPM/tempo detection
-- Key detection
-- Rhythm and onset analysis
-- Per-track confidence scoring
+
+- Selected-stem source separation into one Demucs stem.
+- Pitch detection for melodic stems.
+- Onset and hit detection for drum stems.
+- Chord recognition where supported.
+- BPM/tempo detection.
+- Key detection.
+- Rhythm and duration analysis.
+- Per-track confidence scoring.
 
 ### Selected-Stem Source Separation
-- Require the user to choose a target stem before processing
-- Support Demucs default stems first: vocals, drums, bass, and other
-- Use `other` as the MVP target for guitar transcription
-- Explain that guitar and piano may be grouped inside `other`
-- Run Demucs only for the selected output needed
-- Persist the selected separated stem, not every stem by default
-- Allow selected-stem reprocessing without rerunning unrelated outputs
+
+- Require the user to choose a target stem before processing.
+- Support Demucs default stems first: vocals, drums, bass, and other.
+- Use `other` as the MVP target for guitar transcription.
+- Explain that guitar and piano may be grouped inside `other`.
+- Run Demucs only for the selected output needed.
+- Persist the selected separated stem, not every stem by default.
+- Allow selected-stem reprocessing without rerunning unrelated outputs.
 
 ### Selected-Track Transcription
-- Store transcription data for the selected instrument/stem
-- Generate guitar-oriented tablature from the `other` stem in the MVP
-- Generate bass tablature from the `bass` stem where supported
-- Generate drum rhythm data from the `drums` stem
-- Generate piano/vocal notation only when model support and transcription quality are adequate
-- Keep full-mix transcription as a fallback or summary view
+
+- Store transcription data for the selected instrument/stem.
+- Generate guitar-oriented tablature from the `other` stem in the MVP.
+- Generate bass tablature from the `bass` stem.
+- Generate drum rhythm data from the `drums` stem.
+- Generate vocal notation only when future melody extraction is added.
+- Keep full-mix or imported project playback architecture out of the MVP.
 
 ### Notation and Track Viewer
-- Interactive instrument selector
-- Tab, rhythm, and notation views based on selected instrument
-- Audio playback synchronization
-- Playback speed controls
-- Looping and practice controls
-- Zoom controls
-- Dark/light mode
+
+- Instrument-aware selected-stem viewer.
+- Tab, rhythm, and notation views based on selected instrument.
+- Audio playback synchronization.
+- Waveform visualization.
+- Moving playhead.
+- Active note/hit highlighting.
+- Playback speed controls.
+- Looping and practice controls.
+- Zoom controls.
+- Dark/light mode.
 
 ### Export Options
-- Export track or full-mix MIDI
-- Export MusicXML for notation-capable tracks
-- Export TXT tabs for tab-capable tracks
-- Export PDF sheet music
-- Export sheet images
-- Future support for Guitar Pro, PowerTab, and stem remix/export
+
+- Export generated MIDI.
+- Export generated MusicXML for notation-capable tracks.
+- Export generated TXT tabs for tab-capable tracks.
+- Export PDF sheet music later.
+- Export sheet images later.
+
+MIDI, MusicXML, and TAB exports are generated from separated-stem transcription results.
 
 ### User Features
-- User authentication
-- Save transcription history
-- Favorite projects
-- Project management dashboard
-- Track metadata editing
-- Manual correction history
+
+- User authentication.
+- Save transcription history.
+- Favorite projects.
+- Project management dashboard.
+- Track metadata editing.
+- Manual correction history.
 
 ### Optional Advanced Features
-- Beginner-friendly simplification
-- Instrument role detection
-- Lead/rhythm guitar classification
-- Solo and melody extraction
-- AI-generated practice suggestions
-- Real-time transcription support
-- Collaborative review and comments
 
----
+- Beginner-friendly simplification.
+- Instrument role detection.
+- Lead/rhythm guitar classification.
+- Solo and melody extraction.
+- AI-generated practice suggestions.
+- Real-time transcription support.
+- Collaborative review and comments.
 
 ## Technical Considerations and Product Decisions
 
@@ -160,382 +267,225 @@ The goal is a practical selected-stem transcription and practice studio first, w
 The platform may use the following AI and audio processing technologies:
 
 #### Source Separation
-- Demucs using default stems: vocals, drums, bass, and other
-- Future specialist models for true guitar, piano, lead/rhythm guitar, and other instrument-specific separation
+
+- Demucs using default stems: vocals, drums, bass, and other.
+- Future specialist models for true guitar, piano, lead/rhythm guitar, and other instrument-specific separation.
 
 #### Pitch Detection
-- Spotify Basic Pitch
-- CREPE
-- librosa pYIN fallback
+
+- Spotify Basic Pitch.
+- CREPE.
+- librosa pYIN fallback.
+
+#### Rhythm and Drum Detection
+
+- librosa onset detection.
+- Drum hit grouping by onset strength and frequency bands.
+- Future specialist drum transcription models.
 
 #### Chord Recognition
-- CNN/RNN-based chord classification
-- librosa chroma analysis
-- Template matching
+
+- CNN/RNN-based chord classification.
+- librosa chroma analysis.
+- Template matching.
 
 #### Audio Processing
-- FFmpeg
-- librosa
-- Essentia
-- music21 or mido for notation and MIDI conversion
+
+- FFmpeg.
+- librosa.
+- Essentia.
+- music21 or mido for notation and MIDI conversion.
 
 These technologies may evolve as the platform improves accuracy and performance.
 
----
-
-### Failure Handling and Confidence Scoring
+## Failure Handling and Confidence Scoring
 
 The system will provide:
-- Confidence scores for detected notes, chords, tempo, key, and stems
-- Suggested alternative transcriptions
-- Error indicators for uncertain sections
-- Partial transcription fallback when full analysis fails
-- Clear per-track status messages
+
+- Confidence scores for detected notes, chords, tempo, key, stems, and drum hits.
+- Suggested alternative transcriptions.
+- Error indicators for uncertain sections.
+- Partial transcription fallback when full analysis fails.
+- Clear per-track status messages.
+
+A no-note result after successful stem separation should be `completed_with_warning`, not `failed`, when the selected stem is playable.
 
 Users may manually edit generated track data to correct inaccuracies.
 
----
-
-### Accuracy Expectations
+## Accuracy Expectations
 
 Target performance:
-- 80-90% chord detection accuracy for clean, isolated harmonic material
-- 70-85% note transcription accuracy for supported melodic stems
-- Higher reliability for isolated stems than dense full mixes
+
+- 80-90% chord detection accuracy for clean, isolated harmonic material.
+- 70-85% note transcription accuracy for supported melodic stems.
+- Higher reliability for isolated stems than dense full mixes.
 
 Performance depends heavily on:
-- Audio quality
-- Background noise
-- Number of instruments
-- Instrument overlap
-- Recording clarity
-- Distortion, reverb, and live-room bleed
 
----
+- Audio quality.
+- Background noise.
+- Number of instruments.
+- Instrument overlap.
+- Recording clarity.
+- Distortion, reverb, and live-room bleed.
 
-### Polyphonic Audio Handling
-
-The system will support songs containing:
-- Vocals
-- Drums
-- Bass
-- Guitar
-- Piano
-- Other melodic and accompaniment instruments
-
-The application will:
-- Ask the user for one selected target stem before transcription
-- Separate and analyze only the selected stem in the MVP
-- Store results against the selected stem/instrument
-- Use full-mix processing only as a fallback or overview
-
-Complex mixes may reduce accuracy, especially when multiple similar instruments overlap.
-
----
-
-### Audio Quality Requirements
+## Audio Quality Requirements
 
 Recommended audio quality:
-- Minimum: 128kbps MP3
-- Recommended: 320kbps MP3 or WAV
+
+- Minimum: 128kbps MP3.
+- Recommended: 320kbps MP3 or WAV.
 
 Performance may decrease with:
-- Heavy distortion
-- Reverb-heavy mixes
-- Crowd/live recordings
-- Low signal-to-noise ratio
-- Instruments occupying the same frequency range
 
----
+- Heavy distortion.
+- Reverb-heavy mixes.
+- Crowd/live recordings.
+- Low signal-to-noise ratio.
+- Instruments occupying the same frequency range.
 
-### Beginner Guidance and Accessibility
-
-The platform will include:
-- Beginner-friendly explanations
-- Tooltips for music theory terms
-- Guided onboarding/tutorials
-- Simplified viewing modes
-
-Accessibility considerations:
-- Keyboard navigation support
-- Colorblind-friendly UI
-- Responsive design
-- Tablet compatibility for music stand usage
-
----
-
-### Mobile and Tablet Support
-
-Responsive design is planned from the beginning for:
-- Desktop
-- Tablet
-- Mobile devices
-
-Tablet optimization is important because musicians commonly use tablets while practicing.
-
----
-
-### Manual Error Correction
+## Manual Error Correction
 
 Users will be able to:
-- Edit generated notes, tabs, rhythm hits, and chords
-- Modify chord names
-- Move guitar/bass notes between strings and frets
-- Adjust piano/vocal note timing and pitch
-- Reprocess selected tracks or sections only
-- Save edited versions without losing the AI-generated baseline
 
----
+- Edit generated notes, tabs, rhythm hits, and chords.
+- Modify chord names.
+- Move guitar/bass notes between strings and frets.
+- Adjust note timing and pitch where supported.
+- Reprocess selected tracks or sections only.
+- Save edited versions without losing the AI-generated baseline.
 
-### User Verification and Learning Support
+## User Verification and Learning Support
 
 The application will provide:
-- Synchronized stem and score playback
-- MIDI comparison playback
-- Animated note highlighting
-- Tempo slowdown features
-- Looping for selected sections
-- Track mute/solo controls for focused listening
+
+- Synchronized stem and score playback.
+- Animated note highlighting.
+- Tempo slowdown features.
+- Looping for selected sections.
+- Focused selected-stem listening.
 
 This helps users validate generated notation even without advanced music theory knowledge.
 
----
-
-### AI-Generated Practice Suggestions
-
-Possible practice assistance features:
-- Slow practice recommendations
-- Repeated difficult section detection
-- Suggested exercises
-- Finger transition practice hints for fretted instruments
-- Coordination hints for rhythm instruments
-- Difficulty scoring per track
-
----
-
-### Intended Workflow
-
-The platform is intended for:
-- Learning songs
-- Multi-instrument practice
-- Band rehearsal preparation
-- Cover preparation
-- Arrangement assistance
-- Transcription support
-- Stem listening and remix-style study
-
-The system is designed to assist musicians rather than replace professional transcriptionists.
-
----
-
-### Copyright and Legal Compliance
+## Copyright and Legal Compliance
 
 The platform will:
-- Process user-provided content only
-- Avoid permanent copyrighted audio storage unless explicitly required for user projects
-- Follow YouTube API and DMCA policies
-- Display copyright notices where applicable
+
+- Process user-provided content only.
+- Avoid permanent copyrighted audio storage unless explicitly required for user projects.
+- Follow YouTube API and DMCA policies.
+- Display copyright notices where applicable.
 
 Users remain responsible for sharing copyrighted material publicly.
 
----
-
-### Attribution
-
-Generated exports may include:
-- Song title
-- Artist name
-- AI transcription notice
-- Source attribution
-- Selected instrument or track name
-
----
-
-### Data Retention and Privacy
+## Data Retention and Privacy
 
 The platform will:
-- Automatically delete temporary uploaded and preprocessed audio after processing
-- Retain durable audio/output assets in Cloudinary only when needed for playback, reprocessing, downloads, or user projects
-- Store Cloudinary `public_id` values so retained assets can be deleted or replaced later
-- Treat Railway local files as temporary processing artifacts and clean them up after terminal job status
-- Allow users to delete processing records and clean related Cloudinary files when safe
-- Keep database deletion safe and log cleanup errors if Cloudinary deletion fails
-- Allow users to manage saved projects
-- Minimize storage of copyrighted material
 
-Usage analytics may be collected to:
-- Improve transcription accuracy
-- Detect system failures
-- Optimize AI performance
+- Automatically delete temporary uploaded and preprocessed audio after processing.
+- Retain durable audio/output assets in Cloudinary only when needed for playback, reprocessing, downloads, or user projects.
+- Store Cloudinary `public_id` values so retained assets can be deleted or replaced later.
+- Treat Railway local files as temporary processing artifacts and clean them up after terminal job status.
+- Allow users to delete processing records and clean related Cloudinary files when safe.
+- Keep database deletion safe and log cleanup errors if Cloudinary deletion fails.
+- Allow users to manage saved projects.
+- Minimize storage of copyrighted material.
 
----
-
-### User Content Ownership
-
-Users retain ownership of:
-- Uploaded content
-- Edited track data
-- Generated exports
-- Saved arrangements and corrections
-
-The platform only processes data necessary for transcription and practice functionality.
-
----
-
-### Processing Time
+## Processing Time
 
 Expected processing speed:
-- 1-3 minutes for a typical 3-minute song, depending on model choice and hardware
-- 3-5 minute songs are recommended for the selected-stem MVP
-- Longer songs should be rejected, warned, or reserved for later premium/GPU processing
 
-Real-time transcription may be explored using:
-- WebAssembly
-- Browser-based inference
-- GPU acceleration
+- 1-3 minutes for a typical 3-minute song, depending on model choice and hardware.
+- 3-5 minute songs are recommended for the selected-stem MVP.
+- Longer songs should be rejected, warned, or reserved for later premium/GPU processing.
 
----
-
-### System Architecture
+## System Architecture
 
 The platform will use:
-- Server-side AI processing
-- Browser-based playback/editing
-- Per-track transcription storage
-- Cloudinary durable storage for saved audio/output assets
-- Railway local storage only for temporary processing files
+
+- Server-side AI processing.
+- Browser-based playback/editing.
+- Per-selected-stem transcription storage.
+- Cloudinary durable storage for saved audio/output assets.
+- Railway local storage only for temporary processing files.
 
 Benefits include:
-- Better AI performance
-- Scalability
-- Cross-device compatibility
-- Track-level reprocessing and editing
 
----
+- Better AI performance.
+- Scalability.
+- Cross-device compatibility.
+- Track-level reprocessing and editing.
 
-### File Limits
-
-Initial limitations:
-- Maximum file size: 100MB
-- Recommended maximum duration: 3-5 minutes for MVP cost and memory stability
-
-Premium plans may support larger uploads.
-
----
-
-### Instrument Support
+## Instrument Support
 
 MVP support:
-- User-selected `vocals` stem playback
-- User-selected `drums` stem playback and rhythm lane
-- User-selected `bass` stem playback and bass tab
-- User-selected `other` stem playback and guitar-oriented tab attempt
-- Clear messaging that guitar/piano may live inside `other`
+
+- User-selected `vocals` stem playback.
+- User-selected `drums` stem playback, hit detection, rhythm lane, and percussion/drum tab.
+- User-selected `bass` stem playback, 4-string bass tab, and bass score.
+- User-selected `other` stem playback, 6-string guitar-oriented tab, and score notation.
+- Clear messaging that guitar/piano may live inside `other`.
 
 Near-term expansion:
-- Piano note and staff notation
-- Vocal melody notation
-- Drum MIDI or drum notation
-- Per-track MIDI/MusicXML exports beyond guitar and bass
+
+- Drum MIDI export polish.
+- Better drum notation.
+- Per-track MIDI/MusicXML exports beyond guitar and bass where transcription quality supports it.
 
 Future support may include:
-- Ukulele
-- Strings
-- Brass and woodwinds
-- Synth lead and pad classification
-- Improved multi-guitar separation
-- Instrument role detection across sections
 
----
+- MIDI import.
+- Guitar Pro import.
+- PowerTab import/export.
+- Imported project editing.
+- Ukulele.
+- Strings.
+- Brass and woodwinds.
+- Synth lead and pad classification.
+- Improved multi-guitar separation.
+- Instrument role detection across sections.
 
-### Fretted Instrument Support
+## Fretted Instrument Support
 
 For guitar, bass, ukulele, and similar instruments, the transcription engine will support:
-- Tab generation
-- Tuning preferences
-- Capo settings where applicable
-- Fret positioning optimization
-- Playability-aware simplification
 
-Supported tunings may include:
-- Guitar standard tuning
-- Drop D
-- Open G
-- DADGAD
-- Half-step down
-- Bass standard tuning
+- Tab generation.
+- Tuning preferences.
+- Capo settings where applicable.
+- Fret positioning optimization.
+- Playability-aware simplification.
+
+MVP tunings:
+
+- Guitar standard tuning.
+- Bass standard tuning E A D G.
 
 Additional tunings may be added over time.
 
----
-
-### Guitar Technique Support
-
-For guitar-specific tracks, the system aims to support:
-- Bends
-- Slides
-- Hammer-ons
-- Pull-offs
-- Harmonics
-- Palm muting
-- Tapping notation
-
-Support quality may vary depending on audio clarity.
-
----
-
-### Polyphonic Instrument Support
-
-The platform will attempt to detect:
-- Guitar fingerstyle playing
-- Piano chords and voicings
-- Simultaneous ringing notes
-- Arpeggios
-- Chord voicings
-
-Polyphonic transcription remains one of the most technically challenging features.
-
----
-
-### Notation Customization
-
-Users can customize:
-- Track-only view
-- Full-mix view
-- TAB-only mode
-- Standard notation
-- Rhythmic notation
-- Chord-only view
-- Tuning preferences
-- Capo settings
-- Instrument-specific display preferences
-
----
-
-### Quality Assurance and Validation
+## Quality Assurance and Validation
 
 The system will improve through:
-- Beta testing
-- Known-song benchmarking
-- User feedback collection
-- Accuracy evaluation datasets
-- Per-instrument accuracy tracking
+
+- Beta testing.
+- Known-song benchmarking.
+- User feedback collection.
+- Accuracy evaluation datasets.
+- Per-instrument accuracy tracking.
 
 User corrections may help improve future transcription models.
 
----
-
-### Operational Cost Management
+## Operational Cost Management
 
 To manage AI processing costs, the platform may use:
-- Modal/serverless GPU for preferred production-like selected-stem processing
-- `PROCESSING_MODE=local` with one active Celery worker only as a development fallback
-- `PROCESSING_MODE=external_worker` for manual external workers such as Kaggle notebooks
-- Duplicate detection before queueing work
-- Usage limits
-- Prioritized processing
-- Subscription-based premium access
-- Caching for repeated audio or stem processing
+
+- Modal/serverless GPU for preferred production-like selected-stem processing.
+- `PROCESSING_MODE=local` with one active Celery worker only as a development fallback.
+- `PROCESSING_MODE=external_worker` for manual external workers such as Kaggle notebooks.
+- Duplicate detection before queueing work.
+- Usage limits.
+- Prioritized processing.
+- Subscription-based premium access.
+- Caching for repeated audio or stem processing.
 
 Selective processing reduces CPU/RAM usage, storage requirements, and processing time because the app does not create and transcribe every stem for every song. Full multi-instrument processing should be treated as a future premium capability, especially if GPU workers or external AI processing services are added.
 
@@ -543,7 +493,7 @@ Railway is the MVP backend/API target, not the heavy AI processing platform. Rai
 
 Duplicate detection reduces repeated Demucs processing, repeated Cloudinary storage usage, unnecessary queue jobs, and Railway CPU/RAM cost.
 
-### Duplicate Song Handling
+## Duplicate Song Handling
 
 Before starting a new processing job:
 
@@ -558,19 +508,20 @@ User Upload / YouTube URL + selected stem
 
 Duplicate detection should consider:
 
-- `audio_hash` for uploaded files
-- `source_type`
-- `source_url`
-- `normalized_source_id` for YouTube URLs
-- `selected_stem`
+- `audio_hash` for uploaded files.
+- `source_type`.
+- `source_url`.
+- `normalized_source_id` for YouTube URLs.
+- `selected_stem`.
 
 Same song plus same selected stem should reuse existing output. Same song plus a different selected stem may create a new job because output will be different.
 
-### Delete Processing Records
+## Delete Processing Records
 
 Users should be allowed to delete processing records from the UI for these statuses:
 
 - `completed`
+- `completed_with_warning`
 - `failed`
 - `queued`
 - `processing`
@@ -584,23 +535,33 @@ Deleting a record should also delete related Cloudinary files when safe:
 - original audio
 - separated stem audio
 - MIDI file
+- MusicXML file
 - TAB file
 
 If Cloudinary deletion fails, keep the database deletion safe and log the cleanup error.
 
-### Data Model and API Scope
+## Data Model and API Scope
 
 Upload and YouTube processing requests should include one of:
+
 - `selected_stem`
 - `selected_instrument`
 
 Valid MVP stem values:
+
 - `vocals`
 - `drums`
 - `bass`
 - `other`
 
+Supported MVP source types:
+
+- `upload`
+- `youtube`
+- `demo`
+
 Recommended persisted fields:
+
 - `selected_stem`
 - `audio_hash`
 - `source_type`
@@ -615,6 +576,8 @@ Recommended persisted fields:
 - `separated_audio_public_id`
 - `midi_file_url`
 - `midi_file_public_id`
+- `musicxml_file_url`
+- `musicxml_file_public_id`
 - `tab_file_url`
 - `tab_file_public_id`
 - `processing_status`
@@ -624,10 +587,12 @@ Recommended persisted fields:
 Legacy local path fields such as `separated_audio_file_path`, `midi_file_path`, and `tab_file_path` may exist during migration, but they should not be treated as durable storage fields.
 
 Supported processing statuses:
+
 - `pending`
 - `queued`
 - `processing`
 - `completed`
+- `completed_with_warning`
 - `failed`
 
 Recommended processing modes:
@@ -642,37 +607,59 @@ Worker endpoints:
 - `POST /api/v1/worker/jobs/{transcription_id}/complete`
 - `POST /api/v1/worker/jobs/{transcription_id}/failed`
 
----
+## Highest Frontend Priorities
 
-### Model Updates and Maintenance
+1. Selected stem playback sync.
+2. Synchronized tab highlighting.
+3. Synchronized score highlighting.
+4. Waveform sync.
+5. Instrument-aware rendering.
+6. Stem metadata visibility.
+7. Drum rhythm lane rendering.
+8. Bass tab rendering.
 
-AI models will be updated gradually to:
-- Improve transcription quality
-- Reduce errors
-- Maintain compatibility
-- Add support for more instruments and notation formats
+## Highest Backend Priorities
 
-Updates will be tested before deployment to avoid breaking existing functionality.
+1. Selected-stem processing stability.
+2. Stem-aware transcription.
+3. Bass tab generation.
+4. Drum rhythm lane generation.
+5. Playback timing accuracy.
+6. Export stability.
+7. Duplicate reuse.
+8. Cloudinary persistence.
 
----
+## MVP Scope Recommendation
 
-### Monetization Strategy
+1. Audio upload and YouTube transcription.
+2. Selected-stem separation.
+3. Guitar tab generation from `other`.
+4. Bass tab generation from `bass`.
+5. Drum rhythm lane/tab generation from `drums`.
+6. Synchronized Songsterr-style playback.
+7. Selected-stem playback/export.
+8. Queue-aware processing status.
 
-Potential pricing models:
-- Free limited tier
-- Subscription plans
-- Premium exports
-- Faster processing for paid users
-- Larger file and project limits
+## Current Next Priorities
 
----
+1. Stabilize selected-stem processing.
+2. Improve stem-aware transcription.
+3. Finish bass tab generation.
+4. Finish drum rhythm lane/percussion tab generation.
+5. Improve playback timing accuracy.
+6. Stabilize MIDI, MusicXML, and TAB exports generated from separated-stem transcription results.
+7. Harden duplicate reuse.
+8. Harden Cloudinary persistence.
 
-### Offline Capability
+## Future Roadmap
 
-The MVP will primarily rely on cloud-based or server-side AI processing.
-
-Possible offline features:
-- Viewing saved notation and tabs
-- Audio playback for saved stems
-- Basic editing
-- Cached practice sessions
+- MIDI import.
+- Guitar Pro import.
+- PowerTab import/export.
+- Imported project editing.
+- Imported multi-track workflows.
+- Lead/rhythm guitar separation.
+- True isolated guitar models.
+- Piano specialist models.
+- Real-time transcription.
+- Collaborative editing.

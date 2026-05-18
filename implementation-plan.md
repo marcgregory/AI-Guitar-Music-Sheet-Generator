@@ -17,10 +17,12 @@ Audio Upload / YouTube URL + selected stem
 -> Modal/external worker downloads original audio from Cloudinary
 -> Worker runs Demucs selected-stem separation on GPU when available
 -> Worker uploads selected separated stem to Cloudinary
--> Worker optionally generates MIDI/TAB/MusicXML if supported
+-> Worker runs pitch/rhythm detection on the separated selected stem
+-> Worker generates instrument-aware tabs/notation/rhythm data
+-> Worker optionally generates MIDI/MusicXML/TAB exports if supported
 -> Worker calls backend complete/failed endpoint
 -> Backend updates transcription status and output references
--> Frontend polls status and shows playback/export/download
+-> Frontend polls status and renders synchronized playback with playhead/waveform plus export/download
 ```
 
 Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For guitar transcription, use `other` as the MVP target and clearly tell users that guitar/piano/accompaniment may be grouped inside `other` depending on the model and mix. True separate guitar, rhythm guitar, lead guitar, or piano stems require better specialist models later.
@@ -83,10 +85,64 @@ Fallback transcription behavior:
 
 Stem support matrix:
 
-- `vocals`: playback only.
-- `drums`: playback only.
-- `bass`: playback only or simple notation when note detection succeeds.
-- `other`: attempt guitar transcription.
+- `vocals`: playback only for MVP. Future roadmap: melody extraction.
+- `drums`: analyze drum stem, detect drum hits/onsets, generate a drum rhythm lane and percussion/drum tab where possible, support synchronized playback highlighting, and support drum MIDI export when possible.
+- `bass`: analyze bass stem, generate 4-string bass tablature using standard tuning E A D G, generate bass score data, and support synchronized playback/playhead highlighting.
+- `other`: primary guitar transcription target; generate guitar tablature, score notation, and synchronized playback/playhead highlighting.
+
+Primary MVP architecture:
+
+```txt
+Audio/YouTube
+-> selected stem separation
+-> instrument-aware transcription
+-> synchronized playback
+-> tab/score/rhythm rendering
+```
+
+The app focus is generating tabs from output stems, synchronized Songsterr-style playback, instrument-aware rendering, and a selected-stem workflow. MIDI import, Guitar Pro import, PowerTab import/export, imported project playback architecture, imported project editing, and imported multi-track workflows are future roadmap only. Do not treat them as MVP work. MIDI export, MusicXML export, and TAB export remain in scope when generated from separated-stem transcription results.
+
+Instrument-aware rendering architecture:
+
+- Guitar/`other` renders as 6-string tablature.
+- Bass renders as 4-string bass tablature.
+- Drums render as a rhythm lane/percussion tab.
+- Vocals render as playback-only.
+- All views share synchronized playback using waveform, playhead, tabs, score, active notes/hits, and selected-stem playback.
+
+Synchronized playback requirements:
+
+- moving playhead
+- note highlighting
+- waveform sync
+- seek synchronization
+- shared `currentTime`
+- tab/score sync
+- stem playback sync
+
+Do not use separate timers for waveform, tabs, and score. The viewer should derive all synchronization from one shared playback clock/current time source.
+
+Highest frontend priorities:
+
+1. selected stem playback sync
+2. synchronized tab highlighting
+3. synchronized score highlighting
+4. waveform sync
+5. instrument-aware rendering
+6. stem metadata visibility
+7. drum rhythm lane rendering
+8. bass tab rendering
+
+Highest backend priorities:
+
+1. selected-stem processing stability
+2. stem-aware transcription
+3. bass tab generation
+4. drum rhythm lane generation
+5. playback timing accuracy
+6. export stability
+7. duplicate reuse
+8. Cloudinary persistence
 
 Modal worker rules:
 
@@ -104,7 +160,7 @@ Deletion policy:
 - Processing jobs should be marked cancelled/deleted in the database and stopped if cancellation is supported.
 - MVP limitation: stopping an active Celery task may not be reliable; the UI record can be hidden/deleted, temporary files should still be cleaned up, and the active worker may finish silently.
 - Delete related Cloudinary files before DB records are soft-deleted or hard-deleted: original audio, separated stem audio, MIDI file, and TAB file.
-- Use `resource_type="video"` for original/separated audio and `resource_type="raw"` for MIDI/TAB/text exports.
+- Use `resource_type="video"` for original/separated audio and `resource_type="raw"` for MIDI/MusicXML/TAB/text exports.
 - Before deleting a Cloudinary public ID, check whether another transcription outside the deletion set still references it. Shared duplicate assets must be skipped.
 - If Cloudinary deletion fails, log the exception and continue the DB cleanup safely.
 - Project deletion cascades through all related transcriptions and uses the same cleanup path as manual transcription delete, admin delete, and scheduled cleanup jobs.
@@ -200,7 +256,7 @@ User Upload / YouTube URL + selected stem
 
 ### Selected-Stem Output & Storage
 
-- [x] Design database schema for multi-track instrument transcriptions using an `InstrumentTrack` model
+- [x] Design database schema for selected-stem instrument transcriptions using an `InstrumentTrack` model that can grow into future multi-track workflows
 - [x] Add/confirm top-level selected job fields: `selected_stem`, `processing_status`, legacy local path fields, and output references
 - [x] Add Cloudinary fields: `original_audio_url`, `original_audio_public_id`, `separated_audio_url`, `separated_audio_public_id`, `midi_file_url`, `midi_file_public_id`, `tab_file_url`, `tab_file_public_id`, and `processing_error`
 - [x] Add duplicate/deletion fields: `audio_hash`, `source_type`, `source_url`, `normalized_source_id`, `duplicate_of_id`, `is_deleted`, and `deleted_at`
@@ -213,7 +269,7 @@ User Upload / YouTube URL + selected stem
 - [x] Create API endpoint to retrieve one instrument track result
 - [x] Create API endpoint to stream/play one separated stem
 - [ ] Create API endpoint or request path to process/reprocess one selected stem
-- [ ] Create API endpoint to export one selected stem as TXT tab, MIDI, MusicXML, or future Guitar Pro format where supported
+- [ ] Create API endpoint to export one selected stem as TXT tab, MIDI, or MusicXML where supported
 - [x] Create `DELETE /transcriptions/{id}` for completed, failed, queued, and processing records
 - [ ] Create `POST /transcriptions/{id}/cancel` if explicit cancellation is needed separately from delete
 - [x] Create API endpoint to update/correct track metadata such as display name, instrument type, and confidence notes
@@ -246,7 +302,7 @@ Transcription
 
 Legacy local path fields such as `separated_audio_file_path`, `midi_file_path`, and `tab_file_path` may remain during migration, but they should not be treated as durable Railway storage.
 
-Existing/new track table can remain for future multi-track expansion:
+Existing/new track table can remain for future multi-track expansion, but MVP records should focus on the selected stem output:
 
 ```txt
 InstrumentTrack
@@ -307,11 +363,14 @@ Transcription
 
 MVP scope recommendation:
 
-1. Selected-stem separation: vocals, drums, bass, or other
-2. `other` stem as the MVP guitar transcription target
-3. Selected-stem playback and export
-4. Queue-aware processing status
-5. Multiple selected stems only after MVP stability
+1. Audio upload and YouTube transcription
+2. Selected-stem separation
+3. Guitar tab generation from `other`
+4. Bass tab generation from `bass`
+5. Drum rhythm lane/tab generation from `drums`
+6. Synchronized Songsterr-style playback
+7. Selected-stem playback/export
+8. Queue-aware processing status
 
 ## Phase 4: Enhanced Multi-Instrument Transcription Features
 
@@ -401,7 +460,7 @@ MVP scope recommendation:
 - [ ] Investigate real-time collaboration features
 - [ ] Explore educational institution partnerships
 - [ ] Continuously update AI models with new training data
-- [ ] Add support for additional export formats (GuitarPro, PowerTab)
+- [ ] Add future support for import/editing formats such as MIDI import, Guitar Pro import, and PowerTab import/export
 
 ## Future Roadmap Summary
 
@@ -409,8 +468,8 @@ The selected-stem architecture grows in four steps:
 
 - **Phase 1**: selected-stem MVP, Cloudinary persistence, duplicate detection, delete/cancel, queue/status UX
 - **Phase 2**: Modal/serverless GPU worker integration, worker endpoints, external worker authentication, status callback flow, selected-stem preview/export from Cloudinary outputs
-- **Phase 3**: multiple selected stems, improved transcription quality, better retry/recovery
-- **Phase 4**: full Songsterr-like multi-track tabs, lead/rhythm guitar separation, piano/guitar specialist models
+- **Phase 3**: improved transcription quality, playback timing accuracy, better retry/recovery, drum/bass rendering polish
+- **Phase 4**: MIDI import, Guitar Pro import, PowerTab import/export, imported project editing, full Songsterr-like multi-track tabs, lead/rhythm guitar separation, piano/guitar specialist models, real-time transcription, collaborative editing
 
 For MVP, prioritize Demucs default stems first: vocals, drums, bass, and other. Lead guitar versus rhythm guitar, true isolated guitar, and true isolated piano should be treated as advanced features because they are harder than default broad stem separation.
 
@@ -491,6 +550,6 @@ The notes below document earlier implementation slices. Any previous full multi-
 
 - Added selected-stem persistence fields for Cloudinary URLs/public IDs, duplicate detection, soft deletion, and queue metadata, with additive schema compatibility and a SQL migration.
 - Upload and YouTube ingestion now reuse completed duplicates before queueing, upload originals to Cloudinary when configured, and persist `audio_hash` or normalized YouTube IDs.
-- Processing persists exactly one selected separated stem, uploads selected-stem/MIDI/TAB artifacts to Cloudinary when configured, clears queue metadata at terminal states, and treats local files as temporary scratch after durable upload.
+- Processing persists exactly one selected separated stem, uploads selected-stem/MIDI/MusicXML/TAB artifacts to Cloudinary when configured, clears queue metadata at terminal states, and treats local files as temporary scratch after durable upload.
 - Added `GET /audio/{transcription_id}/tracks/{track_id}/preview`, with Cloudinary redirect for durable stems and HTTP byte-range support for legacy/local stem files.
 - Added best-effort `DELETE /transcriptions/{id}` cleanup/cancellation behavior for completed, failed, queued, and processing records. Active Celery task termination remains best-effort for the MVP.

@@ -105,8 +105,15 @@ class TranscriptionBase(BaseModel):
     detected_key: Optional[str] = None
     key_confidence: Optional[int] = None
     warning_message: Optional[str] = None
+    instrument_type: Optional[str] = None
+    output_mode: Optional[str] = None
+    can_generate_tab: Optional[bool] = False
     can_generate_score: Optional[bool] = True
+    can_generate_rhythm: Optional[bool] = False
     can_play_stem: Optional[bool] = False
+    track_count: Optional[int] = 0
+    tuning: Optional[str] = None
+    import_type: Optional[str] = None
     transcription_attempts: Optional[int] = 0
 
 class TranscriptionCreate(TranscriptionBase):

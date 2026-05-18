@@ -42,8 +42,15 @@ export interface Transcription {
   is_processed: boolean;
   processing_error?: string | null;
   warning_message?: string | null;
+  instrument_type?: string | null;
+  output_mode?: string | null;
+  can_generate_tab?: boolean | null;
   can_generate_score?: boolean | null;
+  can_generate_rhythm?: boolean | null;
   can_play_stem?: boolean | null;
+  track_count?: number | null;
+  tuning?: string | null;
+  import_type?: string | null;
   transcription_attempts?: number | null;
   notes_data?: string | null;
   chords_data?: string | null;

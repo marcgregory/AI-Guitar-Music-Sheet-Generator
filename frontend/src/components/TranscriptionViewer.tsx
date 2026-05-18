@@ -2,19 +2,23 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import type { AlphaTabApi } from "@coderline/alphatab";
 import audioService from "../services/audioService";
 import type { InstrumentTrack, Transcription } from "../services/audioService";
+import { buildTranscriptionMetadata } from "../utils/transcriptionMetadata";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "./auth/AuthContext";
 import {
   CheckCircle2,
+  ChevronDown,
   Download,
   Expand,
   FileDown,
   FolderOpen,
+  Info,
   Link as LinkIcon,
   Music2,
   Pause,
   Play,
   SlidersHorizontal,
+  Volume2,
   Waves,
 } from "lucide-react";
 
@@ -1349,7 +1353,7 @@ const formatPlaybackTime = (time: number): string => {
 };
 
 const formatDisplayDuration = (duration?: number | null): string => {
-  if (!duration || !Number.isFinite(duration)) return "3:36";
+  if (!duration || !Number.isFinite(duration)) return "0:00";
   const totalSeconds = Math.max(0, Math.round(duration));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
@@ -1667,6 +1671,7 @@ const TranscriptionViewer: React.FC = () => {
   const [playbackDuration, setPlaybackDuration] = useState(0);
   const [playbackVolume, setPlaybackVolume] = useState(0.74);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [isSpeedMenuOpen, setIsSpeedMenuOpen] = useState(false);
   const [waveformPeaks, setWaveformPeaks] = useState<number[]>([]);
   const [notationZoomLevel, setNotationZoomLevel] = useState<number>(1.0);
   const [scoreViewMode, setScoreViewMode] = useState<"score" | "tab">("score");
@@ -2060,9 +2065,11 @@ const TranscriptionViewer: React.FC = () => {
     }
   };
 
-  const handlePlaybackRateChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const rate = Number(event.target.value);
+  const playbackRateOptions = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+  const handlePlaybackRateSelect = (rate: number) => {
     setPlaybackRate(rate);
+    setIsSpeedMenuOpen(false);
     if (audioElementRef.current) {
       audioElementRef.current.playbackRate = rate;
     }
@@ -2234,6 +2241,7 @@ const TranscriptionViewer: React.FC = () => {
   }
 
   const scoreSource = activeScoreSource;
+  const transcriptionMetadata = buildTranscriptionMetadata(transcription, instrumentTracks);
   const asciiTab = buildAsciiTab(scoreSource?.tablatureData, scoreSource?.chordsData);
   const selectedTrackNotesError = scoreSource?.isGlobal ? null : getNotesError(scoreSource?.notesData);
   const notesError = scoreSource?.isGlobal
@@ -2315,7 +2323,7 @@ const TranscriptionViewer: React.FC = () => {
     : titleWithoutExtension
   ) || rawProjectTitle;
   const displayProjectSubtitle = subtitleMatch ? `(${subtitleMatch[1]})` : null;
-  const displayDuration = formatDisplayDuration(transcription.duration);
+  const displayDuration = formatDisplayDuration(transcriptionMetadata.durationSeconds || transcription.duration);
   const displayTempo = transcription.detected_tempo ? `${transcription.detected_tempo} BPM` : "Not detected";
   const displayHeaderTempo = transcription.detected_tempo ? `${transcription.detected_tempo}` : "—";
   const displayKey = transcription.detected_key || "D# major";
@@ -2330,9 +2338,25 @@ const TranscriptionViewer: React.FC = () => {
         : "Source not attached";
   const sourceSummary = isDemoTranscription
     ? "Example guitar riff"
-    : sourceFileName || (transcription.youtube_url ? "YouTube audio" : "No audio file");
-  const playbackSourceLabel = audioSrc ? sourceSummary : isDemoTranscription ? "Demo audio missing" : sourceSummary;
-
+    : sourceFileName || (transcription.youtube_url ? "YouTube audio" : transcriptionMetadata.sourceLabel);
+  const playbackSourceLabel = audioSrc
+    ? transcriptionMetadata.sourceLabel
+    : isDemoTranscription
+      ? "Demo audio missing"
+      : transcriptionMetadata.sourceLabel;
+  const selectedTrackLabel = selectedTrack?.display_name ?? transcriptionMetadata.stemLabel;
+  const selectedInstrumentLabel = selectedTrack
+    ? displayInstrumentName(selectedTrack.instrument_type)
+    : transcriptionMetadata.instrumentLabel;
+  const selectedTuningLabel = transcriptionMetadata.tuningLabel;
+  const capabilityBadges = transcriptionMetadata.outputBadges.length > 0
+    ? transcriptionMetadata.outputBadges
+    : ["PLAYBACK ONLY"];
+  const heroWaveformPeaks = waveformPeaks.length > 0
+    ? waveformPeaks
+    : Array.from({ length: 72 }, (_item, index) => 0.32 + (((index * 13) % 42) / 70));
+  const transcriptionInfoMessage = transcription.warning_message ||
+    "Guitar detected from Demucs 'other' stem. Accuracy depends on mix quality.";
   return (
     <div className="transcription-viewer-container transcription-premium-page">
       <section className="premium-transcription-card" aria-label="Transcription result">
@@ -2342,9 +2366,22 @@ const TranscriptionViewer: React.FC = () => {
             <h1>{displayProjectTitle}</h1>
             {displayProjectSubtitle && <p>{displayProjectSubtitle}</p>}
             <div className="premium-hero-chips" aria-label="Project metadata">
-              <span><Music2 aria-hidden="true" /> Key: {displayKey}</span>
-              <span><SlidersHorizontal aria-hidden="true" /> Tempo: {displayHeaderTempo}</span>
-              <span><CheckCircle2 aria-hidden="true" /> Duration: {displayDuration}</span>
+              <span><Music2 aria-hidden="true" /><small>Key</small><strong>{displayKey}</strong></span>
+              <span><SlidersHorizontal aria-hidden="true" /><small>Tempo</small><strong>{displayHeaderTempo} BPM</strong></span>
+              <span><CheckCircle2 aria-hidden="true" /><small>Duration</small><strong>{displayDuration}</strong></span>
+            </div>
+            <div className="premium-stem-summary" aria-label="Selected stem metadata">
+              <span><Music2 aria-hidden="true" /><small>Selected Stem</small><strong>{transcriptionMetadata.stemLabel}</strong></span>
+              <span><SlidersHorizontal aria-hidden="true" /><small>Instrument</small><strong>{selectedInstrumentLabel}</strong></span>
+              <span><FileDown aria-hidden="true" /><small>Output</small><strong>{transcriptionMetadata.outputLabel}</strong></span>
+            </div>
+            <div className="premium-capability-badges" aria-label="Output capability badges">
+              <span className={`premium-source-badge stem-tone-${transcriptionMetadata.tone}`}>
+                {transcriptionMetadata.sourceBadge}
+              </span>
+              {capabilityBadges.map((badge) => (
+                <span className="premium-completed-badge" key={badge}>{badge}</span>
+              ))}
             </div>
           </div>
           <div className="premium-hero-audio">
@@ -2361,15 +2398,17 @@ const TranscriptionViewer: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  className="premium-waveform premium-waveform-button"
+                  className={`premium-waveform premium-waveform-button ${isPlaying ? "playing" : ""}`}
                   aria-label="Seek playback"
                   disabled={!audioUrl || playbackDuration <= 0}
                   onClick={handleHeroSeek}
+                  style={{ "--progress": `${playbackProgress * 100}%` } as React.CSSProperties}
                 >
-                  {(waveformPeaks.length > 0 ? waveformPeaks : Array.from({ length: 58 }, (_item, index) => 0.32 + (((index * 13) % 42) / 70))).map((peak, index) => (
+                  <i className="premium-waveform-playhead" aria-hidden="true" />
+                  {heroWaveformPeaks.map((peak, index) => (
                     <span
                       key={index}
-                      className={(index + 1) / 58 <= playbackProgress ? "played" : ""}
+                      className={(index + 1) / heroWaveformPeaks.length <= playbackProgress ? "played" : ""}
                       style={{ "--bar": `${Math.round(14 + peak * 56)}px` } as React.CSSProperties}
                     />
                   ))}
@@ -2381,6 +2420,17 @@ const TranscriptionViewer: React.FC = () => {
                 </span>
                 <span className="premium-source-filename" title={playbackSourceLabel}>{playbackSourceLabel}</span>
               </div>
+            </div>
+            <div className="premium-playback-metadata" aria-label="Playback metadata">
+              <span><Play aria-hidden="true" /> <small>Playback</small><strong>{transcriptionMetadata.playbackLabel}</strong></span>
+              <span><Waves aria-hidden="true" /> <small>Track</small><strong>{selectedTrackLabel}</strong></span>
+              {transcriptionMetadata.isMultiTrack && (
+                <span><SlidersHorizontal aria-hidden="true" /> <small>Tracks</small><strong>{transcriptionMetadata.trackCount}</strong></span>
+              )}
+              <span><Music2 aria-hidden="true" /> <small>Instrument</small><strong>{selectedInstrumentLabel}</strong></span>
+              {selectedTuningLabel && <span><SlidersHorizontal aria-hidden="true" /> <small>Tuning</small><strong>Standard Guitar ({selectedTuningLabel})</strong></span>}
+              <span><Volume2 aria-hidden="true" /> <small>Volume</small><strong>{Math.round(playbackVolume * 100)}%</strong></span>
+              <span><CheckCircle2 aria-hidden="true" /> <small>Speed</small><strong>{playbackRate}x</strong></span>
             </div>
             <div className="premium-hero-audio-controls">
               <label>
@@ -2395,17 +2445,44 @@ const TranscriptionViewer: React.FC = () => {
                   disabled={!audioUrl}
                 />
               </label>
-              <label>
+              <div
+                className="premium-speed-control"
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) {
+                    setIsSpeedMenuOpen(false);
+                  }
+                }}
+              >
                 <span>Speed</span>
-                <select value={String(playbackRate)} onChange={handlePlaybackRateChange} disabled={!audioUrl}>
-                  <option value="0.5">0.5x</option>
-                  <option value="0.75">0.75x</option>
-                  <option value="1">1x</option>
-                  <option value="1.25">1.25x</option>
-                  <option value="1.5">1.5x</option>
-                  <option value="2">2x</option>
-                </select>
-              </label>
+                <button
+                  type="button"
+                  className="premium-speed-trigger"
+                  aria-haspopup="listbox"
+                  aria-expanded={isSpeedMenuOpen}
+                  disabled={!audioUrl}
+                  onClick={() => setIsSpeedMenuOpen((open) => !open)}
+                >
+                  {playbackRate}x
+                  <ChevronDown aria-hidden="true" />
+                </button>
+                {isSpeedMenuOpen && (
+                  <div className="premium-speed-menu" role="listbox" aria-label="Playback speed">
+                    {playbackRateOptions.map((rate) => (
+                      <button
+                        type="button"
+                        key={rate}
+                        role="option"
+                        aria-selected={playbackRate === rate}
+                        className={playbackRate === rate ? "active" : ""}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => handlePlaybackRateSelect(rate)}
+                      >
+                        {rate}x
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             {!isDemoTranscription && (
               <button type="button" className="premium-change-source-button" onClick={() => navigate("/upload")}>
@@ -2421,8 +2498,8 @@ const TranscriptionViewer: React.FC = () => {
             <div className="premium-horizontal-card">
               <span className="premium-card-icon"><Waves aria-hidden="true" /></span>
               <div>
-                <strong>Full Mix</strong>
-                <span>{sourceLabel}</span>
+                <strong>{transcriptionMetadata.sourceLabel}</strong>
+                <span>{sourceLabel} - {sourceSummary}</span>
               </div>
               {isDemoTranscription && <span className="premium-completed-badge premium-confidence-badge">Example</span>}
               {!isDemoTranscription && (
@@ -2431,24 +2508,34 @@ const TranscriptionViewer: React.FC = () => {
             </div>
           </section>
 
+          <section className="premium-info-callout" aria-label="Transcription information">
+            <Info aria-hidden="true" />
+            <p>{transcriptionInfoMessage}</p>
+          </section>
+
           <section className="premium-info-section" aria-labelledby="transcription-status-heading">
             <h2 id="transcription-status-heading">Transcription Status</h2>
             <div className="premium-horizontal-card premium-status-card">
               <span className="premium-check-icon"><CheckCircle2 aria-hidden="true" /></span>
-              <strong>{scoreSource?.label ?? "Full Mix"}</strong>
-              <span className={`premium-completed-badge status-${displayedProcessingStatus}`}>
-                {displayedStatusLabel}
-              </span>
-              {transcription.processing_status === "completed_with_warning" && (
-                <span className="premium-completed-badge premium-confidence-badge">
-                  Notation unavailable
+              <strong>{scoreSource?.label ?? transcriptionMetadata.sourceLabel}</strong>
+              <div className="premium-status-badge-row">
+                <span className={`premium-completed-badge status-${displayedProcessingStatus}`}>
+                  {displayedStatusLabel}
                 </span>
-              )}
-              {hasConfidenceScore(scoreSource?.confidenceScore) && (
-                <span className="premium-completed-badge premium-confidence-badge">
-                  {Math.round(Number(scoreSource?.confidenceScore))}% confidence
-                </span>
-              )}
+                {transcription.processing_status === "completed_with_warning" && (
+                  <span className="premium-completed-badge premium-confidence-badge">
+                    {transcription.warning_message || "Playback available, but notation generation was limited."}
+                  </span>
+                )}
+                {capabilityBadges.map((badge) => (
+                  <span className="premium-completed-badge" key={`status-${badge}`}>{badge}</span>
+                ))}
+                {hasConfidenceScore(scoreSource?.confidenceScore) && (
+                  <span className="premium-completed-badge premium-confidence-badge">
+                    {Math.round(Number(scoreSource?.confidenceScore))}% confidence
+                  </span>
+                )}
+              </div>
               <span className="premium-completed-date">Completed on {completedAt}</span>
             </div>
           </section>
@@ -2496,6 +2583,7 @@ const TranscriptionViewer: React.FC = () => {
 
               {hasTrackOptions && (
                 <div className="premium-track-list" aria-label="Instrument tracks">
+                  <span className="premium-sidebar-label">Tracks</span>
                   {instrumentTracks.map((track) => {
                     const isActive = selectedTrackView === track.id;
                     return (
@@ -2512,12 +2600,20 @@ const TranscriptionViewer: React.FC = () => {
                 </div>
               )}
 
+              {transcriptionMetadata.isMultiTrack && token && (
+                <StemMixer
+                  transcriptionId={transcription.id}
+                  tracks={instrumentTracks}
+                  token={token}
+                  selectedTrackView={selectedTrackView}
+                  onSelectTrack={setSelectedTrackView}
+                  onTimeUpdate={setCurrentPlaybackTime}
+                  onEnded={() => setIsPlaying(false)}
+                />
+              )}
+
               {scoreControlsAvailable && (
                 <>
-                  <span className="premium-sidebar-label">View</span>
-                  <div className="premium-option-list" aria-label="Active notation view">
-                    <button type="button" className="active" onClick={() => setScoreViewMode("score")}><CheckCircle2 aria-hidden="true" /> Standard</button>
-                  </div>
                   <span className="premium-sidebar-label">Zoom</span>
                   <div className="premium-sidebar-zoom">
                     <button
@@ -2536,11 +2632,6 @@ const TranscriptionViewer: React.FC = () => {
                       +
                     </button>
                   </div>
-                  <label className="premium-toggle-row">
-                    <span>Show fingerings</span>
-                    <input type="checkbox" />
-                    <i aria-hidden="true" />
-                  </label>
                 </>
               )}
               {selectedTrack && selectedTrackReprocessSupported && !isDemoTranscription && (
@@ -2614,8 +2705,16 @@ const TranscriptionViewer: React.FC = () => {
                   </div>
                 ) : (
                   <div className="premium-inline-empty-state">
-                    <strong>No notation generated for this stem.</strong>
-                    <p>Stem playback is available.</p>
+                    <strong>
+                      {transcriptionMetadata.capabilities.playback
+                        ? "Playback available, but notation generation was limited."
+                        : "No note events detected for this stem."}
+                    </strong>
+                    <p>
+                      {transcription.selected_stem === "drums"
+                        ? "This stem currently supports rhythm playback only when drum hits are detected."
+                        : "No note events were detected for the selected stem."}
+                    </p>
                     <div className="premium-inline-empty-actions">
                       {!isDemoTranscription && (
                         <button
@@ -2674,45 +2773,33 @@ const TranscriptionViewer: React.FC = () => {
             className="button-secondary"
             onClick={() => navigate("/dashboard")}
           >
-            Return to Dashboard
+            Dashboard
           </button>
           <button type="button" className="premium-icon-only" aria-label="Copy link" onClick={handleCopyLink}>
             <LinkIcon aria-hidden="true" />
           </button>
           {scoreControlsAvailable && (
             <>
-              <select
-                className="premium-zoom-select"
-                value={String(Math.round(notationZoomLevel * 100))}
-                onChange={(event) => setNotationZoomLevel(Number(event.target.value) / 100)}
-                aria-label="Score zoom"
-              >
-                <option value="50">50%</option>
-                <option value="75">75%</option>
-                <option value="100">100%</option>
-                <option value="125">125%</option>
-                <option value="150">150%</option>
-              </select>
               <button
                 className="button-secondary premium-download-button"
                 onClick={() => handleDownload("midi")}
                 disabled={!canDownloadMidi}
               >
-                <Download aria-hidden="true" /> Download MIDI
+                <Download aria-hidden="true" /> MIDI
               </button>
               <button
                 className="button-secondary premium-download-button"
                 onClick={() => handleDownload("musicxml")}
                 disabled={!canDownloadMusicXml}
               >
-                <FileDown aria-hidden="true" /> Download MusicXML
+                <FileDown aria-hidden="true" /> MusicXML
               </button>
               <button
                 className="button-secondary premium-download-button"
                 onClick={() => handleDownload("tab")}
                 disabled={!canDownloadTab}
               >
-                <Download aria-hidden="true" /> Download TAB
+                <Download aria-hidden="true" /> TAB
               </button>
             </>
           )}

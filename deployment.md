@@ -13,6 +13,8 @@ Railway should run the lightweight backend/controller, not the primary Demucs wo
 
 Railway trial/free resources are not reliable for Demucs production processing. Railway local storage must not be used as durable file storage. It is temporary scratch space only.
 
+The MVP is audio/YouTube selected-stem processing. MIDI import, Guitar Pro import, PowerTab import/export, imported project playback architecture, and imported multi-track workflows are future roadmap items only. MIDI export, MusicXML export, and TAB export remain in scope when generated from separated-stem transcription results.
+
 The backend runtime is Python 3.11. Both Dockerfiles use Python 3.11 images, and `railway.json` points to the root Dockerfile. Local selected-stem Demucs fallback requires the PyTorch audio stack from `backend/requirements.txt` (`demucs`, `torch`, and `torchaudio`) plus an `ffmpeg` executable on `PATH`.
 
 ## Required Environment Variables
@@ -51,7 +53,6 @@ Frontend:
 
 Development fallback only. Railway/Celery may process very short files, but this is not recommended for production. If local mode is enabled, run one active job at a time:
 
-
 ```sh
 celery -A app.celery worker --loglevel=info --concurrency=1
 ```
@@ -62,7 +63,7 @@ The backend queues jobs and exposes worker endpoints for a manually running exte
 
 ### `PROCESSING_MODE=modal`
 
-Preferred production-like MVP mode. The backend triggers Modal/serverless GPU processing. Modal downloads the original audio from Cloudinary, runs Demucs selected-stem separation on GPU, uploads outputs to Cloudinary, and reports completion/failure back to Railway.
+Preferred production-like MVP mode. The backend triggers Modal/serverless GPU processing. Modal downloads the original audio from Cloudinary, runs Demucs selected-stem separation on GPU, runs stem-aware transcription, uploads outputs to Cloudinary, and reports completion/failure back to Railway.
 
 ## Worker Endpoints
 
@@ -80,12 +81,12 @@ Kaggle may be used for optional/manual free GPU testing. It is not 24/7, cannot 
 
 ## Cleanup Strategy
 
-After a job reaches `completed`, `failed`, or is marked deleted/cancelled, the worker should delete temporary local files:
+After a job reaches `completed`, `completed_with_warning`, `failed`, or is marked deleted/cancelled, the worker should delete temporary local files:
 
 - original temporary upload or YouTube extraction file
 - worker download copy
 - Demucs work directories
-- generated MIDI/TAB files after Cloudinary upload
+- generated MIDI/MusicXML/TAB files after Cloudinary upload
 
 Cloudinary assets remain durable and are tracked by `secure_url` and `public_id`.
 
@@ -94,6 +95,7 @@ When a user deletes a processing record, the API should delete related Cloudinar
 - original audio
 - separated stem audio
 - MIDI file
+- MusicXML file
 - TAB file
 
 If Cloudinary deletion fails, the database deletion should remain safe and the cleanup error should be logged for retry/manual follow-up.

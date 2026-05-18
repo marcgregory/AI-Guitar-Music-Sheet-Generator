@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import audioService, { type Transcription } from "../../services/audioService";
+import { buildTranscriptionMetadata, type TranscriptionMetadata } from "../../utils/transcriptionMetadata";
 import { Icon } from "../Icon";
 import { useAuth } from "./AuthContext";
 
@@ -15,6 +16,7 @@ interface Project {
   difficulty: "beginner" | "intermediate" | "advanced";
   processingError?: string | null;
   isDemo?: boolean;
+  metadata: TranscriptionMetadata;
 }
 
 const filenameFromPath = (path?: string | null): string =>
@@ -51,6 +53,7 @@ const getDifficulty = (duration?: number | null): Project["difficulty"] => {
 
 const mapTranscriptionToProject = (transcription: Transcription): Project => {
   const status = getTranscriptionStatus(transcription);
+  const metadata = buildTranscriptionMetadata(transcription);
   const audioFileName = transcription.youtube_url
     ? "YouTube audio"
     : transcription.is_demo
@@ -65,24 +68,25 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
         ? "Try the demo transcription with playable stem audio, TAB, and notation."
       : status === "failed"
         ? transcription.processing_error || "Processing failed"
-        : status === "warning"
-          ? "Stem isolated successfully. Notation unavailable for this stem."
+      : status === "warning"
+          ? transcription.warning_message || metadata.description
         : status === "queued"
           ? "Queued because another Railway MVP job is processing"
-          : status === "pending"
-            ? "Waiting for the selected-stem job to start"
-            : status === "completed"
+        : status === "pending"
+          ? "Waiting for the selected-stem job to start"
+        : status === "completed"
           ? transcription.processing_error && isNonBlockingProcessingWarning(transcription.processing_error)
             ? "Score and exports are ready from the full mix"
-            : "Score, tab, and exports are ready"
+            : metadata.description
           : "Analysis is running in the background",
     createdAt: transcription.created_at || new Date().toISOString(),
     audioFileName,
     status,
-    duration: transcription.duration || 0,
-    difficulty: getDifficulty(transcription.duration),
+    duration: metadata.durationSeconds || transcription.duration || 0,
+    difficulty: getDifficulty(metadata.durationSeconds || transcription.duration),
     processingError: transcription.processing_error,
     isDemo: Boolean(transcription.is_demo),
+    metadata,
   };
 };
 
@@ -485,13 +489,56 @@ const Dashboard: React.FC = () => {
       onClick: () => alert("Template library coming soon."),
     },
   ];
-  const ProjectCover = ({ title }: { title: string }) => (
-    <div className="project-cover" aria-label={`${title} audio artwork`}>
+  const ProjectCover = ({ title, tone }: { title: string; tone: TranscriptionMetadata["tone"] }) => (
+    <div className={`project-cover project-cover-${tone}`} aria-label={`${title} audio artwork`}>
       <span className="project-cover-orbit" aria-hidden="true" />
       <span className="project-cover-play" aria-hidden="true">
         <Icon name="arrow" />
       </span>
     </div>
+  );
+
+  const CapabilityPreview = ({ project }: { project: Project }) => {
+    const capabilities = [
+      ["Tabs", project.metadata.capabilities.tabs],
+      ["Score", project.metadata.capabilities.score],
+      ["Rhythm Lane", project.metadata.capabilities.rhythm],
+      ["Playback", project.metadata.capabilities.playback],
+    ] as const;
+
+    return (
+      <div className="project-capability-preview" aria-label="Output capabilities">
+        {capabilities.map(([label, available]) => (
+          <span className={available ? "available" : "unavailable"} key={label}>
+            {available ? <Icon name="check" /> : <span aria-hidden="true">x</span>}
+            {label}
+          </span>
+        ))}
+      </div>
+    );
+  };
+
+  const ProjectMetadataBlock = ({ project }: { project: Project }) => (
+    <>
+      <div className="project-badge-row" aria-label="Transcription metadata">
+        <span className={`project-stem-badge stem-tone-${project.metadata.tone}`}>
+          {project.metadata.sourceBadge}
+        </span>
+        {project.metadata.outputBadges.map((badge) => (
+          <span className="project-output-badge" key={badge}>{badge}</span>
+        ))}
+      </div>
+
+      <div className="project-instrument-row">
+        <span>Stem: <strong>{project.metadata.stemLabel}</strong></span>
+        <span>Instrument: <strong>{project.metadata.instrumentLabel}</strong></span>
+        {project.metadata.isMultiTrack && (
+          <span>Tracks: <strong>{project.metadata.trackCount}</strong></span>
+        )}
+      </div>
+
+      <CapabilityPreview project={project} />
+    </>
   );
 
   return (
@@ -570,7 +617,7 @@ const Dashboard: React.FC = () => {
                 className={`project-card featured-project-card project-card-${featuredProject.status}`}
                 onDoubleClick={() => navigate(getProjectRoute(featuredProject))}
               >
-                <ProjectCover title={featuredProject.title} />
+                <ProjectCover title={featuredProject.title} tone={featuredProject.metadata.tone} />
                 <div className="project-body">
                   <div className="project-card-header">
                     <h3 className="project-title">{featuredProject.title}</h3>
@@ -590,6 +637,7 @@ const Dashboard: React.FC = () => {
                   </div>
 
                   <p className="project-description">{featuredProject.description}</p>
+                  <ProjectMetadataBlock project={featuredProject} />
 
                   <div className="project-meta">
                     <div className="meta-item">
@@ -644,7 +692,7 @@ const Dashboard: React.FC = () => {
                         className={`project-card project-card-${project.status}`}
                         onDoubleClick={() => navigate(getProjectRoute(project))}
                       >
-                        <ProjectCover title={project.title} />
+                        <ProjectCover title={project.title} tone={project.metadata.tone} />
                         <div className="project-body">
                           <div className="project-card-header">
                             <h3 className="project-title">{project.title}</h3>
@@ -663,6 +711,7 @@ const Dashboard: React.FC = () => {
                             />
                           </div>
                           <p className="project-description">{project.description}</p>
+                          <ProjectMetadataBlock project={project} />
 
                           <div className="project-meta">
                             <div className="meta-item">
@@ -711,7 +760,7 @@ const Dashboard: React.FC = () => {
                   <div className="projects-list">
                     {projects.map((project) => (
                       <article key={project.id} className={`project-list-item project-list-item-${project.status}`}>
-                        <ProjectCover title={project.title} />
+                        <ProjectCover title={project.title} tone={project.metadata.tone} />
                         <div className="project-list-content">
                           <div className="project-list-header">
                             <h3 className="project-list-title">{project.title}</h3>
@@ -732,6 +781,7 @@ const Dashboard: React.FC = () => {
 
                           <div className="project-list-body">
                             <p className="project-list-description">{project.description}</p>
+                            <ProjectMetadataBlock project={project} />
 
                             <div className="project-list-info">
                               <div className="info-row">
@@ -781,7 +831,7 @@ const Dashboard: React.FC = () => {
                       className={`project-card project-card-${project.status}`}
                       onDoubleClick={() => navigate(getProjectRoute(project))}
                     >
-                      <ProjectCover title={project.title} />
+                      <ProjectCover title={project.title} tone={project.metadata.tone} />
                       <div className="project-body">
                         <div className="project-card-header">
                           <h3 className="project-title">{project.title}</h3>
@@ -800,6 +850,7 @@ const Dashboard: React.FC = () => {
                           />
                         </div>
                         <p className="project-description">{project.description}</p>
+                        <ProjectMetadataBlock project={project} />
                         <div className="project-meta">
                           <div className="meta-item">
                             <span className="meta-label">Source</span>
