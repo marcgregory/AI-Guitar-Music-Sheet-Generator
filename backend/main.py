@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.processing_backend = "modal"
+    init_db()
     yield
 
 
@@ -23,8 +24,6 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
-
-init_db()
 
 # Configure CORS based on environment
 allowed_origins = settings.get_allowed_origins

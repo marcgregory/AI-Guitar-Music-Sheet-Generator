@@ -19,5 +19,5 @@ COPY . .
 # Expose port
 EXPOSE 8000
 
-# Run the application using the platform-assigned PORT when available.
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Run migrations before launching the application.
+CMD ["sh", "-c", "python -m run_migrations && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

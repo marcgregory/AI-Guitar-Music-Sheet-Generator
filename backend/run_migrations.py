@@ -1,108 +1,78 @@
 #!/usr/bin/env python3
-"""
-Run SQL migration files in the migrations directory in order.
-"""
-import os
+"""Run SQL migration files and Alembic migrations for the backend."""
 import glob
-from sqlalchemy import text
-from app.database_init import engine, SessionLocal
 import logging
-import re
+import os
+from sqlalchemy import text
+from alembic.config import Config
+from alembic import command
+from app.database_init import engine
+from app.db import Base
+from app.core.config import settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def run_migrations():
-    """Run all SQL migration files in order."""
+
+def _run_sql_migrations() -> None:
     migrations_dir = os.path.join(os.path.dirname(__file__), "migrations")
     if not os.path.exists(migrations_dir):
-        logger.warning("Migrations directory not found: %s", migrations_dir)
+        logger.info("No SQL migrations directory found at %s", migrations_dir)
         return
 
-    # Get all .sql files and sort them by name (which should be timestamped)
     migration_files = sorted(glob.glob(os.path.join(migrations_dir, "*.sql")))
-
     if not migration_files:
-        logger.info("No migration files found.")
+        logger.info("No SQL migration files found.")
         return
 
-    logger.info("Found %d migration files to process", len(migration_files))
-
+    logger.info("Found %d SQL migrations", len(migration_files))
     with engine.connect() as conn:
         for migration_file in migration_files:
-            logger.info("Running migration: %s", os.path.basename(migration_file))
-            try:
-                with open(migration_file, 'r') as f:
-                    sql_content = f.read()
+            logger.info("Running SQL migration: %s", os.path.basename(migration_file))
+            with open(migration_file, "r", encoding="utf-8") as f:
+                sql_content = f.read()
 
-                # Split by semicolon but preserve semicolons within $$ blocks
-                # This regex splits on semicolons that are not inside $$ blocks
-                statements = []
-                current_statement = ""
-                in_dollar_quote = False
-                dollar_quote_depth = 0
+            statements = []
+            current_statement = ""
+            in_dollar_quote = False
+            i = 0
+            while i < len(sql_content):
+                char = sql_content[i]
+                if char == "$" and i + 1 < len(sql_content) and sql_content[i + 1] == "$":
+                    current_statement += "$$"
+                    i += 2
+                    in_dollar_quote = not in_dollar_quote
+                    continue
 
-                i = 0
-                while i < len(sql_content):
-                    char = sql_content[i]
+                if char == ";" and not in_dollar_quote:
+                    if current_statement.strip():
+                        statements.append(current_statement.strip())
+                    current_statement = ""
+                else:
+                    current_statement += char
+                i += 1
 
-                    # Check for dollar quote start/end
-                    if char == '$' and i + 1 < len(sql_content) and sql_content[i+1] == '$':
-                        # Look for the end of the dollar quote delimiter
-                        j = i + 2
-                        while j < len(sql_content) and sql_content[j] != '$':
-                            j += 1
-                        if j < len(sql_content) and j + 1 < len(sql_content) and sql_content[j+1] == '$':
-                            # Found end delimiter
-                            if not in_dollar_quote:
-                                # Starting a dollar quote block
-                                in_dollar_quote = True
-                                dollar_quote_depth += 1
-                                current_statement += sql_content[i:j+2]  # Add $$
-                                i = j + 2
-                                continue
-                            else:
-                                # Ending a dollar quote block
-                                dollar_quote_depth -= 1
-                                if dollar_quote_depth == 0:
-                                    in_dollar_quote = False
-                                    current_statement += sql_content[i:j+2]  # Add $$
-                                    i = j + 2
-                                    continue
-                                else:
-                                    # Nested dollar quote, just add the characters
-                                    current_statement += char
-                                    i += 1
-                                    continue
+            if current_statement.strip():
+                statements.append(current_statement.strip())
 
-                    # Handle semicolon splitting
-                    if char == ';' and not in_dollar_quote:
-                        # End of statement
-                        if current_statement.strip():
-                            statements.append(current_statement.strip())
-                        current_statement = ""
-                    else:
-                        current_statement += char
+            for statement in statements:
+                logger.debug("Executing SQL statement: %s", statement[:120])
+                conn.execute(text(statement))
+            conn.commit()
 
-                    i += 1
 
-                # Add the last statement if it exists
-                if current_statement.strip():
-                    statements.append(current_statement.strip())
+def run_migrations() -> None:
+    logger.info("Creating base metadata tables if missing")
+    Base.metadata.create_all(bind=engine)
+    _run_sql_migrations()
 
-                # Execute each statement
-                for statement in statements:
-                    if statement:  # Skip empty statements
-                        logger.debug("Executing statement: %s", statement[:100] + "..." if len(statement) > 100 else statement)
-                        conn.execute(text(statement))
+    alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
+    alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
-                conn.commit()
-                logger.info("Successfully ran migration: %s", os.path.basename(migration_file))
-            except Exception as e:
-                logger.error("Failed to run migration %s: %s", os.path.basename(migration_file), str(e))
-                logger.error("SQL content: %s", sql_content[:500] + "..." if len(sql_content) > 500 else sql_content)
-                conn.rollback()
-                raise
+    logger.info("Running Alembic upgrade head")
+    command.upgrade(alembic_cfg, "head")
+    logger.info("Alembic migrations complete")
+
 
 if __name__ == "__main__":
     run_migrations()

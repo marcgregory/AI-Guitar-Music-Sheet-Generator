@@ -1,19 +1,37 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import os
+from sqlalchemy.pool import NullPool
+from app.core.config import settings
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# For now, use SQLite for development to avoid compatibility issues
-# In production, we'll switch to PostgreSQL
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
+DATABASE_URL = settings.DATABASE_URL
+
+connect_args = {}
+engine_kwargs = {
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
+    "pool_timeout": 30,
+    "pool_size": 5,
+    "max_overflow": 10,
+}
+
+if DATABASE_URL.startswith("sqlite"):
+    connect_args["check_same_thread"] = False
+    engine_kwargs["poolclass"] = NullPool
+    engine_kwargs.pop("pool_size", None)
+    engine_kwargs.pop("max_overflow", None)
+    engine_kwargs.pop("pool_timeout", None)
+    engine_kwargs.pop("pool_recycle", None)
 
 engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+    DATABASE_URL,
+    connect_args=connect_args,
+    **engine_kwargs,
 )
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
 
 Base = declarative_base()
 
