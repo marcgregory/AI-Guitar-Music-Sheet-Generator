@@ -1,0 +1,5 @@
+# Place your YouTube browser cookies in Netscape cookies.txt format here.
+# Example: export cookies from your browser using an extension or yt-dlp's --cookies-from-browser.
+# Do not include PHPSESSID or other session secrets unless necessary for the target video.
+#
+# When ready, restart Docker Compose and rerun the upload.

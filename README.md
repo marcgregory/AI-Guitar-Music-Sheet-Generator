@@ -35,6 +35,7 @@ Audio Upload / YouTube URL
 Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar/accompaniment transcription, use the `other` stem as the target because guitar, piano, synths, melody, and accompaniment are commonly grouped there by the default model. The UI/API should say this plainly. True separate guitar, rhythm guitar, lead guitar, and piano separation may require better specialist models later, and the MVP should not be marketed as isolated lead guitar transcription.
 
 Recommended MVP limits:
+
 - Process one selected stem per job.
 - Prefer songs around 3-5 minutes.
 - Save Cloudinary `secure_url` and `public_id` references for original audio, selected separated stem audio, MIDI exports, MusicXML exports, and TAB outputs.
@@ -142,7 +143,8 @@ The API validates these dependencies at startup and exposes their availability a
 - External/Modal workers use `WORKER_API_TOKEN`.
 - Modal uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
 - Cloudinary uses `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`.
-- Use `frontend/.env.example` as a template for local development.
+- Use `frontend/.env.example` and `backend/.env.example` as templates for local development.
+- For YouTube downloads that require sign-in or bot verification, set either `YOUTUBE_COOKIES_FILE` or `YOUTUBE_COOKIES` in `backend/.env`.
 
 ## Technology Stack
 
