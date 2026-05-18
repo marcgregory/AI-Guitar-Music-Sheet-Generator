@@ -347,7 +347,7 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     let isMounted = true;
-    let refreshTimer: ReturnType<typeof window.setInterval> | undefined;
+    let refreshTimer: number | undefined;
 
     const hasProcessingProject = (projectList: Project[]) =>
       projectList.some((project) =>

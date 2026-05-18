@@ -1,4 +1,3 @@
-import React from "react";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { vi, describe, it, expect, beforeEach } from "vitest";
@@ -25,7 +24,7 @@ vi.mock("../services/audioService", () => ({
 
 vi.mock("gsap", () => ({
   default: {
-    context: vi.fn((fn: Function) => ({ revert: vi.fn() })),
+    context: vi.fn(() => ({ revert: vi.fn() })),
     from: vi.fn(),
     to: vi.fn(),
   },
@@ -35,8 +34,12 @@ describe("AudioUpload", () => {
   const mockNavigate = vi.fn();
 
   beforeEach(() => {
-    const mockedUseAuth = useAuth as unknown as { mockReturnValue: (value: unknown) => void };
-    const mockedNavigate = useNavigate as unknown as { mockReturnValue: (value: unknown) => void };
+    const mockedUseAuth = useAuth as unknown as {
+      mockReturnValue: (value: unknown) => void;
+    };
+    const mockedNavigate = useNavigate as unknown as {
+      mockReturnValue: (value: unknown) => void;
+    };
     const mockedAudioService = audioService as unknown as {
       listTranscriptions: { mockResolvedValue: (value: unknown) => void };
       uploadAudioFile: { mockRejectedValue: (value: unknown) => void };
@@ -67,7 +70,9 @@ describe("AudioUpload", () => {
 
     fireEvent.click(screen.getAllByRole("radio")[3]);
 
-    const fileInput = container.querySelector("input[type='file']") as HTMLInputElement;
+    const fileInput = container.querySelector(
+      "input[type='file']",
+    ) as HTMLInputElement;
     fireEvent.change(fileInput, {
       target: {
         files: [new File(["RIFF...."], "sample.wav", { type: "audio/wav" })],
