@@ -1,6 +1,3 @@
-import librosa
-import numpy as np
-import soundfile as sf
 from pathlib import Path
 import importlib.util
 import importlib.metadata
@@ -28,6 +25,34 @@ DEMUCS_MULTI_STEMS = {
     "other": "other",
 }
 DEMUCS_VENDOR_PATH = Path(os.environ.get("DEMUCS_VENDOR_PATH", r"C:\tmp\demucs_py313"))
+
+
+def _load_librosa():
+    import librosa
+
+    return librosa
+
+
+def _load_numpy():
+    import numpy as np
+
+    return np
+
+
+def _load_soundfile():
+    import soundfile as sf
+
+    return sf
+
+
+def __getattr__(name: str):
+    if name == "librosa":
+        return _load_librosa()
+    if name == "np":
+        return _load_numpy()
+    if name == "sf":
+        return _load_soundfile()
+    raise AttributeError(name)
 
 
 def _configure_demucs_vendor_path() -> None:
@@ -319,6 +344,9 @@ def preprocess_audio(input_file_path: str, output_file_path: str = None, target_
     Returns:
         Path to the preprocessed audio file.
     """
+    librosa = _load_librosa()
+    np = _load_numpy()
+    sf = _load_soundfile()
     input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         logger.error(
@@ -509,6 +537,8 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
 
 
 def audio_debug_stats(input_file_path: str) -> dict:
+    librosa = _load_librosa()
+    np = _load_numpy()
     input_path = Path(storage.normalize_local_path(input_file_path))
     y, sr = librosa.load(input_path, sr=None, mono=True)
     rms = float(np.sqrt(np.mean(np.square(y)))) if y.size else 0.0
@@ -532,6 +562,9 @@ def normalize_audio_volume(
     *,
     target_peak: float = 0.95,
 ) -> str:
+    librosa = _load_librosa()
+    np = _load_numpy()
+    sf = _load_soundfile()
     input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
@@ -558,9 +591,9 @@ def note_confidence_stats(notes: list) -> dict:
         return {"count": 0, "min": None, "max": None, "mean": None}
     return {
         "count": len(confidences),
-        "min": round(float(np.min(confidences)), 4),
-        "max": round(float(np.max(confidences)), 4),
-        "mean": round(float(np.mean(confidences)), 4),
+        "min": round(min(confidences), 4),
+        "max": round(max(confidences), 4),
+        "mean": round(sum(confidences) / len(confidences), 4),
     }
 
 
@@ -777,6 +810,7 @@ def _detect_pitch_crepe(
         # Run CREPE to detect pitches
         # Using CREPE command line interface (if available) or Python API
         # We'll use the Python API for more control
+        librosa = _load_librosa()
         import crepe
         import numpy as np
         from scipy.signal import medfilt
@@ -879,6 +913,8 @@ def _detect_pitch_librosa(
     local development usable on Python versions where TensorFlow-backed pitch
     detectors are unavailable.
     """
+    librosa = _load_librosa()
+    np = _load_numpy()
     input_path = Path(storage.normalize_local_path(input_file_path))
     y, sr = librosa.load(input_path, sr=22050, mono=True)
     if y.size == 0:
@@ -978,6 +1014,8 @@ def detect_beat_and_tempo(input_file_path: str) -> dict:
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         # Load the audio file
         y, sr = librosa.load(input_path, sr=None)
 
@@ -1030,6 +1068,8 @@ def detect_key(input_file_path: str) -> dict:
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         # Load the audio file
         y, sr = librosa.load(input_path, sr=None)
 
@@ -1122,6 +1162,8 @@ def detect_rhythm(input_file_path: str) -> dict:
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         # Load the audio file
         y, sr = librosa.load(input_path, sr=None)
 
@@ -1188,6 +1230,8 @@ def analyze_drum_rhythm(input_file_path: str, grid_size: float = 0.125) -> dict:
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         y, sr = librosa.load(input_path, sr=None, mono=True)
         total_duration = float(librosa.get_duration(y=y, sr=sr))
 
@@ -1268,6 +1312,8 @@ def detect_chords(input_file_path: str) -> dict:
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         # Load the audio file
         y, sr = librosa.load(input_path, sr=None)
 

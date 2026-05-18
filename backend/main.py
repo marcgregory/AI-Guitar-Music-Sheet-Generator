@@ -7,21 +7,13 @@ from contextlib import asynccontextmanager
 from app.api.v1 import api
 from app.database_init import init_db
 from app.core.config import settings
-from app.services.audio import validate_audio_dependencies
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.audio_dependency_status = validate_audio_dependencies()
-    if not app.state.audio_dependency_status.get("available"):
-        logger.warning(
-            "Audio dependency validation failed during startup; "
-            "selected-stem processing will remain unavailable until fixed. "
-            "Missing or failing checks: %s",
-            ", ".join(app.state.audio_dependency_status.get("missing", [])),
-        )
+    app.state.processing_backend = "modal"
     yield
 
 
@@ -62,13 +54,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    dependency_status = getattr(app.state, "audio_dependency_status", None)
-    if dependency_status is None:
-        dependency_status = validate_audio_dependencies()
-
-    overall_status = "healthy" if dependency_status.get("available") else "unhealthy"
     return {
-        "status": overall_status,
-        "dependencies": dependency_status["dependencies"],
-        "missing_dependencies": dependency_status["missing"],
+        "status": "healthy",
+        "processing_backend": getattr(app.state, "processing_backend", "modal"),
     }
