@@ -10,6 +10,7 @@ class Settings(BaseSettings):
 
     # Security
     SECRET_KEY: str = "your-secret-key-here-change-in-production"
+    JWT_SECRET_KEY: str | None = None
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
@@ -88,5 +89,9 @@ class Settings(BaseSettings):
             return f"{parsed.scheme}://{parsed.netloc}"
 
         return origin.rstrip("/")
+
+    @property
+    def jwt_secret_key(self) -> str:
+        return self.JWT_SECRET_KEY or self.SECRET_KEY
 
 settings = Settings()

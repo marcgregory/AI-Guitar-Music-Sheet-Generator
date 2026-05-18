@@ -85,6 +85,88 @@ def test_list_transcriptions_requires_authentication():
     response = client.get("/api/v1/audio/")
 
     assert response.status_code == 401
+    assert response.json()["detail"] == {
+        "status": "unauthorized",
+        "error": "Missing Authorization header",
+        "requires_login": True,
+    }
+
+
+def test_list_transcriptions_rejects_missing_bearer_prefix():
+    reset_database()
+
+    response = client.get(
+        "/api/v1/audio/",
+        headers={"Authorization": "Token not-a-bearer-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "Missing Bearer token prefix"
+
+
+def test_list_transcriptions_rejects_malformed_token():
+    reset_database()
+
+    response = client.get(
+        "/api/v1/audio/",
+        headers={"Authorization": "Bearer undefined"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["status"] == "unauthorized"
+    assert response.json()["detail"]["error"] == "Access token is malformed or invalid"
+    assert response.json()["detail"]["requires_login"] is True
+
+
+def test_list_transcriptions_rejects_expired_token():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "expired-owner", "expired-owner@example.com")
+    finally:
+        session.close()
+    token = create_access_token(
+        data={"sub": "expired-owner"},
+        expires_delta=timedelta(seconds=-1),
+    )
+
+    response = client.get(
+        "/api/v1/audio/",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "Access token expired"
+
+
+def test_list_transcriptions_accepts_valid_token_after_invalid_token_cycle():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "cycle-owner", "cycle-owner@example.com")
+        session.add(models.Transcription(
+            title="Recovered session song",
+            audio_file_path="uploads/recovered.wav",
+            user_id=owner.id,
+            is_processed=True,
+            created_at=datetime.utcnow(),
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+    stale_response = client.get(
+        "/api/v1/audio/",
+        headers={"Authorization": "Bearer undefined"},
+    )
+    valid_response = client.get(
+        "/api/v1/audio/",
+        headers=auth_headers("cycle-owner"),
+    )
+
+    assert stale_response.status_code == 401
+    assert valid_response.status_code == 200
+    assert valid_response.json()[0]["title"] == "Recovered session song"
 
 
 def test_get_transcription_source_audio_normalizes_windows_style_uploaded_path(tmp_path):

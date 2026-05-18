@@ -1,9 +1,18 @@
 import React, { createContext, useContext, useState } from 'react';
+import {
+  clearAuthStorage,
+  getAccessToken,
+  getStoredUser,
+  isJwtExpired,
+  setAuthStorage,
+  type StoredUser,
+} from '../../services/authStorage';
+import { clearAuthHeader } from '../../services/apiClient';
 
 interface AuthContextType {
   token: string | null;
-  user: { username: string; email: string } | null;
-  login: (token: string, user: { username: string; email: string }) => void;
+  user: StoredUser | null;
+  login: (token: string, user: StoredUser, refreshToken?: string | null) => void;
   logout: () => void;
   isAuthenticated: boolean;
 }
@@ -24,47 +33,41 @@ interface AuthProviderProps {
 
 const readStoredAuth = (): {
   token: string | null;
-  user: { username: string; email: string } | null;
+  user: StoredUser | null;
 } => {
-  const storedToken = localStorage.getItem('token');
-  const storedUser = localStorage.getItem('user');
+  const storedToken = getAccessToken();
+  const storedUser = getStoredUser();
 
-  if (!storedToken || !storedUser) {
+  if (!storedToken || !storedUser || isJwtExpired(storedToken)) {
+    clearAuthStorage();
     return { token: null, user: null };
   }
 
-  try {
-    return {
-      token: storedToken,
-      user: JSON.parse(storedUser),
-    };
-  } catch {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    return { token: null, user: null };
-  }
+  return { token: storedToken, user: storedUser };
 };
 
 export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [storedAuth] = useState(readStoredAuth);
   const [token, setToken] = useState<string | null>(storedAuth.token);
-  const [user, setUser] = useState<{ username: string; email: string } | null>(storedAuth.user);
+  const [user, setUser] = useState<StoredUser | null>(storedAuth.user);
 
-  const login = (token: string, user: { username: string; email: string }) => {
+  const login = (token: string, user: StoredUser, refreshToken?: string | null) => {
+    if (!token || token === 'undefined' || token === 'null') {
+      throw new Error('Login response did not include an access token');
+    }
     setToken(token);
     setUser(user);
-    localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(user));
+    setAuthStorage(token, user, refreshToken);
   };
 
   const logout = () => {
     setToken(null);
     setUser(null);
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    clearAuthStorage();
+    clearAuthHeader();
   };
 
-  const isAuthenticated = !!token;
+  const isAuthenticated = !!token && !isJwtExpired(token);
 
   return (
     <AuthContext.Provider value={{ token, user, login, logout, isAuthenticated }}>

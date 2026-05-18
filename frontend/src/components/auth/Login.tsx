@@ -14,6 +14,14 @@ const Login: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const errorMessage = (detail: unknown, fallback: string) => {
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object" && "error" in detail) {
+      return String((detail as { error?: unknown }).error || fallback);
+    }
+    return fallback;
+  };
+
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
@@ -47,11 +55,11 @@ const Login: React.FC = () => {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.detail || "Login failed");
+        throw new Error(errorMessage(errorData.detail, "Login failed"));
       }
 
       const data = await response.json();
-      login(data.access_token, { username: email, email });
+      login(data.access_token, { username: data.user?.username ?? email, email: data.user?.email ?? email }, data.refresh_token);
       navigate("/dashboard");
     } catch (err: any) {
       if (err.name === "AbortError") return;

@@ -17,6 +17,14 @@ const Register: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState("");
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const errorMessage = (detail: unknown, fallback: string) => {
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object" && "error" in detail) {
+      return String((detail as { error?: unknown }).error || fallback);
+    }
+    return fallback;
+  };
+
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
@@ -57,11 +65,30 @@ const Register: React.FC = () => {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.detail || "Registration failed");
+        throw new Error(errorMessage(errorData.detail, "Registration failed"));
       }
 
-      const data = await response.json();
-      login(data.access_token, { username, email });
+      await response.json();
+
+      const loginResponse = await fetch(`${apiUrl}/auth/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          username: email,
+          password,
+        }),
+        signal: abortController.signal,
+      });
+
+      if (!loginResponse.ok) {
+        const errorData = await loginResponse.json();
+        throw new Error(errorMessage(errorData.detail, "Registration succeeded, but sign-in failed"));
+      }
+
+      const tokenData = await loginResponse.json();
+      login(tokenData.access_token, { username, email }, tokenData.refresh_token);
       navigate("/dashboard");
     } catch (err: any) {
       if (err.name === "AbortError") return;

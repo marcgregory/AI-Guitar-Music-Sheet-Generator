@@ -1,9 +1,4 @@
-import axios from "axios";
-
-// API base URL
-const API_BASE_URL =
-  import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
-const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, "");
+import apiClient, { API_ORIGIN } from "./apiClient";
 const PUBLIC_AUDIO_PATHS = ["/demo/", "/audio-files/"];
 
 export interface Transcription {
@@ -107,13 +102,6 @@ export type ProcessingStatusValue =
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const getAuthHeader = (token: string | null) => {
-  if (!token) throw new Error("User not authenticated");
-  return {
-    Authorization: `Bearer ${token}`,
-  };
-};
-
 const transcriptionListCache = new Map<string, Transcription[]>();
 
 const cloneTranscriptions = (transcriptions: Transcription[]): Transcription[] =>
@@ -167,17 +155,13 @@ const audioService = {
    * List the signed-in user's transcriptions.
    */
   listTranscriptions: async (token: string): Promise<Transcription[]> => {
-    const response = await axios.get(`${API_BASE_URL}/audio/`, {
-      headers: getAuthHeader(token),
-    });
+    const response = await apiClient.get("/audio/");
 
     return rememberTranscriptions(token, response.data);
   },
 
   getDemoTranscription: async (token: string): Promise<Transcription> => {
-    const response = await axios.get(`${API_BASE_URL}/audio/demo`, {
-      headers: getAuthHeader(token),
-    });
+    const response = await apiClient.get("/audio/demo");
 
     rememberTranscription(token, response.data);
     return response.data;
@@ -200,14 +184,10 @@ const audioService = {
       formData.append("project_id", projectId.toString());
     }
 
-    const response = await axios.post(
-      `${API_BASE_URL}/audio/upload`,
+    const response = await apiClient.post(
+      "/audio/upload",
       formData,
       {
-        headers: {
-          ...getAuthHeader(token),
-          "Content-Type": "multipart/form-data",
-        },
         onUploadProgress: (event) => {
           if (!event.total) return;
           onUploadProgress?.(Math.round((event.loaded * 100) / event.total));
@@ -228,18 +208,12 @@ const audioService = {
     selectedStem: StemSelection,
     projectId?: number,
   ): Promise<Transcription> => {
-    const response = await axios.post(
-      `${API_BASE_URL}/audio/youtube`,
+    const response = await apiClient.post(
+      "/audio/youtube",
       {
         youtube_url: youtubeUrl,
         selected_stem: selectedStem,
         project_id: projectId,
-      },
-      {
-        headers: {
-          ...getAuthHeader(token),
-          "Content-Type": "application/json",
-        },
       },
     );
 
@@ -254,12 +228,8 @@ const audioService = {
     transcriptionId: number,
     token: string,
   ): Promise<TranscriptionStatus> => {
-    const response = await axios.get(
-      `${API_BASE_URL}/audio/${transcriptionId}/status`,
-      {
-        headers: getAuthHeader(token),
-      },
-    );
+    void token;
+    const response = await apiClient.get(`/audio/${transcriptionId}/status`);
 
     return response.data;
   },
@@ -271,12 +241,8 @@ const audioService = {
     transcriptionId: number,
     token: string,
   ): Promise<Transcription> => {
-    const response = await axios.get(
-      `${API_BASE_URL}/audio/${transcriptionId}/result`,
-      {
-        headers: getAuthHeader(token),
-      },
-    );
+    void token;
+    const response = await apiClient.get(`/audio/${transcriptionId}/result`);
 
     return response.data;
   },
@@ -285,10 +251,10 @@ const audioService = {
     transcriptionId: number,
     token: string,
   ): Promise<Blob> => {
-    const response = await axios.get(
-      `${API_BASE_URL}/audio/${transcriptionId}/source`,
+    void token;
+    const response = await apiClient.get(
+      `/audio/${transcriptionId}/source`,
       {
-        headers: getAuthHeader(token),
         responseType: "blob",
       },
     );
@@ -300,12 +266,8 @@ const audioService = {
     transcriptionId: number,
     token: string,
   ): Promise<InstrumentTrack[]> => {
-    const response = await axios.get(
-      `${API_BASE_URL}/audio/${transcriptionId}/tracks`,
-      {
-        headers: getAuthHeader(token),
-      },
-    );
+    void token;
+    const response = await apiClient.get(`/audio/${transcriptionId}/tracks`);
 
     return response.data;
   },
@@ -315,10 +277,10 @@ const audioService = {
     trackId: number,
     token: string,
   ): Promise<Blob> => {
-    const response = await axios.get(
-      `${API_BASE_URL}/audio/${transcriptionId}/tracks/${trackId}/stem`,
+    void token;
+    const response = await apiClient.get(
+      `/audio/${transcriptionId}/tracks/${trackId}/stem`,
       {
-        headers: getAuthHeader(token),
         responseType: "blob",
       },
     );
@@ -331,10 +293,10 @@ const audioService = {
     trackId: number,
     token: string,
   ): Promise<Blob> => {
-    const response = await axios.get(
-      `${API_BASE_URL}/audio/${transcriptionId}/tracks/${trackId}/preview`,
+    void token;
+    const response = await apiClient.get(
+      `/audio/${transcriptionId}/tracks/${trackId}/preview`,
       {
-        headers: getAuthHeader(token),
         responseType: "blob",
       },
     );
@@ -346,12 +308,7 @@ const audioService = {
     transcriptionId: number,
     token: string,
   ): Promise<Transcription> => {
-    const response = await axios.delete(
-      `${API_BASE_URL}/transcriptions/${transcriptionId}`,
-      {
-        headers: getAuthHeader(token),
-      },
-    );
+    const response = await apiClient.delete(`/transcriptions/${transcriptionId}`);
 
     const cached = transcriptionListCache.get(token);
     if (cached) {
@@ -368,13 +325,8 @@ const audioService = {
     _trackId: number,
     token: string,
   ): Promise<InstrumentTrack> => {
-    const response = await axios.post(
-      `${API_BASE_URL}/transcriptions/${transcriptionId}/reprocess`,
-      {},
-      {
-        headers: getAuthHeader(token),
-      },
-    );
+    void token;
+    const response = await apiClient.post(`/transcriptions/${transcriptionId}/reprocess`, {});
 
     return response.data;
   },
@@ -390,17 +342,15 @@ const audioService = {
       reuse_separated_stem?: boolean;
     },
   ): Promise<TranscriptionStatus> => {
-    const response = await axios.post(
-      `${API_BASE_URL}/transcriptions/${transcriptionId}/retry`,
+    void token;
+    const response = await apiClient.post(
+      `/transcriptions/${transcriptionId}/retry`,
       {
         lower_threshold: options?.lower_threshold ?? true,
         alternate_settings: options?.alternate_settings,
         selected_stem: options?.selected_stem,
         sensitivity: options?.sensitivity,
         reuse_separated_stem: options?.reuse_separated_stem,
-      },
-      {
-        headers: getAuthHeader(token),
       },
     );
 
@@ -418,12 +368,12 @@ const audioService = {
   ): Promise<Blob> => {
     try {
       const exportUrl = trackId === undefined
-        ? `${API_BASE_URL}/audio/${transcriptionId}/${format}`
-        : `${API_BASE_URL}/audio/${transcriptionId}/tracks/${trackId}/${format}`;
-      const response = await axios.get(
+        ? `/audio/${transcriptionId}/${format}`
+        : `/audio/${transcriptionId}/tracks/${trackId}/${format}`;
+      void token;
+      const response = await apiClient.get(
         exportUrl,
         {
-          headers: getAuthHeader(token),
           responseType: "blob",
         },
       );
