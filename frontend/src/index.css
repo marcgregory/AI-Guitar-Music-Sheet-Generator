@@ -9181,6 +9181,27 @@ body {
   color: #7c7168;
 }
 
+.premium-score-stage:fullscreen {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  border-radius: 0;
+  background: #fffaf1;
+}
+
+.premium-score-stage:fullscreen .premium-score-viewer {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100vh;
+  max-height: none;
+  padding: 1.4rem 1.6rem;
+}
+
+.premium-score-stage:fullscreen .premium-fullscreen-button {
+  position: fixed;
+}
+
 .premium-playhead {
   position: absolute;
   top: 22px;

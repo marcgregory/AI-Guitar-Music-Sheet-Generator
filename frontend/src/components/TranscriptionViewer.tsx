@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 
 type TablatureNote = {
+  id?: string | number;
   string?: number;
   fret?: number;
   startTime?: number;
@@ -345,7 +346,9 @@ const buildTimedTabNotes = (
 
       return {
         ...note,
-        id: `${index}-${startTime}-${stringNumber}-${fret}`,
+        id: note.id !== undefined && note.id !== null
+          ? String(note.id)
+          : `${index}-${startTime}-${stringNumber}-${fret}`,
         startTime,
         duration,
         onset,
@@ -360,6 +363,17 @@ const buildTimedTabNotes = (
     })
     .filter((note): note is TimedTabNote => note !== null)
     .sort((a, b) => a.startTime - b.startTime || a.string - b.string);
+};
+
+const activeTimedNoteIdsAt = (notes: TimedTabNote[], activeTime: number): Set<string> => {
+  const ids = new Set<string>();
+  notes.forEach((note) => {
+    const audibleUntil = note.startTime + Math.max(note.duration, 0.08);
+    if (activeTime >= note.startTime && activeTime < audibleUntil) {
+      ids.add(note.id);
+    }
+  });
+  return ids;
 };
 
 const extractChords = (chordsData: unknown): ChordSegment[] => {
@@ -659,6 +673,7 @@ const ScoreSheet = ({
   notesData,
   chordsData,
   instrumentType,
+  onSeek,
 }: {
   title: string;
   tempo?: number;
@@ -668,15 +683,20 @@ const ScoreSheet = ({
   notesData: unknown;
   chordsData: unknown;
   instrumentType: string;
+  onSeek: (time: number) => void;
 }) => {
   const frameRef = useRef<HTMLDivElement>(null);
   const systemRefs = useRef<Array<SVGGElement | null>>([]);
   const tuning = useMemo(() => tuningFromTablature(tablatureData), [tablatureData]);
   const hasTablature = useMemo(() => extractTabNotes(tablatureData).length > 0, [tablatureData]);
   const stringCount = Math.max(1, tuning.length);
+  const timedTabNotes = useMemo(
+    () => buildTimedTabNotes(tablatureData, notesData, tempo),
+    [notesData, tablatureData, tempo],
+  );
   const scoreNotes = useMemo(
-    () => prepareDisplayNotes(buildScoreNotes(tablatureData, notesData), tempo),
-    [tablatureData, notesData, tempo],
+    () => prepareDisplayNotes(hasTablature ? timedTabNotes : buildScoreNotes(tablatureData, notesData), tempo),
+    [hasTablature, notesData, tablatureData, tempo, timedTabNotes],
   );
   const chords = useMemo(() => extractChords(chordsData), [chordsData]);
   const systems = useMemo(
@@ -686,6 +706,10 @@ const ScoreSheet = ({
   const activeTime = Number.isFinite(currentTime) ? currentTime : 0;
   const activeSystemIndex = systems.findIndex(
     (system) => activeTime >= system.start && activeTime <= system.end,
+  );
+  const activeNoteIds = useMemo(
+    () => activeTimedNoteIdsAt(timedTabNotes, activeTime),
+    [activeTime, timedTabNotes],
   );
 
   useEffect(() => {
@@ -882,8 +906,14 @@ const ScoreSheet = ({
 
               {system.notes.map((note, noteIndex) => {
                 const onset = Number(note.displayOnset ?? note.onset ?? system.start);
-                const offset = Number(note.offset ?? onset + 0.12);
-                const isCurrentNote = isActiveSystem && activeTime >= onset && activeTime <= Math.max(offset, onset + 0.12);
+                const startTime = noteStartTime(note);
+                const duration = noteDuration(note, 0.12);
+                const offset = startTime + Math.max(duration, 0.08);
+                const isCurrentNote = isActiveSystem && (
+                  note.id !== undefined
+                    ? activeNoteIds.has(String(note.id))
+                    : activeTime >= startTime && activeTime < offset
+                );
                 const x = timeToX(onset, system);
                 const noteY = notationY + staffYForPitch(note.pitch);
                 const stringNumber = Math.max(1, Math.min(stringCount, Number(note.string || 1)));
@@ -894,6 +924,15 @@ const ScoreSheet = ({
                   <g
                     key={`note-${noteIndex}-${onset}-${fret}`}
                     className={isCurrentNote ? "score-current-note" : undefined}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSeek(startTime)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSeek(startTime);
+                      }
+                    }}
                   >
                     {isCurrentNote && (
                       <circle cx={x} cy={noteY} r="10" className="score-current-note-halo" />
@@ -1030,20 +1069,7 @@ const AlphaTabScore = ({
     );
   }
 
-  return (
-    <div className="alphatab-score-shell">
-      <div className="alphatab-score-toolbar">
-        <div>
-          <span className="meta-label">Renderer</span>
-          <strong>alphaTab</strong>
-        </div>
-        <span>{alphaTex.renderedBars} bars</span>
-        {alphaTex.truncated && <span>Preview clipped</span>}
-        {renderState === "loading" && <span>Engraving...</span>}
-      </div>
-      <div className="alphatab-score-surface" ref={containerRef} />
-    </div>
-  );
+  return <>{fallback}</>;
 };
 
 const DrumRhythmLane = ({
@@ -1171,14 +1197,7 @@ const TimedTabView = ({
   }, [beatDuration, chords, measureDuration, tabNotes]);
 
   const activeNoteIds = useMemo(() => {
-    const ids = new Set<string>();
-    tabNotes.forEach((note) => {
-      const audibleUntil = note.startTime + Math.max(note.duration, 0.08);
-      if (activeTime >= note.startTime && activeTime < audibleUntil) {
-        ids.add(note.id);
-      }
-    });
-    return ids;
+    return activeTimedNoteIdsAt(tabNotes, activeTime);
   }, [activeTime, tabNotes]);
   const activeNoteId = activeNoteIds.values().next().value ?? null;
 
@@ -2242,7 +2261,6 @@ const TranscriptionViewer: React.FC = () => {
       : statusLabel(displayedProcessingStatus);
   const playbackProgress =
     playbackDuration > 0 ? Math.min(1, Math.max(0, currentPlaybackTime / playbackDuration)) : 0;
-  const playheadLeft = `calc(${(playbackProgress * 100).toFixed(3)}% - 1px)`;
   const rawProjectTitle = transcription.title || "Untitled transcription";
   const isDemoTranscription = Boolean(transcription.is_demo);
   const titleWithoutExtension = rawProjectTitle.replace(/\.(mp3|wav|m4a|aac|flac)$/i, "");
@@ -2503,13 +2521,6 @@ const TranscriptionViewer: React.FC = () => {
                   <Expand aria-hidden="true" />
                 </button>
               )}
-              {canGenerateScore && activeScoreViewMode === "score" && (
-                <span
-                  className="premium-playhead"
-                  aria-hidden="true"
-                  style={{ left: playheadLeft } as React.CSSProperties}
-                />
-              )}
               <div className="score-viewer premium-score-viewer">
                 {scoreSource && canGenerateScore && activeScoreViewMode === "tab" && canShowTabView ? (
                   <TimedTabView
@@ -2551,6 +2562,7 @@ const TranscriptionViewer: React.FC = () => {
                           notesData={scoreSource.notesData}
                           chordsData={scoreSource.chordsData}
                           instrumentType={scoreSource.instrumentType}
+                          onSeek={seekPlaybackTo}
                         />
                       )}
                     />
