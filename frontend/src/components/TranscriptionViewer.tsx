@@ -220,8 +220,8 @@ const buildAsciiTab = (tablatureData: unknown, chordsData: unknown): string => {
 const hasUsableBlob = (value: unknown): boolean =>
   typeof value === "string" && value.trim().length > 0;
 
-const isRemoteAudioUrl = (value: unknown): value is string =>
-  typeof value === "string" && /^https?:\/\//i.test(value.trim());
+const isDirectAudioUrl = (value: unknown): value is string =>
+  typeof value === "string" && (/^https?:\/\//i.test(value.trim()) || value.trim().startsWith("/"));
 
 const selectedStemInstrument = (selectedStem: string | null | undefined): string =>
   ({
@@ -1502,6 +1502,16 @@ const TranscriptionViewer: React.FC = () => {
     };
   }, [selectedTrack, transcription]);
 
+  const audioSrc = useMemo(() => {
+    if (!transcription) return null;
+    return (
+      transcription.separated_audio_url ||
+      transcription.original_audio_url ||
+      transcription.audio_file_path ||
+      null
+    );
+  }, [transcription]);
+
   useEffect(() => {
     let objectUrl: string | null = null;
     let cancelled = false;
@@ -1512,13 +1522,6 @@ const TranscriptionViewer: React.FC = () => {
         return;
       }
 
-      const audioSrc =
-        transcription.separated_audio_url ||
-        transcription.separated_audio_file_path ||
-        transcription.original_audio_url ||
-        transcription.audio_file_path ||
-        null;
-
       try {
         setAudioError(null);
         setAudioUrl(null);
@@ -1526,7 +1529,7 @@ const TranscriptionViewer: React.FC = () => {
         setPlaybackDuration(0);
         setIsPlaying(false);
 
-        if (isRemoteAudioUrl(audioSrc)) {
+        if (isDirectAudioUrl(audioSrc)) {
           setAudioUrl(audioSrc.trim());
           return;
         }
@@ -1569,6 +1572,7 @@ const TranscriptionViewer: React.FC = () => {
     };
   }, [
     activeScoreSource,
+    audioSrc,
     token,
     transcription?.audio_file_path,
     transcription?.id,
@@ -1904,6 +1908,7 @@ const TranscriptionViewer: React.FC = () => {
       : statusLabel(displayedProcessingStatus);
   const playbackProgress =
     playbackDuration > 0 ? Math.min(1, Math.max(0, currentPlaybackTime / playbackDuration)) : 0;
+  const playheadLeft = `calc(${(playbackProgress * 100).toFixed(3)}% - 1px)`;
   const rawProjectTitle = transcription.title || "Untitled transcription";
   const isDemoTranscription = Boolean(transcription.is_demo);
   const titleWithoutExtension = rawProjectTitle.replace(/\.(mp3|wav|m4a|aac|flac)$/i, "");
@@ -1929,6 +1934,7 @@ const TranscriptionViewer: React.FC = () => {
   const sourceSummary = isDemoTranscription
     ? "Example guitar riff"
     : sourceFileName || (transcription.youtube_url ? "YouTube audio" : "No audio file");
+  const playbackSourceLabel = audioSrc ? sourceSummary : isDemoTranscription ? "Demo audio missing" : sourceSummary;
 
   return (
     <div className="transcription-viewer-container transcription-premium-page">
@@ -1973,7 +1979,7 @@ const TranscriptionViewer: React.FC = () => {
               <span>
                 {formatPlaybackTime(currentPlaybackTime)} / {formatPlaybackTime(playbackDuration)}
               </span>
-              <span>{sourceSummary}</span>
+              <span>{playbackSourceLabel}</span>
               {!isDemoTranscription && <button type="button" onClick={() => navigate("/upload")}>Change source</button>}
             </div>
             <div className="premium-hero-audio-controls">
@@ -2155,7 +2161,13 @@ const TranscriptionViewer: React.FC = () => {
                   <Expand aria-hidden="true" />
                 </button>
               )}
-              {canGenerateScore && activeScoreViewMode === "score" && <span className="premium-playhead" aria-hidden="true" />}
+              {canGenerateScore && activeScoreViewMode === "score" && (
+                <span
+                  className="premium-playhead"
+                  aria-hidden="true"
+                  style={{ left: playheadLeft } as React.CSSProperties}
+                />
+              )}
               <div className="score-viewer premium-score-viewer">
                 {scoreSource && canGenerateScore && activeScoreViewMode === "tab" && canShowTabView ? (
                   <pre className="notation-code premium-tab-code">{displayedAsciiTab}</pre>

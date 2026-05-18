@@ -132,6 +132,7 @@ def _seed_demo_transcription() -> None:
             ]
         }
         static_audio_path = Path(__file__).resolve().parent / "static" / "demo_guitar_riff.wav"
+        demo_audio_url = "/demo/example-guitar-riff.wav"
         demo = (
             session.query(models.Transcription)
             .filter(models.Transcription.is_demo == True)
@@ -140,10 +141,10 @@ def _seed_demo_transcription() -> None:
         )
         if not demo:
             demo = models.Transcription(
-                title="Example Guitar Riff",
+                title="Example guitar riff",
                 user_id=demo_user.id,
                 source_type="demo",
-                source_url="/api/v1/audio/demo-guitar-riff.wav",
+                source_url=demo_audio_url,
                 normalized_source_id="demo:example-guitar-riff",
                 selected_stem="other",
                 processing_status="completed",
@@ -154,9 +155,11 @@ def _seed_demo_transcription() -> None:
 
         demo.audio_file_path = str(static_audio_path)
         demo.separated_audio_file_path = str(static_audio_path)
-        demo.original_audio_url = "/api/v1/audio/demo-guitar-riff.wav"
-        demo.separated_audio_url = "/api/v1/audio/demo-guitar-riff.wav"
-        demo.duration = 3
+        demo.title = "Example guitar riff"
+        demo.source_url = demo_audio_url
+        demo.original_audio_url = demo_audio_url
+        demo.separated_audio_url = demo_audio_url
+        demo.duration = 12
         demo.detected_tempo = 120
         demo.tempo_confidence = 92
         demo.detected_key = "E minor"
