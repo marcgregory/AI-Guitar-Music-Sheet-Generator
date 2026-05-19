@@ -1875,6 +1875,18 @@ def reprocess_instrument_track(self, track_id: int):
 
 # Health check task for monitoring
 @celery_app.task
+def retry_rate_limited_modal_jobs():
+    """Scan for stuck Modal rate-limited jobs and retry one at a time."""
+    try:
+        from app.api.v1.endpoints.audio import retry_rate_limited_modal_jobs_once
+
+        return retry_rate_limited_modal_jobs_once()
+    except Exception as exc:
+        logger.exception("Retry rate limited Modal jobs task failed")
+        return {"status": "failed", "error": str(exc)}
+
+
+@celery_app.task
 def health_check():
     """Simple health check task for monitoring Celery worker status."""
     return {"status": "healthy", "worker": "audio_processing"}

@@ -215,6 +215,85 @@ def _mark_modal_retry(
     session.commit()
 
 
+def _fetch_next_rate_limited_modal_job(session: Session) -> models.Transcription | None:
+    now_utc = datetime.now(timezone.utc)
+    return (
+        session.query(models.Transcription)
+        .filter(
+            models.Transcription.modal_dispatch_status == "rate_limited",
+            models.Transcription.modal_retry_at != None,
+            models.Transcription.modal_retry_at <= now_utc,
+            models.Transcription.is_deleted == False,
+            models.Transcription.is_processed == False,
+        )
+        .order_by(models.Transcription.modal_retry_at.asc(), models.Transcription.id.asc())
+        .with_for_update(skip_locked=True)
+        .first()
+    )
+
+
+def retry_rate_limited_modal_jobs_once() -> dict[str, object]:
+    session = db.SessionLocal()
+    try:
+        logger.info("[MODAL RETRY SCAN] scanning for rate-limited Modal retries")
+        transcription = _fetch_next_rate_limited_modal_job(session)
+        if not transcription:
+            return {
+                "status": "idle",
+                "message": "No rate-limited Modal retries are ready.",
+            }
+
+        logger.info(
+            "[MODAL RETRY FOUND] transcription_id=%s modal_retry_at=%s",
+            transcription.id,
+            transcription.modal_retry_at,
+        )
+        transcription.processing_status = "processing"
+        transcription.processing_error = None
+        transcription.modal_dispatch_status = "rate_limited"
+        session.add(transcription)
+        session.commit()
+
+        logger.info("[MODAL RETRY DISPATCHING] transcription_id=%s", transcription.id)
+        _trigger_modal_worker(
+            transcription.id,
+            job_type=transcription.modal_job_type or "process",
+            detection_sensitivity=None,
+            track_id=None,
+        )
+
+        session.expire(transcription)
+        session.refresh(transcription)
+
+        if transcription.modal_dispatch_status == "dispatched":
+            logger.info("[MODAL RETRY SUCCESS] transcription_id=%s", transcription.id)
+        elif transcription.modal_dispatch_status == "rate_limited":
+            logger.info(
+                "[MODAL RETRY RATE LIMITED] transcription_id=%s retry_count=%s next_retry_at=%s",
+                transcription.id,
+                transcription.modal_retry_count,
+                transcription.modal_retry_at,
+            )
+        else:
+            logger.info(
+                "[MODAL RETRY FAILED] transcription_id=%s modal_dispatch_status=%s",
+                transcription.id,
+                transcription.modal_dispatch_status,
+            )
+
+        return {
+            "status": transcription.modal_dispatch_status,
+            "transcription_id": transcription.id,
+            "modal_retry_at": transcription.modal_retry_at,
+            "modal_retry_count": transcription.modal_retry_count,
+        }
+    except Exception as exc:
+        logger.exception("[MODAL RETRY FAILED] error scanning or dispatching rate-limited Modal jobs")
+        return {"status": "failed", "error": str(exc)}
+    finally:
+        session.close()
+
+
 def _trigger_modal_worker(
     transcription_id: int,
     job_type: str = "process",
@@ -1352,13 +1431,18 @@ def _status_payload(
         "separated_audio_url": transcription.separated_audio_url,
         "available_exports": _available_exports(transcription),
         "is_demo": transcription.is_demo,
-        "queue_position": None,
-        "estimated_wait_time": None,
+        "queue_position": transcription.queue_position,
+        "estimated_wait_time": transcription.estimated_wait_time,
         "modal_dispatch_status": transcription.modal_dispatch_status,
         "modal_retry_at": transcription.modal_retry_at,
     }
     if message:
         payload["message"] = message
+    elif (
+        transcription.processing_status == "queued"
+        and transcription.modal_dispatch_status in {"rate_limited", "retry_queued"}
+    ):
+        payload["message"] = "Waiting for Modal capacity. Retry scheduled."
     elif transcription.processing_status == "stem_ready":
         payload["message"] = STEM_READY_MESSAGE
     if (
@@ -1368,6 +1452,27 @@ def _status_payload(
     ):
         payload["output_mode"] = "playback_only"
     return payload
+
+
+@router.post("/modal-retry")
+async def manual_retry_rate_limited_modal_jobs(
+    request: Request,
+):
+    admin_token = core.config.settings.MODAL_RETRY_ADMIN_TOKEN
+    if not admin_token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Modal retry endpoint is not configured.",
+        )
+
+    provided_token = request.headers.get("X-Modal-Retry-Token")
+    if provided_token != admin_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin retry token",
+        )
+
+    return retry_rate_limited_modal_jobs_once()
 
 
 def _public_transcription_payload(transcription: models.Transcription) -> dict:

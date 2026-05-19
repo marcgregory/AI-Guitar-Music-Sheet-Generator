@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -6,16 +7,38 @@ import logging
 from contextlib import asynccontextmanager
 from app.api.v1 import api
 from app.database_init import init_db
-from app.core.config import settings
+from app.core import config
 
 logger = logging.getLogger(__name__)
+settings = config.settings
+
+async def _modal_retry_scheduler() -> None:
+    from app.api.v1.endpoints.audio import retry_rate_limited_modal_jobs_once
+
+    interval = config.settings.MODAL_RETRY_SCAN_INTERVAL_SECONDS
+    while True:
+        try:
+            result = await asyncio.to_thread(retry_rate_limited_modal_jobs_once)
+            logger.info("[MODAL RETRY SCHEDULER] %s", result)
+        except Exception:
+            logger.exception("[MODAL RETRY SCHEDULER] failed to scan or dispatch")
+        await asyncio.sleep(interval)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.processing_backend = "modal"
     init_db()
-    yield
+    app.state.modal_retry_task = asyncio.create_task(_modal_retry_scheduler())
+    try:
+        yield
+    finally:
+        if getattr(app.state, "modal_retry_task", None) is not None:
+            app.state.modal_retry_task.cancel()
+            try:
+                await app.state.modal_retry_task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(

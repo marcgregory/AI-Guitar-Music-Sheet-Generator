@@ -28,3 +28,10 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
 )
+
+celery_app.conf.beat_schedule = {
+    "modal_retry_scan": {
+        "task": "app.tasks.retry_rate_limited_modal_jobs",
+        "schedule": settings.MODAL_RETRY_SCAN_INTERVAL_SECONDS,
+    }
+}

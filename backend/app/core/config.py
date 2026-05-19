@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     MODAL_RATE_LIMIT_BASE_BACKOFF_SECONDS: int = 60
     MODAL_RATE_LIMIT_MAX_BACKOFF_SECONDS: int = 900
     MODAL_MAX_DISPATCH_RETRIES: int = 5
+    MODAL_RETRY_SCAN_INTERVAL_SECONDS: int = 30
+    MODAL_RETRY_ADMIN_TOKEN: str | None = None
 
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
