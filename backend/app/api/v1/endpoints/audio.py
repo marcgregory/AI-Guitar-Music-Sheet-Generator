@@ -165,14 +165,30 @@ def _build_worker_payload_for_modal(
 
 
 def _modal_retry_delay_seconds(retry_count: int) -> int:
-    base = 1  # seconds
-    # Exponential backoff: 2 ** retry_count
-    delay = base * (2 ** retry_count)
-    # Add jitter: random delay between 0.5 * delay and 1.5 * delay
-    jitter_delay = delay * (0.5 + random.random())
+    # Define base delays as specified in requirements
+    base_delays = {
+        1: 30,   # 30 seconds
+        2: 60,   # 60 seconds
+        3: 120,  # 120 seconds
+        4: 300,  # 300 seconds
+        5: 600,  # 600 seconds
+    }
+
+    # Get base delay for this retry count, default to exponential backoff if not found
+    if retry_count in base_delays:
+        base_delay = base_delays[retry_count]
+    else:
+        # Fallback to exponential backoff for retry counts > 5
+        base = core.config.settings.MODAL_RATE_LIMIT_BASE_BACKOFF_SECONDS
+        base_delay = base * (2 ** (retry_count - 1))
+
+    # Add random jitter: random.uniform(5, 20) as specified
+    jitter = random.uniform(5, 20)
+    delay = base_delay + jitter
+
     # Apply ceiling from settings
-    ceiling = max(base, int(core.config.settings.MODAL_RATE_LIMIT_MAX_BACKOFF_SECONDS))
-    return int(min(ceiling, jitter_delay))
+    ceiling = core.config.settings.MODAL_RATE_LIMIT_MAX_BACKOFF_SECONDS
+    return int(min(ceiling, delay))
 
 
 def _mark_modal_retry(
@@ -188,7 +204,7 @@ def _mark_modal_retry(
     if next_retry_count > max_retries:
         transcription.processing_status = "failed"
         transcription.processing_error = (
-            "Modal dispatch failed repeatedly. Please retry manually."
+            "Modal capacity unavailable. Please retry later."
         )
         transcription.modal_dispatch_status = "failed"
         transcription.modal_retry_at = None
@@ -204,6 +220,10 @@ def _mark_modal_retry(
         transcription.modal_retry_count = next_retry_count
         transcription.queue_position = None
         transcription.estimated_wait_time = delay
+        # Metrics: retry delay for averaging
+        logger.info(
+            f"METRICS: modal_retry_delay_seconds {delay}"
+        )
         logger.info(
             f"Modal retry scheduled: transcription_id={transcription.id}, "
             f"retry_count={transcription.modal_retry_count}, "
@@ -413,14 +433,26 @@ def _trigger_modal_worker(
             logger.warning(
                 "Modal rate limited transcription %s; queued retry.", transcription_id
             )
+            # Metrics: rate limited job
+            logger.info(
+                "METRICS: modal_rate_limited_jobs_total +1"
+            )
             return
 
         response.raise_for_status()
         logger.info("Triggered Modal worker for transcription %s", transcription_id)
+        # Metrics: successful dispatch
+        logger.info(
+            "METRICS: modal_successful_dispatches_total +1"
+        )
     except Exception as exc:
         logger.exception(
             "Modal dispatch failed for transcription %s; scheduling retry if possible.",
             transcription_id,
+        )
+        # Metrics: failed dispatch
+        logger.info(
+            "METRICS: modal_failed_dispatches_total +1"
         )
         try:
             transcription = session.query(models.Transcription).filter(
