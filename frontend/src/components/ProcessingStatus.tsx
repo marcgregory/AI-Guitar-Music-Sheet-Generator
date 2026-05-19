@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import audioService, {
   type ProcessingStatusValue,
 } from "../services/audioService";
@@ -32,6 +32,68 @@ const ProcessingStatus: React.FC = () => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const { token } = useAuth();
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const checkTranscriptionStatus = useCallback(async () => {
+    if (!token) return;
+    const id = transcriptionIdNumRef.current;
+    if (id === null) return;
+
+    try {
+      const response = await audioService.getTranscriptionStatus(id, token);
+      setSelectedStem(response.selected_stem ?? null);
+      setStatusMessage(response.message ?? null);
+      setWarning(response.warning ?? null);
+      setCanPlayStem(Boolean(response.can_play_stem));
+      setCanGenerateScore(response.can_generate_score !== false);
+      setIsDemo(Boolean(response.is_demo));
+
+      // Check if we've reached a terminal state and stop polling if so
+      const isTerminalState =
+        response.status === "completed" ||
+        response.status === "completed_with_warning" ||
+        response.status === "stem_ready" ||
+        response.status === "failed" ||
+        response.status === "cancelled" ||
+        response.status === "deleted";
+
+      if (isTerminalState) {
+        // Clear polling interval when we reach a terminal state
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
+      }
+
+      if (response.status === "completed" || response.status === "stem_ready") {
+        setStatus(response.status);
+        setProgress(100);
+        if (response.can_generate_score !== false) {
+          setTimeout(() => {
+            navigate(`/transcription/${id}`);
+          }, 1500);
+        }
+      } else if (response.status === "failed") {
+        setStatus("failed");
+        setError(response.error || "Processing failed");
+      } else {
+        setStatus(response.status);
+        setProgress(
+          typeof response.progress === "number" ? response.progress : null,
+        );
+      }
+    } catch (err: any) {
+      setStatus("failed");
+      setError(
+        err.response?.data?.detail || "Failed to check transcription status",
+      );
+      // Also clear polling interval on error to prevent unnecessary polling
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    }
+  }, [token, navigate]);
 
   useEffect(() => {
     if (transcriptionId) {
@@ -41,15 +103,19 @@ const ProcessingStatus: React.FC = () => {
         checkTranscriptionStatus();
 
         // Set up polling to check status every 2 seconds
-        const interval = setInterval(() => {
+        pollingIntervalRef.current = setInterval(() => {
           checkTranscriptionStatus();
         }, 2000);
 
-        return () => clearInterval(interval);
+        return () => {
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+          }
+        };
       }
     }
     navigate("/dashboard");
-  }, [transcriptionId, token, navigate]);
+  }, [transcriptionId, checkTranscriptionStatus, navigate]);
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -75,44 +141,6 @@ const ProcessingStatus: React.FC = () => {
     };
   }, []);
 
-  const checkTranscriptionStatus = async () => {
-    if (!token) return;
-    const id = transcriptionIdNumRef.current;
-    if (id === null) return;
-
-    try {
-      const response = await audioService.getTranscriptionStatus(id, token);
-      setSelectedStem(response.selected_stem ?? null);
-      setStatusMessage(response.message ?? null);
-      setWarning(response.warning ?? null);
-      setCanPlayStem(Boolean(response.can_play_stem));
-      setCanGenerateScore(response.can_generate_score !== false);
-      setIsDemo(Boolean(response.is_demo));
-      if (response.status === "completed" || response.status === "stem_ready") {
-        setStatus(response.status);
-        setProgress(100);
-        if (response.can_generate_score !== false) {
-          setTimeout(() => {
-            navigate(`/transcription/${id}`);
-          }, 1500);
-        }
-      } else if (response.status === "failed") {
-        setStatus("failed");
-        setError(response.error || "Processing failed");
-      } else {
-        setStatus(response.status);
-        setProgress(
-          typeof response.progress === "number" ? response.progress : null,
-        );
-      }
-    } catch (err: any) {
-      setStatus("failed");
-      setError(
-        err.response?.data?.detail || "Failed to check transcription status",
-      );
-    }
-  };
-
   const showToast = (tone: "success" | "error", message: string) => {
     setToast({ tone, message });
     window.setTimeout(() => setToast(null), 3600);
@@ -122,7 +150,10 @@ const ProcessingStatus: React.FC = () => {
     if (!token || transcriptionIdNumRef.current === null) return;
     setIsDeleting(true);
     try {
-      await audioService.deleteTranscription(transcriptionIdNumRef.current, token);
+      await audioService.deleteTranscription(
+        transcriptionIdNumRef.current,
+        token,
+      );
       showToast("success", "Transcription deleted.");
       setShowDeleteDialog(false);
       window.setTimeout(() => navigate("/dashboard"), 450);
@@ -391,7 +422,9 @@ const ProcessingStatus: React.FC = () => {
           <div className="processing-actions">
             <button
               className="button-primary"
-              onClick={() => navigate(`/transcription/${transcriptionIdNumRef.current}`)}
+              onClick={() =>
+                navigate(`/transcription/${transcriptionIdNumRef.current}`)
+              }
             >
               {canGenerateScore
                 ? "View Transcription"
