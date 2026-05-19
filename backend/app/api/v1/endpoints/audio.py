@@ -714,7 +714,11 @@ def _start_instrument_track_reprocess(
     track_id: int,
     background_tasks: BackgroundTasks,
 ):
-    """Start one track reprocess by dispatching Modal only."""
+    """Start one track reprocess by dispatching Modal or local Celery when available."""
+    if _processing_mode() == "local" and _celery_has_available_worker():
+        celery_app.send_task("app.tasks.reprocess_instrument_track", args=[track_id])
+        return
+
     background_tasks.add_task(
         _trigger_modal_worker,
         transcription_id,
@@ -1287,9 +1291,15 @@ def _available_exports(transcription: models.Transcription) -> list[str]:
     selected_stem = (transcription.selected_stem or "other").lower()
     if selected_stem not in {"other", "bass"}:
         return []
-    if not _can_generate_score(transcription):
-        return []
-    return ["tab", "midi", "musicxml"]
+
+    exports: list[str] = []
+    if transcription.midi_file_url or transcription.midi_file_path:
+        exports.append("midi")
+    if _has_tablature_events(transcription.tablature_data) or transcription.tab_file_url or transcription.tab_file_path:
+        exports.append("tab")
+    if transcription.notation_data:
+        exports.append("musicxml")
+    return exports
 
 
 def _json_field(value: str | None):
@@ -2630,6 +2640,7 @@ async def get_transcription_result(
 
 
 @router.post("/{transcription_id}/generate-tab")
+@router.post("/{transcription_id}/generate-tabs")
 async def generate_tab(
     transcription_id: int,
     background_tasks: BackgroundTasks,
@@ -2669,14 +2680,12 @@ async def generate_tab(
             detail="This transcription is already processing.",
         )
 
-    transcription.processing_status = "queued"
+    transcription.processing_status = "processing"
     transcription.is_processed = False
     transcription.processing_error = None
     transcription.warning_message = None
-    # Note: we do not reset can_generate_score and can_play_stem here; they retain their previous values.
-    queue_position, estimated_wait = _queue_metadata_for_new_job(db_session)
-    transcription.queue_position = queue_position
-    transcription.estimated_wait_time = estimated_wait
+    transcription.queue_position = 0
+    transcription.estimated_wait_time = 0
     transcription.modal_job_type = "generate_tab"
     transcription.modal_request_id = None
     transcription.modal_dispatch_status = None
@@ -2686,7 +2695,11 @@ async def generate_tab(
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(transcription)
-    _trigger_next_queued_transcription(background_tasks, db_session)
+    _start_tab_generation(
+        transcription.id,
+        background_tasks,
+        detection_sensitivity=request.sensitivity,
+    )
     return {
         "status": transcription.processing_status,
         "transcription_id": transcription.id,
@@ -2695,7 +2708,7 @@ async def generate_tab(
         "can_generate_score": transcription.can_generate_score,
         "separated_audio_url": transcription.separated_audio_url,
         "is_demo": transcription.is_demo,
-        "message": "Tab generation queued.",
+        "message": "Tab generation started.",
     }
 
 

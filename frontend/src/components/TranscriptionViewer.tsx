@@ -2548,8 +2548,8 @@ const TranscriptionViewer: React.FC = () => {
   );
   const generateTabLabel =
     transcription.selected_stem === "drums"
-      ? "Generate Rhythm"
-      : "Generate Tab";
+      ? "Generate Rhythm (Experimental)"
+      : "Generate Tabs (Experimental)";
   const stemReadyMessage = isVocalStemReady
     ? "Vocal stem is ready for playback. Listen to the separated vocal stem; tab generation is not available for vocals."
     : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";

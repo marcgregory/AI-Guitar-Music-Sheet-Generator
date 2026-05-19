@@ -609,7 +609,7 @@ def test_worker_complete_triggers_oldest_queued_modal_job():
         config.settings.PROCESSING_MODE = original_mode
 
     assert response.status_code == 200
-    modal_trigger_mock.assert_called_once_with(second_id)
+    modal_trigger_mock.assert_called_once_with(second_id, "process", None, None)
     session = TestingSessionLocal()
     try:
         refreshed = session.query(models.Transcription).filter(
@@ -770,7 +770,7 @@ def test_worker_complete_saves_cloudinary_outputs_and_track_metadata():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["processing_status"] == "completed"
+    assert payload["processing_status"] == "stem_ready"
     assert payload["is_processed"] is True
     assert payload["separated_audio_public_id"] == "musicstudio/stem"
     assert payload["processing_error"] is None
@@ -782,7 +782,7 @@ def test_worker_complete_saves_cloudinary_outputs_and_track_metadata():
         ).one()
         assert track.instrument_type == "guitar"
         assert track.confidence_score == 84
-        assert track.processing_status == "completed"
+        assert track.processing_status == "stem_ready"
     finally:
         session.close()
 
@@ -826,7 +826,7 @@ def test_worker_complete_persists_empty_notes_warning_for_modal_stem():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["processing_status"] == "completed_with_warning"
+    assert payload["processing_status"] == "stem_ready"
     assert payload["warning_message"] == "No note events detected for this stem."
     assert json.loads(payload["notes_data"]) == {
         "notes": [],
@@ -839,7 +839,7 @@ def test_worker_complete_persists_empty_notes_warning_for_modal_stem():
             models.InstrumentTrack.transcription_id == transcription_id
         ).one()
         assert track.instrument_type == "guitar"
-        assert track.processing_status == "completed_with_warning"
+        assert track.processing_status == "stem_ready"
         assert json.loads(track.notes_json) == {
             "notes": [],
             "message": "No note events detected for this stem.",
@@ -863,7 +863,7 @@ def test_status_no_note_warning_is_completed_and_playable(tmp_path):
             separated_audio_file_path=str(stem_path),
             notes_data='{"notes": [], "message": "No note events detected for this stem."}',
             is_processed=True,
-            processing_status="completed_with_warning",
+            processing_status="stem_ready",
             warning_message="No note events detected for this stem.",
             can_play_stem=True,
             can_generate_score=False,
@@ -891,7 +891,7 @@ def test_status_no_note_warning_is_completed_and_playable(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert payload == {
-        "status": "completed",
+        "status": "stem_ready",
         "warning": "No note events detected for this stem.",
         "warning_message": "No note events detected for this stem.",
         "transcription_id": transcription_id,
@@ -903,6 +903,10 @@ def test_status_no_note_warning_is_completed_and_playable(tmp_path):
         "is_demo": False,
         "queue_position": None,
         "estimated_wait_time": None,
+        "modal_dispatch_status": None,
+        "modal_retry_at": None,
+        "message": "Stem is ready. Listen first, then generate tabs if the stem sounds useful.",
+        "output_mode": "playback_only",
     }
 
 
@@ -1054,7 +1058,7 @@ def test_generate_tab_endpoint_accepts_high_sensitivity_option():
 
     with patch("app.api.v1.endpoints.audio._start_tab_generation", return_value="tab-task") as start_mock:
         response = client.post(
-            f"/api/v1/audio/{transcription_id}/generate-tab",
+            f"/api/v1/audio/{transcription_id}/generate-tabs",
             headers=auth_headers("tab-owner"),
             json={"sensitivity": "high"},
         )

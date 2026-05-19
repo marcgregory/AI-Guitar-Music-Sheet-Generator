@@ -394,7 +394,7 @@ const audioService = {
   ): Promise<TranscriptionStatus> => {
     void token;
     const response = await apiClient.post(
-      `/audio/${transcriptionId}/generate-tab`,
+      `/audio/${transcriptionId}/generate-tabs`,
       {
         sensitivity: options?.sensitivity,
       },

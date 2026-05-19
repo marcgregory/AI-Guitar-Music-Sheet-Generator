@@ -187,14 +187,27 @@ async def complete_worker_job(
         warning_message = "No note events detected for this stem."
     transcription.warning_message = warning_message
     transcription.can_play_stem = bool(transcription.separated_audio_url)
-    transcription.can_generate_score = bool(selected_stem in {"bass", "other"} and has_notes)
-    transcription.processing_status = (
-        "completed"
-        if transcription.can_generate_score or (selected_stem == "drums" and has_drum_hits)
-        else "completed_with_warning"
-        if warning_message
-        else "stem_ready"
-    )
+    if (
+        transcription.notes_data is None
+        and selected_stem in {"bass", "other"}
+        and warning_message == "No note events detected for this stem."
+    ):
+        transcription.notes_data = json.dumps(
+            {"notes": [], "message": warning_message}
+        )
+    is_generate_tab_job = transcription.modal_job_type == "generate_tab"
+    if is_generate_tab_job:
+        transcription.can_generate_score = bool(selected_stem in {"bass", "other"} and has_notes)
+        transcription.processing_status = (
+            "completed"
+            if transcription.can_generate_score or (selected_stem == "drums" and has_drum_hits)
+            else "completed_with_warning"
+            if warning_message
+            else "stem_ready"
+        )
+    else:
+        transcription.can_generate_score = False
+        transcription.processing_status = "stem_ready"
     transcription.is_processed = True
     transcription.processing_error = None
     transcription.queue_position = None

@@ -615,6 +615,7 @@ def _generate_analysis_and_exports(
     *,
     sensitivity: str = "normal",
 ) -> dict[str, Any]:
+    logger.info("Automatic tab generation disabled for MVP")
     analysis = _analyze_selected_stem(stem_path, selected_stem)
     analysis.update(_detect_tempo_key_duration(stem_path))
 
