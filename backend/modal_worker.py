@@ -1,8 +1,4 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import logging
 import subprocess
 import sys
@@ -239,6 +235,15 @@ def _confidence_stats(notes: list[dict[str, Any]]) -> dict[str, Any]:
 def _detect_pitch_basic_pitch(input_path: Path, sensitivity: str = "normal") -> dict[str, Any]:
     logger.info("[BASIC PITCH CPU MODE] [TENSORFLOW GPU DISABLED]")
     try:
+        # Set environment variables to hide GPUs from TensorFlow
+        import os
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+        os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
+        import tensorflow as tf
+        tf.config.set_visible_devices([], "GPU")
+
         from basic_pitch.inference import predict
 
         threshold = 0.2 if sensitivity == "high" else 0.35
@@ -608,10 +613,9 @@ def _process_job(job: dict[str, Any]) -> dict[str, Any]:
     secrets=secrets,
     timeout=DEFAULT_TIMEOUT_SECONDS + 300,
 )
-@modal.fastapi_endpoint(method="POST", label="musicstudio-process")
-def process(job: dict[str, Any]) -> dict[str, Any]:
+def _process_job_background(job: dict[str, Any]) -> None:
     try:
-        return _process_job(job)
+        _process_job(job)
     except Exception as exc:
         logger.exception(
             "Modal worker failed before backend callback for job %s",
@@ -620,5 +624,22 @@ def process(job: dict[str, Any]) -> dict[str, Any]:
         try:
             if isinstance(job, dict):
                 _fail_job(job, "Could not isolate the selected stem.", str(exc))
-        finally:
-            raise
+        except Exception:
+            logger.exception("Failed to call failure callback for job %s", job.get("transcription_id"))
+
+
+@app.function(
+    image=image,
+    gpu="T4",
+    secrets=secrets,
+    timeout=DEFAULT_TIMEOUT_SECONDS + 300,
+)
+@modal.fastapi_endpoint(method="POST", label="musicstudio-process")
+def process(job: dict[str, Any]) -> dict[str, Any]:
+    # Spawn the background job
+    _process_job_background.spawn(job)
+    return {
+        "status": "accepted",
+        "transcription_id": job.get("transcription_id"),
+        "modal_request_id": job.get("modal_request_id"),
+    }

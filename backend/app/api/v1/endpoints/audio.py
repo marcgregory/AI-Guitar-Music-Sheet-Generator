@@ -355,6 +355,15 @@ def _trigger_modal_worker(
             )
             return
 
+        # Skip if in a terminal state
+        if transcription.processing_status in {"completed", "completed_with_warning", "failed", "stem_ready"}:
+            logger.info(
+                "Skipping Modal dispatch for transcription %s with terminal status %s.",
+                transcription_id,
+                transcription.processing_status,
+            )
+            return
+
         if transcription.processing_status != "processing":
             logger.info(
                 "Skipping Modal dispatch for transcription %s with status %s.",
@@ -424,7 +433,7 @@ def _trigger_modal_worker(
                 track_id=track_id,
             ),
             headers=headers,
-            timeout=120.0,
+            timeout=30.0,
         )
 
         logger.info(
