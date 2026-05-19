@@ -164,8 +164,6 @@ async def complete_worker_job(
     )
     transcription.midi_file_url = payload.midi_file_url
     transcription.midi_file_public_id = payload.midi_file_public_id
-    transcription.tab_file_url = payload.tab_file_url
-    transcription.tab_file_public_id = payload.tab_file_public_id
     transcription.duration = payload.duration if payload.duration is not None else transcription.duration
     transcription.detected_tempo = payload.detected_tempo
     transcription.tempo_confidence = payload.tempo_confidence
@@ -173,9 +171,8 @@ async def complete_worker_job(
     transcription.key_confidence = payload.key_confidence
     transcription.notes_data = _json_or_text(payload.notes_data)
     transcription.chords_data = _json_or_text(payload.chords_data)
-    transcription.tablature_data = _json_or_text(payload.tablature_data)
-    transcription.notation_data = _json_or_text(payload.notation_data)
     transcription.chord_chart_data = _json_or_text(payload.chord_chart_data)
+    transcription.tablature_data = _json_or_text(payload.tablature_data)
     selected_stem = transcription.selected_stem or "other"
     has_notes = _payload_has_note_events(payload.notes_data)
     has_drum_hits = _payload_has_drum_hits(payload.notes_data)

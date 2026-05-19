@@ -522,7 +522,8 @@ def _dispatch_transcription_processing(
     mode = _processing_mode()
     if mode == "modal":
         logger.info("Dispatching transcription %s to Modal", transcription.id)
-        background_tasks.add_task(_trigger_modal_worker, transcription.id, "process", None, None)
+        job_type = transcription.modal_job_type or "process"
+        background_tasks.add_task(_trigger_modal_worker, transcription.id, job_type, None, None)
         return None
     if mode == "local":
         logger.warning(
@@ -2668,38 +2669,33 @@ async def generate_tab(
             detail="This transcription is already processing.",
         )
 
-    transcription.processing_status = "processing"
+    transcription.processing_status = "queued"
     transcription.is_processed = False
     transcription.processing_error = None
     transcription.warning_message = None
-    transcription.can_generate_score = False
-    transcription.can_play_stem = True
-    transcription.queue_position = 0
-    transcription.estimated_wait_time = 0
+    # Note: we do not reset can_generate_score and can_play_stem here; they retain their previous values.
+    queue_position, estimated_wait = _queue_metadata_for_new_job(db_session)
+    transcription.queue_position = queue_position
+    transcription.estimated_wait_time = estimated_wait
+    transcription.modal_job_type = "generate_tab"
     transcription.modal_request_id = None
     transcription.modal_dispatch_status = None
-    transcription.modal_job_type = None
     transcription.modal_retry_at = None
+    transcription.modal_dispatched_at = None
+    transcription.celery_task_id = None
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(transcription)
-
-    task_id = _start_tab_generation(transcription.id, background_tasks, detection_sensitivity=request.sensitivity)
-    if task_id:
-        transcription.celery_task_id = task_id
-        db_session.add(transcription)
-        db_session.commit()
-        db_session.refresh(transcription)
-
+    _trigger_next_queued_transcription(background_tasks, db_session)
     return {
         "status": transcription.processing_status,
         "transcription_id": transcription.id,
         "selected_stem": selected_stem,
-        "can_play_stem": True,
-        "can_generate_score": False,
+        "can_play_stem": transcription.can_play_stem,
+        "can_generate_score": transcription.can_generate_score,
         "separated_audio_url": transcription.separated_audio_url,
         "is_demo": transcription.is_demo,
-        "message": "Tab generation started.",
+        "message": "Tab generation queued.",
     }
 
 

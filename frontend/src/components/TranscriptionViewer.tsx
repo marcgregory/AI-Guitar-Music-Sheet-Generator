@@ -2275,9 +2275,7 @@ const TranscriptionViewer: React.FC = () => {
     // Set generation status based on stem type
     const isRhythm = transcription.selected_stem === "drums";
     setGenerationStatus(
-      isRhythm
-        ? "Generating Rhythm"
-        : "Generating Transcription",
+      isRhythm ? "Generating Rhythm" : "Generating Transcription",
     );
     setIsGeneratingTab(true);
     setError(null);
@@ -2300,8 +2298,7 @@ const TranscriptionViewer: React.FC = () => {
 
           // Check for error conditions first
           const hasError =
-            result.processing_status === "failed" ||
-            !!result.processing_error;
+            result.processing_status === "failed" || !!result.processing_error;
 
           if (hasError) {
             // Generation failed, stop polling
@@ -2330,7 +2327,8 @@ const TranscriptionViewer: React.FC = () => {
             isComplete = hasDrumHits(result.notes_data);
           } else {
             // For tab generation, check if tablature_data is populated
-            isComplete = !!result.tablature_data && result.tablature_data.length > 0;
+            isComplete =
+              !!result.tablature_data && result.tablature_data.length > 0;
           }
 
           if (isComplete) {
@@ -2350,7 +2348,6 @@ const TranscriptionViewer: React.FC = () => {
           console.warn("Polling error:", pollErr);
         }
       }, 2000); // Poll every 2 seconds
-
     } catch (err: unknown) {
       setError(
         errorMessageOf(

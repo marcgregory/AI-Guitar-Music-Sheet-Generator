@@ -27,11 +27,14 @@ image = (
     "demucs==4.0.1",
     "librosa==0.10.1",
     "basic-pitch==0.4.0",
+    "tensorflow-cpu==2.15.0",
     "mido==1.2.0",
     "music21==9.9.2",
     "fastapi[standard]==0.115.6",
     "cloudinary==1.44.1",
     "requests==2.32.3",
+    "urllib3<2.6",
+    "charset-normalizer<4",
     )
 )
 
@@ -270,9 +273,18 @@ def _detect_pitch_basic_pitch(input_path: Path, sensitivity: str = "normal") -> 
 
 
 def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict[str, Any]:
-    tuning = [28, 33, 38, 43] if instrument_type == "bass" else [40, 45, 50, 55, 59, 64]
-    string_labels = ["E", "A", "D", "G"] if instrument_type == "bass" else ["E", "A", "D", "G", "B", "E"]
+    if instrument_type == "bass":
+        tuning = [28, 33, 38, 43]  # E1, A1, D2, G2
+        string_labels = ["E", "A", "D", "G"]
+    else:
+        # Standard guitar tuning: E2, A2, D3, G3, B3, E4
+        tuning = [40, 45, 50, 55, 59, 64]
+        string_labels = ["E", "A", "D", "G", "B", "E"]
+
     tab_notes = []
+    previous_string = None
+    previous_fret = None
+
     for note in notes_data.get("notes", []):
         pitch = int(note.get("pitch", 0))
         candidates = [
@@ -282,7 +294,42 @@ def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict
         ]
         if not candidates:
             continue
-        string_number, fret = min(candidates, key=lambda item: (item[1], item[0]))
+
+        # Score each candidate based on preferences:
+        # 1. Prefer frets 0-12 (lower score = better)
+        # 2. Minimize hand movement from previous note
+        # 3. Avoid always choosing the same string
+        scored_candidates = []
+        for string_index, fret in candidates:
+            score = 0
+            # Prefer frets 0-12
+            if fret > 12:
+                score += (fret - 12) * 0.5  # Penalize higher frets
+
+            # Minimize hand movement from previous note
+            if previous_string is not None and previous_fret is not None:
+                string_distance = abs(string_index + 1 - previous_string)
+                fret_distance = abs(fret - previous_fret)
+                # Weight string change more than fret change (changing strings is harder)
+                score += string_distance * 0.3 + fret_distance * 0.1
+
+            # Slight preference for varying strings (avoid always same string)
+            if previous_string is not None and string_index + 1 == previous_string:
+                score += 0.1  # Small penalty for same string
+
+            scored_candidates.append((score, string_index + 1, fret))
+
+        # Choose candidate with lowest score
+        if scored_candidates:
+            _, string_number, fret = min(scored_candidates, key=lambda x: x[0])
+            previous_string = string_number
+            previous_fret = fret
+        else:
+            # Fallback to original method if scoring fails
+            string_number, fret = min(candidates, key=lambda item: (item[1], item[0]))
+            previous_string = string_number
+            previous_fret = fret
+
         onset = float(note.get("onset", 0))
         offset = float(note.get("offset", onset))
         tab_notes.append({
@@ -292,6 +339,7 @@ def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict
             "duration": max(0.05, offset - onset),
             "confidence": note.get("confidence"),
         })
+
     return {
         "instrument": instrument_type,
         "tuning": string_labels,
@@ -441,14 +489,38 @@ def _analyze_selected_stem(stem_path: Path, selected_stem: str) -> dict[str, Any
         pitch_result = _detect_pitch_basic_pitch(normalized_path, "high")
 
     instrument_type = "bass" if selected_stem == "bass" else "guitar"
-    tab_data = _note_to_tablature(pitch_result, instrument_type) if pitch_result.get("notes") else None
+    # We do not generate tablature data by default
+    tab_data = None
+
     track_metadata = {
         "display_name": "Bass" if selected_stem == "bass" else "Guitar / Other",
-        "confidence_notes": pitch_result.get("warning_message"),
+        "confidence_notes": None,  # will be set below
     }
+
+    # Add warning for low confidence
+    notes = pitch_result.get("notes", [])
+    if notes:
+        confidences = [note.get("confidence", 0) for note in notes]
+        avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+        if avg_confidence < 0.5:  # threshold for low confidence
+            low_conf_msg = f"Low note confidence detected (average: {avg_confidence:.2f})."
+            existing = track_metadata["confidence_notes"]
+            if existing:
+                track_metadata["confidence_notes"] = f"{existing} {low_conf_msg}"
+            else:
+                track_metadata["confidence_notes"] = low_conf_msg
+
+    # Also, if there's a warning_message from pitch_result, include it
+    warning_message = pitch_result.get("warning_message")
+    if warning_message:
+        existing = track_metadata["confidence_notes"]
+        if existing:
+            track_metadata["confidence_notes"] = f"{existing} {warning_message}"
+        else:
+            track_metadata["confidence_notes"] = warning_message
+
     return {
         "notes_data": pitch_result,
-        "tablature_data": tab_data,
         "track_metadata": track_metadata,
     }
 
@@ -481,8 +553,6 @@ def _complete_job(
         "separated_audio_public_id": upload_result.get("public_id"),
         "midi_file_url": analysis_result.get("midi_file_url"),
         "midi_file_public_id": analysis_result.get("midi_file_public_id"),
-        "tab_file_url": analysis_result.get("tab_file_url"),
-        "tab_file_public_id": analysis_result.get("tab_file_public_id"),
         "confidence": analysis_result.get("confidence", 90),
         "duration": analysis_result.get("duration"),
         "detected_tempo": analysis_result.get("detected_tempo"),
@@ -491,8 +561,6 @@ def _complete_job(
         "key_confidence": analysis_result.get("key_confidence"),
         "notes_data": analysis_result.get("notes_data"),
         "chords_data": analysis_result.get("chords_data"),
-        "tablature_data": analysis_result.get("tablature_data"),
-        "notation_data": analysis_result.get("notation_data"),
         "chord_chart_data": analysis_result.get("chord_chart_data"),
         "track_metadata": track_metadata,
     }
@@ -540,29 +608,76 @@ def _generate_analysis_and_exports(
 
     notes_data = analysis.get("notes_data")
     if selected_stem in {"bass", "other"} and isinstance(notes_data, dict) and notes_data.get("notes"):
-        instrument_type = "bass" if selected_stem == "bass" else "guitar"
-        if sensitivity == "high" and notes_data.get("model_outputs"):
-            notes_data["model_outputs"]["requested_sensitivity"] = "high"
-        tab_data = analysis.get("tablature_data") or _note_to_tablature(notes_data, instrument_type)
-        analysis["tablature_data"] = tab_data
-
+        # Generate MIDI file from note events
         midi_path = stem_path.with_name(f"transcription_{transcription_id}.mid")
         _notes_to_midi(notes_data, midi_path, tempo_bpm=float(analysis.get("detected_tempo") or 120))
         midi_upload = _upload_file(midi_path, transcription_id, "exports", resource_type="raw")
         analysis["midi_file_url"] = midi_upload.get("secure_url")
         analysis["midi_file_public_id"] = midi_upload.get("public_id")
 
-        musicxml_path_text = _midi_to_musicxml(midi_path)
-        if musicxml_path_text:
-            musicxml_path = Path(musicxml_path_text)
-            if musicxml_path.exists():
-                analysis["notation_data"] = musicxml_path.read_text(encoding="utf-8", errors="ignore")
+        # Add warning for "other" stem
+        if selected_stem == "other":
+            track_metadata = analysis.setdefault("track_metadata", {})
+            existing_notes = track_metadata.get("confidence_notes")
+            warning_msg = "This stem may contain guitar, piano, and other instruments. Tabs are experimental."
+            if existing_notes:
+                track_metadata["confidence_notes"] = f"{existing_notes} {warning_msg}"
+            else:
+                track_metadata["confidence_notes"] = warning_msg
 
+    return analysis
+
+
+def _generate_tab_from_stem(
+    stem_path: Path,
+    transcription_id: int,
+    selected_stem: str,
+    *,
+    sensitivity: str = "normal",
+) -> dict[str, Any]:
+    # Start with basic analysis
+    analysis = _analyze_selected_stem(stem_path, selected_stem)
+    analysis.update(_detect_tempo_key_duration(stem_path))
+
+    notes_data = analysis.get("notes_data")
+    if selected_stem in {"bass", "other"} and isinstance(notes_data, dict) and notes_data.get("notes"):
+        # For tab generation, we want to create tablature from the notes
+        if selected_stem == "bass":
+            instrument_type = "bass"
+        else:
+            instrument_type = "guitar"
+
+        if sensitivity == "high" and notes_data.get("model_outputs"):
+            notes_data["model_outputs"]["requested_sensitivity"] = "high"
+
+        # Generate tablature data using our improved function
+        tab_data = _note_to_tablature(notes_data, instrument_type)
+        analysis["tablature_data"] = tab_data
+
+        # Also generate MIDI file (keep this for compatibility)
+        midi_path = stem_path.with_name(f"transcription_{transcription_id}.mid")
+        _notes_to_midi(notes_data, midi_path, tempo_bpm=float(analysis.get("detected_tempo") or 120))
+        midi_upload = _upload_file(midi_path, transcription_id, "exports", resource_type="raw")
+        analysis["midi_file_url"] = midi_upload.get("secure_url")
+        analysis["midi_file_public_id"] = midi_upload.get("public_id")
+
+        # Generate ASCII tab from tablature data
+        tab_ascii = _tablature_to_ascii(tab_data)
         tab_path = stem_path.with_name(f"transcription_{transcription_id}.tab")
-        tab_path.write_text(_tablature_to_ascii(tab_data), encoding="utf-8")
+        tab_path.write_text(tab_ascii, encoding="utf-8")
         tab_upload = _upload_file(tab_path, transcription_id, "exports", resource_type="raw")
         analysis["tab_file_url"] = tab_upload.get("secure_url")
         analysis["tab_file_public_id"] = tab_upload.get("public_id")
+
+        # Add warning for "other" stem
+        if selected_stem == "other":
+            track_metadata = analysis.setdefault("track_metadata", {})
+            existing_notes = track_metadata.get("confidence_notes")
+            warning_msg = "This stem may contain guitar, piano, and other instruments. Tabs are experimental."
+            if existing_notes:
+                track_metadata["confidence_notes"] = f"{existing_notes} {warning_msg}"
+            else:
+                track_metadata["confidence_notes"] = warning_msg
 
     return analysis
 
@@ -588,12 +703,21 @@ def _process_job(job: dict[str, Any]) -> dict[str, Any]:
             selected_stem_path = temp_path / f"selected_{transcription_id}{_download_suffix(str(job['separated_audio_url']))}"
             _download_file(str(job["separated_audio_url"]), selected_stem_path)
 
-        analysis_result = _generate_analysis_and_exports(
-            selected_stem_path,
-            transcription_id,
-            selected_stem,
-            sensitivity=sensitivity,
-        )
+        if job_type == "generate_tab":
+            # Generate tablature from the separated stem
+            analysis_result = _generate_tab_from_stem(
+                selected_stem_path,
+                transcription_id,
+                selected_stem,
+                sensitivity=sensitivity,
+            )
+        else:
+            analysis_result = _generate_analysis_and_exports(
+                selected_stem_path,
+                transcription_id,
+                selected_stem,
+                sensitivity=sensitivity,
+            )
         _complete_job(job, upload_result, analysis_result)
 
     return {

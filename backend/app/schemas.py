@@ -232,8 +232,6 @@ class WorkerCompleteRequest(BaseModel):
     separated_audio_public_id: Optional[str] = None
     midi_file_url: Optional[str] = None
     midi_file_public_id: Optional[str] = None
-    tab_file_url: Optional[str] = None
-    tab_file_public_id: Optional[str] = None
     confidence: Optional[int] = None
     duration: Optional[int] = None
     detected_tempo: Optional[int] = None
@@ -242,9 +240,8 @@ class WorkerCompleteRequest(BaseModel):
     key_confidence: Optional[int] = None
     notes_data: Optional[Any] = None
     chords_data: Optional[Any] = None
-    tablature_data: Optional[Any] = None
-    notation_data: Optional[Any] = None
     chord_chart_data: Optional[Any] = None
+    tablature_data: Optional[Any] = None
     track_metadata: Optional[dict[str, Any]] = None
 
 
