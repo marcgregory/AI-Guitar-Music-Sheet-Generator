@@ -1,5 +1,6 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import logging
@@ -29,7 +30,6 @@ image = (
     .pip_install(
     "demucs==4.0.1",
     "librosa==0.10.1",
-    "tensorflow-cpu==2.16.1",
     "basic-pitch==0.4.0",
     "mido==1.2.0",
     "music21==9.9.2",
