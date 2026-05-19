@@ -199,6 +199,28 @@ def _mark_modal_retry(
     retry_after_seconds: int | None = None,
     rate_limited: bool = False,
 ) -> None:
+    # Check if this is an internal worker failure that should not be retried
+    internal_worker_failures = [
+        "TensorFlow JIT compilation failed",
+        "libdevice not found",
+        "Basic Pitch",
+        "Graph execution error"
+    ]
+
+    # If this is an internal worker failure, mark as failed permanently
+    if any(failure_indicator in error for failure_indicator in internal_worker_failures):
+        transcription.processing_status = "failed"
+        transcription.processing_error = error
+        transcription.modal_dispatch_status = "failed"
+        transcription.modal_retry_at = None
+        transcription.queue_position = None
+        transcription.estimated_wait_time = None
+        transcription.is_processed = False
+        transcription.celery_task_id = None
+        session.add(transcription)
+        session.commit()
+        return
+
     next_retry_count = int(transcription.modal_retry_count or 0) + 1
     max_retries = max(1, int(core.config.settings.MODAL_MAX_DISPATCH_RETRIES))
     if next_retry_count > max_retries:
@@ -240,7 +262,7 @@ def _fetch_next_rate_limited_modal_job(session: Session) -> models.Transcription
     return (
         session.query(models.Transcription)
         .filter(
-            models.Transcription.modal_dispatch_status == "rate_limited",
+            models.Transcription.modal_dispatch_status.in_(["rate_limited", "retry_queued"]),
             models.Transcription.modal_retry_at != None,
             models.Transcription.modal_retry_at <= now_utc,
             models.Transcription.is_deleted == False,
@@ -455,9 +477,11 @@ def _trigger_modal_worker(
             "METRICS: modal_failed_dispatches_total +1"
         )
         try:
+            # Reload DB row to check current status before scheduling retry
             transcription = session.query(models.Transcription).filter(
                 models.Transcription.id == transcription_id
             ).first()
+            # Only schedule retry if still processing (not already failed/completed/etc.)
             if transcription and transcription.processing_status == "processing":
                 _mark_modal_retry(
                     transcription,
