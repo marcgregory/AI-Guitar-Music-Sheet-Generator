@@ -1,4 +1,7 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import logging
 import subprocess
 import sys
@@ -233,6 +236,7 @@ def _confidence_stats(notes: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _detect_pitch_basic_pitch(input_path: Path, sensitivity: str = "normal") -> dict[str, Any]:
+    logger.info("[BASIC PITCH CPU MODE] [TENSORFLOW GPU DISABLED]")
     from basic_pitch.inference import predict
 
     threshold = 0.2 if sensitivity == "high" else 0.35
@@ -428,13 +432,14 @@ def _analyze_selected_stem(stem_path: Path, selected_stem: str) -> dict[str, Any
 
     instrument_type = "bass" if selected_stem == "bass" else "guitar"
     tab_data = _note_to_tablature(pitch_result, instrument_type) if pitch_result.get("notes") else None
+    track_metadata = {
+        "display_name": "Bass" if selected_stem == "bass" else "Guitar / Other",
+        "confidence_notes": pitch_result.get("warning_message"),
+    }
     return {
         "notes_data": pitch_result,
         "tablature_data": tab_data,
-        "track_metadata": {
-            "display_name": "Bass" if selected_stem == "bass" else "Guitar / Other",
-            "confidence_notes": None,
-        },
+        "track_metadata": track_metadata,
     }
 
 
