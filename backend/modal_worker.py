@@ -237,26 +237,43 @@ def _confidence_stats(notes: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _detect_pitch_basic_pitch(input_path: Path, sensitivity: str = "normal") -> dict[str, Any]:
     logger.info("[BASIC PITCH CPU MODE] [TENSORFLOW GPU DISABLED]")
-    from basic_pitch.inference import predict
+    try:
+        from basic_pitch.inference import predict
 
-    threshold = 0.2 if sensitivity == "high" else 0.35
-    model_output, _midi_data, note_events = predict(str(input_path))
-    notes = [
-        note
-        for note in _format_basic_pitch_events(note_events)
-        if float(note.get("confidence", 1.0)) >= threshold
-    ]
-    return {
-        "notes": notes,
-        "model_outputs": {
-            "backend": "basic_pitch.modal",
-            "sensitivity": sensitivity,
-            "confidence_threshold": threshold,
-            "raw_output_summary": str(type(model_output)),
-        },
-        "confidence_stats": _confidence_stats(notes),
-        "total_notes_detected": len(notes),
-    }
+        threshold = 0.2 if sensitivity == "high" else 0.35
+        model_output, _midi_data, note_events = predict(str(input_path))
+        notes = [
+            note
+            for note in _format_basic_pitch_events(note_events)
+            if float(note.get("confidence", 1.0)) >= threshold
+        ]
+        return {
+            "notes": notes,
+            "model_outputs": {
+                "backend": "basic_pitch.modal",
+                "sensitivity": sensitivity,
+                "confidence_threshold": threshold,
+                "raw_output_summary": str(type(model_output)),
+            },
+            "confidence_stats": _confidence_stats(notes),
+            "total_notes_detected": len(notes),
+        }
+    except Exception as exc:
+        logger.exception("Basic Pitch inference failed: %s", exc)
+        # Return metadata-only mode on failure to avoid crashing the job
+        return {
+            "notes": [],
+            "model_outputs": {
+                "backend": "basic_pitch.modal",
+                "sensitivity": sensitivity,
+                "confidence_threshold": 0.2 if sensitivity == "high" else 0.35,
+                "raw_output_summary": "Basic Pitch inference failed - metadata only mode",
+                "error": str(exc),
+            },
+            "confidence_stats": {"count": 0, "min": None, "max": None, "mean": None},
+            "total_notes_detected": 0,
+            "warning_message": f"Basic Pitch inference failed: {str(exc)}. Returning metadata-only mode.",
+        }
 
 
 def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict[str, Any]:
