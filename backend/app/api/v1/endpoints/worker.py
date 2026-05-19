@@ -164,6 +164,8 @@ async def complete_worker_job(
     )
     transcription.midi_file_url = payload.midi_file_url
     transcription.midi_file_public_id = payload.midi_file_public_id
+    transcription.tab_file_url = payload.tab_file_url
+    transcription.tab_file_public_id = payload.tab_file_public_id
     transcription.duration = payload.duration if payload.duration is not None else transcription.duration
     transcription.detected_tempo = payload.detected_tempo
     transcription.tempo_confidence = payload.tempo_confidence

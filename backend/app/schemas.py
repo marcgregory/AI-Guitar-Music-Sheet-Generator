@@ -232,6 +232,8 @@ class WorkerCompleteRequest(BaseModel):
     separated_audio_public_id: Optional[str] = None
     midi_file_url: Optional[str] = None
     midi_file_public_id: Optional[str] = None
+    tab_file_url: Optional[str] = None
+    tab_file_public_id: Optional[str] = None
     confidence: Optional[int] = None
     duration: Optional[int] = None
     detected_tempo: Optional[int] = None

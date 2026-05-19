@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+# Force TensorFlow to CPU-only before any TensorFlow or Basic Pitch imports.
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 import modal
 
 
@@ -245,7 +250,11 @@ def _detect_pitch_basic_pitch(input_path: Path, sensitivity: str = "normal") -> 
         os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
         import tensorflow as tf
-        tf.config.set_visible_devices([], "GPU")
+        try:
+            if tf.config.list_physical_devices("GPU"):
+                tf.config.set_visible_devices([], "GPU")
+        except Exception:
+            logger.debug("TensorFlow GPU visibility configuration skipped or unavailable.")
 
         from basic_pitch.inference import predict
 
@@ -553,6 +562,9 @@ def _complete_job(
         "separated_audio_public_id": upload_result.get("public_id"),
         "midi_file_url": analysis_result.get("midi_file_url"),
         "midi_file_public_id": analysis_result.get("midi_file_public_id"),
+        "tab_file_url": analysis_result.get("tab_file_url"),
+        "tab_file_public_id": analysis_result.get("tab_file_public_id"),
+        "tablature_data": analysis_result.get("tablature_data"),
         "confidence": analysis_result.get("confidence", 90),
         "duration": analysis_result.get("duration"),
         "detected_tempo": analysis_result.get("detected_tempo"),
