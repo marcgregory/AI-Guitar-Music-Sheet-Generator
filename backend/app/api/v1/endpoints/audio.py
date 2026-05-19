@@ -16,6 +16,7 @@ import httpx
 from pydantic import BaseModel
 from urllib.parse import parse_qs, urlsplit
 from datetime import datetime, timedelta, timezone
+import random
 
 from .... import db, core, models
 from ....core.security import get_current_user
@@ -164,9 +165,14 @@ def _build_worker_payload_for_modal(
 
 
 def _modal_retry_delay_seconds(retry_count: int) -> int:
-    base = max(1, int(core.config.settings.MODAL_RATE_LIMIT_BASE_BACKOFF_SECONDS))
+    base = 1  # seconds
+    # Exponential backoff: 2 ** retry_count
+    delay = base * (2 ** retry_count)
+    # Add jitter: random delay between 0.5 * delay and 1.5 * delay
+    jitter_delay = delay * (0.5 + random.random())
+    # Apply ceiling from settings
     ceiling = max(base, int(core.config.settings.MODAL_RATE_LIMIT_MAX_BACKOFF_SECONDS))
-    return min(ceiling, base * (2 ** max(0, retry_count - 1)))
+    return int(min(ceiling, jitter_delay))
 
 
 def _mark_modal_retry(
@@ -198,6 +204,12 @@ def _mark_modal_retry(
         transcription.modal_retry_count = next_retry_count
         transcription.queue_position = None
         transcription.estimated_wait_time = delay
+        logger.info(
+            f"Modal retry scheduled: transcription_id={transcription.id}, "
+            f"retry_count={transcription.modal_retry_count}, "
+            f"retry_at={transcription.modal_retry_at}, "
+            f"modal_dispatch_status={transcription.modal_dispatch_status}"
+        )
     transcription.celery_task_id = None
     session.add(transcription)
     session.commit()
@@ -260,6 +272,8 @@ def _trigger_modal_worker(
 
         transcription.modal_request_id = transcription.modal_request_id or str(uuid.uuid4())
         transcription.modal_job_type = job_type
+        old_retry_at = transcription.modal_retry_at  # Save for logging the attempt
+
         transcription.modal_dispatch_status = "dispatched"
         transcription.modal_dispatched_at = datetime.now(timezone.utc)
         transcription.modal_retry_at = None
@@ -272,54 +286,67 @@ def _trigger_modal_worker(
         if core.config.settings.WORKER_API_TOKEN:
             headers["Authorization"] = f"Bearer {core.config.settings.WORKER_API_TOKEN}"
 
-        response = httpx.post(
-            modal_trigger_url,
-            json=_build_worker_payload_for_modal(
-                transcription,
-                job_type=job_type,
-                detection_sensitivity=detection_sensitivity,
-                track_id=track_id,
-            ),
-            headers=headers,
-            timeout=120.0,
-        )
-        if response.status_code == 429:
-            retry_after_header = response.headers.get("Retry-After")
-            try:
-                retry_after = int(retry_after_header) if retry_after_header else None
-            except ValueError:
-                retry_after = None
-            _mark_modal_retry(
-                transcription,
-                session,
-                error="Modal is rate limited. This job will retry automatically.",
-                retry_after_seconds=retry_after,
-                rate_limited=True,
-            )
-            logger.warning("Modal rate limited transcription %s; queued retry.", transcription_id)
-            return
-        response.raise_for_status()
-        logger.info("Triggered Modal worker for transcription %s", transcription_id)
-    except Exception as exc:
         try:
-            transcription = session.query(models.Transcription).filter(
-                models.Transcription.id == transcription_id
-            ).first()
-            if transcription and transcription.processing_status == "processing":
+            response = httpx.post(
+                modal_trigger_url,
+                json=_build_worker_payload_for_modal(
+                    transcription,
+                    job_type=job_type,
+                    detection_sensitivity=detection_sensitivity,
+                    track_id=track_id,
+                ),
+                headers=headers,
+                timeout=120.0,
+            )
+            # Log the attempt
+            logger.info(
+                f"Modal dispatch attempt: transcription_id={transcription_id}, job_type={job_type}, "
+                f"status_code={response.status_code}, retry_count={transcription.modal_retry_count}, "
+                f"retry_at={old_retry_at}, modal_request_id={transcription.modal_request_id}"
+            )
+            if response.status_code == 429:
+                retry_after_header = response.headers.get("Retry-After")
+                try:
+                    retry_after = int(retry_after_header) if retry_after_header else None
+                except ValueError:
+                    retry_after = None
                 _mark_modal_retry(
                     transcription,
                     session,
-                    error="Modal dispatch failed. This job will retry automatically.",
+                    error="Modal is rate limited. This job will retry automatically.",
+                    retry_after_seconds=retry_after,
+                    rate_limited=True,
                 )
-        except Exception:
-            session.rollback()
-        logger.error(
-            "Modal trigger failed for transcription %s; leaving job queued: %s",
-            transcription_id,
-            exc,
-        )
-    finally:
-        session.close()
+                logger.warning("Modal rate limited transcription %s; queued retry.", transcription_id)
+                return
+            response.raise_for_status()
+            logger.info("Triggered Modal worker for transcription %s", transcription_id)
+        except Exception as exc:
+            # Log the attempt with status_code=0 to indicate an error in the request
+            logger.info(
+                f"Modal dispatch attempt: transcription_id={transcription_id}, job_type={job_type}, "
+                f"status_code=0, retry_count={transcription.modal_retry_count}, "
+                f"retry_at={old_retry_at}, modal_request_id={transcription.modal_request_id}"
+            )
+            try:
+                transcription = session.query(models.Transcription).filter(
+                    models.Transcription.id == transcription_id
+                ).first()
+                if transcription and transcription.processing_status == "processing":
+                    _mark_modal_retry(
+                        transcription,
+                        session,
+                        error="Modal dispatch failed. This job will retry automatically.",
+                    )
+            except Exception:
+                session.rollback()
+            logger.error(
+                "Modal trigger failed for transcription %s; leaving job queued: %s",
+                transcription_id,
+                exc,
+            )
+        finally:
+            session.close()
 
 
 def _dispatch_transcription_processing(
