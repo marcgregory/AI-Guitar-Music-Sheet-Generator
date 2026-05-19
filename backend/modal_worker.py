@@ -1,7 +1,7 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import logging
 import subprocess
 import sys
@@ -29,6 +29,7 @@ image = (
     .pip_install(
     "demucs==4.0.1",
     "librosa==0.10.1",
+    "tensorflow-cpu==2.16.1",
     "basic-pitch==0.4.0",
     "mido==1.2.0",
     "music21==9.9.2",
@@ -260,20 +261,7 @@ def _detect_pitch_basic_pitch(input_path: Path, sensitivity: str = "normal") -> 
         }
     except Exception as exc:
         logger.exception("Basic Pitch inference failed: %s", exc)
-        # Return metadata-only mode on failure to avoid crashing the job
-        return {
-            "notes": [],
-            "model_outputs": {
-                "backend": "basic_pitch.modal",
-                "sensitivity": sensitivity,
-                "confidence_threshold": 0.2 if sensitivity == "high" else 0.35,
-                "raw_output_summary": "Basic Pitch inference failed - metadata only mode",
-                "error": str(exc),
-            },
-            "confidence_stats": {"count": 0, "min": None, "max": None, "mean": None},
-            "total_notes_detected": 0,
-            "warning_message": f"Basic Pitch inference failed: {str(exc)}. Returning metadata-only mode.",
-        }
+        raise
 
 
 def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict[str, Any]:
