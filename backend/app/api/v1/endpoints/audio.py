@@ -3,6 +3,7 @@ import json
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, update
+from dataclasses import dataclass
 import os
 import uuid
 import hashlib
@@ -49,6 +50,9 @@ TERMINAL_TRANSCRIPTION_STATUSES = (
 ESTIMATED_SECONDS_PER_SELECTED_STEM_JOB = 300
 DEMO_AUDIO_URL = "/demo/example-guitar-riff.wav"
 STEM_READY_MESSAGE = "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+YOUTUBE_COOKIE_REJECTED_DETAIL = (
+    "Cookies were loaded, but YouTube rejected them. Re-export fresh cookies or upload audio directly."
+)
 
 # Define the upload directory relative to the backend package so the location is
 # stable whether uvicorn is launched from the repo root or from backend/.
@@ -2209,9 +2213,43 @@ def _build_youtube_download_options(
     return options
 
 
-def _write_youtube_cookies_tempfile(cookies_text: str) -> str:
+@dataclass(frozen=True)
+class YouTubeCookiefile:
+    path: str | None
+    cleanup: bool
+    loaded: bool
+    source: str | None
+    line_count: int = 0
+    cookie_count: int = 0
+
+
+def _normalize_youtube_cookies_text(cookies_text: str) -> str:
     if "\\n" in cookies_text and "\n" not in cookies_text:
         cookies_text = cookies_text.replace("\\n", "\n")
+    return cookies_text
+
+
+def _inspect_youtube_cookies_text(cookies_text: str) -> tuple[bool, int, int]:
+    normalized = _normalize_youtube_cookies_text(cookies_text)
+    lines = [line.strip() for line in normalized.splitlines()]
+    meaningful_lines = [
+        line for line in lines
+        if line and not line.startswith("#")
+    ]
+    cookie_count = sum(1 for line in meaningful_lines if len(line.split("\t")) >= 7)
+    return cookie_count > 0, len(lines), cookie_count
+
+
+def _invalid_youtube_cookies_detail(source: str) -> str:
+    return (
+        f"YouTube cookies from {source} are missing or invalid. "
+        "For Render, set YOUTUBE_COOKIES to fresh Netscape-format browser cookies, "
+        "or upload the audio file directly."
+    )
+
+
+def _write_youtube_cookies_tempfile(cookies_text: str) -> str:
+    cookies_text = _normalize_youtube_cookies_text(cookies_text)
 
     cookie_file = tempfile.NamedTemporaryFile(
         mode="w",
@@ -2230,16 +2268,69 @@ def _write_youtube_cookies_tempfile(cookies_text: str) -> str:
         os.chmod(cookie_file.name, 0o600)
 
 
-def _get_youtube_cookiefile() -> tuple[str | None, bool]:
-    cookies_file = core.config.settings.YOUTUBE_COOKIES_FILE
+def _read_youtube_cookies_file(cookies_file: str) -> str:
+    try:
+        return Path(cookies_file).read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "yt-dlp cookie file configured but unreadable: path=%s error=%s",
+            cookies_file,
+            exc.__class__.__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_invalid_youtube_cookies_detail("YOUTUBE_COOKIES_FILE"),
+        ) from exc
+
+
+def _get_youtube_cookiefile() -> YouTubeCookiefile:
+    cookies_file = (core.config.settings.YOUTUBE_COOKIES_FILE or "").strip()
     if cookies_file:
-        return cookies_file, False
+        cookies_text = _read_youtube_cookies_file(cookies_file)
+        valid, line_count, cookie_count = _inspect_youtube_cookies_text(cookies_text)
+        logger.info(
+            "yt-dlp cookies source=file readable=true lines=%s cookie_count=%s",
+            line_count,
+            cookie_count,
+        )
+        if not valid:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_invalid_youtube_cookies_detail("YOUTUBE_COOKIES_FILE"),
+            )
+        return YouTubeCookiefile(
+            path=cookies_file,
+            cleanup=False,
+            loaded=True,
+            source="YOUTUBE_COOKIES_FILE",
+            line_count=line_count,
+            cookie_count=cookie_count,
+        )
 
     cookies_text = core.config.settings.YOUTUBE_COOKIES
     if cookies_text:
-        return _write_youtube_cookies_tempfile(cookies_text), True
+        valid, line_count, cookie_count = _inspect_youtube_cookies_text(cookies_text)
+        logger.info(
+            "yt-dlp cookies source=env lines=%s cookie_count=%s",
+            line_count,
+            cookie_count,
+        )
+        if not valid:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_invalid_youtube_cookies_detail("YOUTUBE_COOKIES"),
+            )
+        return YouTubeCookiefile(
+            path=_write_youtube_cookies_tempfile(cookies_text),
+            cleanup=True,
+            loaded=True,
+            source="YOUTUBE_COOKIES",
+            line_count=line_count,
+            cookie_count=cookie_count,
+        )
 
-    return None, False
+    logger.info("yt-dlp cookies source=none")
+    return YouTubeCookiefile(path=None, cleanup=False, loaded=False, source=None)
 
 
 def _is_youtube_verification_error(error: Exception) -> bool:
@@ -2254,7 +2345,7 @@ def _is_youtube_verification_error(error: Exception) -> bool:
 def _youtube_verification_detail() -> str:
     return (
         "YouTube is requiring sign-in or bot verification for this video. "
-        "Configure YOUTUBE_COOKIES_FILE or YOUTUBE_COOKIES on the backend, "
+        "For Render, set YOUTUBE_COOKIES to fresh Netscape-format browser cookies, "
         "or upload the audio file directly."
     )
 
@@ -2325,13 +2416,17 @@ async def extract_audio_from_youtube(
     ffmpeg_path = _find_ffmpeg_path()
 
     # Keep yt-dlp's template as a plain filename; paths.home carries the directory.
-    cookiefile, cleanup_cookiefile = _get_youtube_cookiefile()
-    yt_dlp_opts = _build_youtube_download_options(unique_filename, ffmpeg_path, cookiefile)
+    youtube_cookiefile = _get_youtube_cookiefile()
+    yt_dlp_opts = _build_youtube_download_options(unique_filename, ffmpeg_path, youtube_cookiefile.path)
 
     logger.info(f"yt-dlp output directory: {UPLOAD_DIR}")
     logger.info(f"yt-dlp output template: {yt_dlp_opts['outtmpl']}")
     logger.info(f"ffmpeg_path: {ffmpeg_path}")
-    logger.info("yt-dlp cookies configured: %s", bool(cookiefile))
+    logger.info(
+        "yt-dlp cookies configured: %s source=%s",
+        youtube_cookiefile.loaded,
+        youtube_cookiefile.source or "none",
+    )
 
     video_title = "YouTube Audio"
 
@@ -2342,8 +2437,8 @@ async def extract_audio_from_youtube(
                 info_dict = ydl.extract_info(youtube_url, download=True)
                 video_title = info_dict.get('title', 'YouTube Audio') if info_dict else 'YouTube Audio'
         finally:
-            if cleanup_cookiefile and cookiefile:
-                _delete_local_file(cookiefile)
+            if youtube_cookiefile.cleanup and youtube_cookiefile.path:
+                _delete_local_file(youtube_cookiefile.path)
 
         expected_audio_file_path = UPLOAD_DIR / f"{unique_filename}.wav"
         logger.info("yt-dlp expected output path: %s", expected_audio_file_path)
@@ -2381,7 +2476,11 @@ async def extract_audio_from_youtube(
         if _is_youtube_verification_error(e):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=_youtube_verification_detail(),
+                detail=(
+                    YOUTUBE_COOKIE_REJECTED_DETAIL
+                    if youtube_cookiefile.loaded
+                    else _youtube_verification_detail()
+                ),
             ) from e
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -2392,7 +2491,11 @@ async def extract_audio_from_youtube(
         if _is_youtube_verification_error(e):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=_youtube_verification_detail(),
+                detail=(
+                    YOUTUBE_COOKIE_REJECTED_DETAIL
+                    if youtube_cookiefile.loaded
+                    else _youtube_verification_detail()
+                ),
             ) from e
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

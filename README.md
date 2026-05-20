@@ -144,7 +144,7 @@ The API validates these dependencies at startup and exposes their availability a
 - Modal uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
 - Cloudinary uses `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`.
 - Use `frontend/.env.example` and `backend/.env.example` as templates for local development.
-- For YouTube downloads that require sign-in or bot verification, set either `YOUTUBE_COOKIES_FILE` or `YOUTUBE_COOKIES` in `backend/.env`.
+- For YouTube downloads that require sign-in or bot verification, configure browser cookies for the backend. On Render or similar hosted deploys, prefer `YOUTUBE_COOKIES` and paste the full raw Netscape-format `cookies.txt` contents into the environment variable, then redeploy or restart the service. Leave `YOUTUBE_COOKIES_FILE` unset unless a real cookie file is mounted or included at that exact container path. The committed placeholder cookie file is not real auth, and if YouTube rejects loaded cookies, re-export fresh cookies or upload audio directly.
 
 ## Technology Stack
 

@@ -1505,6 +1505,10 @@ def test_extract_audio_from_youtube_requires_selected_stem():
 
 def test_extract_audio_from_youtube_returns_service_unavailable_for_verification_challenge():
     reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = None
     session = TestingSessionLocal()
     try:
         create_user(session, "youtube-bot-check", "youtube-bot-check@example.com")
@@ -1524,18 +1528,162 @@ def test_extract_audio_from_youtube_returns_service_unavailable_for_verification
         def extract_info(self, url, download):
             raise RuntimeError("Sign in to confirm you're not a bot. Use --cookies for authentication.")
 
-    with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", RaisingYoutubeDL):
-        response = client.post(
-            "/api/v1/audio/youtube",
-            headers=auth_headers("youtube-bot-check"),
-            json={
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                "selected_stem": "other",
-            },
-        )
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", RaisingYoutubeDL):
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-bot-check"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
 
     assert response.status_code == 503
-    assert "YOUTUBE_COOKIES_FILE" in response.json()["detail"]
+    assert "YOUTUBE_COOKIES" in response.json()["detail"]
+
+
+def test_extract_audio_from_youtube_rejects_missing_cookie_file_before_ytdlp(tmp_path):
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = str(tmp_path / "missing.cookies.txt")
+    config.settings.YOUTUBE_COOKIES = None
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-missing-cookies", "youtube-missing-cookies@example.com")
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL") as youtube_dl:
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-missing-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert "missing or invalid" in response.json()["detail"]
+    youtube_dl.assert_not_called()
+
+
+def test_extract_audio_from_youtube_rejects_placeholder_cookie_file_before_ytdlp(tmp_path):
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    cookie_file = tmp_path / "youtube.cookies.txt"
+    cookie_file.write_text("# Place your YouTube browser cookies here.\n", encoding="utf-8")
+    config.settings.YOUTUBE_COOKIES_FILE = str(cookie_file)
+    config.settings.YOUTUBE_COOKIES = None
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-placeholder-cookies", "youtube-placeholder-cookies@example.com")
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL") as youtube_dl:
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-placeholder-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert "missing or invalid" in response.json()["detail"]
+    youtube_dl.assert_not_called()
+
+
+def test_youtube_raw_cookies_with_escaped_newlines_are_normalized():
+    from app.api.v1.endpoints.audio import _get_youtube_cookiefile
+
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfresh-cookie\\n"
+    )
+
+    cookiefile = None
+    try:
+        resolved = _get_youtube_cookiefile()
+        cookiefile = Path(resolved.path)
+
+        assert resolved.loaded is True
+        assert resolved.cleanup is True
+        assert resolved.cookie_count == 1
+        assert "\n.youtube.com" in cookiefile.read_text(encoding="utf-8")
+    finally:
+        if cookiefile and cookiefile.exists():
+            cookiefile.unlink()
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+
+def test_extract_audio_from_youtube_returns_cookie_rejected_detail_when_loaded_cookies_fail():
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfresh-cookie\n"
+    )
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-rejected-cookies", "youtube-rejected-cookies@example.com")
+    finally:
+        session.close()
+
+    class RaisingYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def extract_info(self, url, download):
+            raise RuntimeError("Sign in to confirm you're not a bot. Use --cookies for authentication.")
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", RaisingYoutubeDL):
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-rejected-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Cookies were loaded, but YouTube rejected them. "
+        "Re-export fresh cookies or upload audio directly."
+    )
 
 
 def test_youtube_download_options_include_cookiefile_when_configured():
