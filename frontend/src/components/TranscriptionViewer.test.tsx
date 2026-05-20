@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TranscriptionViewer from "./TranscriptionViewer";
 import audioService, { type Transcription } from "../services/audioService";
@@ -45,6 +45,10 @@ describe("TranscriptionViewer generate tabs polling", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     Object.defineProperty(window.HTMLMediaElement.prototype, "load", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: vi.fn(),
     });
@@ -183,5 +187,155 @@ describe("TranscriptionViewer generate tabs polling", () => {
     expect(
       screen.queryByText(/Preparing your score, tabs, and playback workspace/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows a disabled lyrics state while lyrics generation is processing", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Processing Vocal Result",
+        selected_stem: "vocals",
+        processing_status: "stem_ready",
+        lyrics_generation_status: "processing",
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    const generatingButton = await screen.findByRole("button", {
+      name: /Generating lyrics/i,
+    });
+    expect(generatingButton).toBeDisabled();
+    expect(screen.queryByText("Lyrics generated")).not.toBeInTheDocument();
+  });
+
+  it("shows a generated lyrics badge and hides the generate button after completion", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Completed Vocal Result",
+        selected_stem: "vocals",
+        processing_status: "stem_ready",
+        lyrics_generation_status: "completed",
+        lyrics_data: JSON.stringify({
+          text: "hello there",
+          segments: [{ start: 0, end: 1.2, text: "hello there" }],
+        }),
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    expect(await screen.findByText("Lyrics generated")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Generate Lyrics/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the lyrics generation button for retryable lyric states", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Warning Vocal Result",
+        selected_stem: "vocals",
+        processing_status: "stem_ready",
+        lyrics_generation_status: "completed_with_warning",
+        lyrics_data: JSON.stringify({
+          message: "No clear vocals detected for lyrics generation.",
+        }),
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    expect(
+      await screen.findByRole("button", { name: /Generate Lyrics/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Lyrics generated")).not.toBeInTheDocument();
+  });
+
+  it("keeps the lyrics generation button after a failed lyric attempt", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Failed Vocal Result",
+        selected_stem: "vocals",
+        processing_status: "stem_ready",
+        lyrics_generation_status: "failed",
+        processing_error: "Lyrics generation failed.",
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    expect(
+      await screen.findByRole("button", { name: /Generate Lyrics/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Lyrics generated")).not.toBeInTheDocument();
+  });
+
+
+  it("renders timestamped lyric segments as the primary view and collapses the transcript", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Segmented Vocal Result",
+        selected_stem: "vocals",
+        processing_status: "stem_ready",
+        lyrics_generation_status: "completed",
+        lyrics_data: JSON.stringify({
+          text: "first line\nsecond line",
+          segments: [
+            { start: 0, end: 1.2, text: "first line" },
+            { start: 1.3, end: 2.4, text: "second line" },
+          ],
+        }),
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    expect(
+      await screen.findByRole("button", { name: /first line/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /second line/i }),
+    ).toBeInTheDocument();
+
+    const transcriptToggle = screen.getByText("View full transcript");
+    expect(transcriptToggle).toBeInTheDocument();
+    expect(transcriptToggle.closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("seeks the existing playback audio when a timestamped lyric is clicked", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Seekable Vocal Result",
+        selected_stem: "vocals",
+        processing_status: "stem_ready",
+        lyrics_generation_status: "completed",
+        lyrics_data: JSON.stringify({
+          text: "jump in",
+          segments: [{ start: 2.5, end: 4, text: "jump in" }],
+        }),
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    const segmentButton = await screen.findByRole("button", { name: /jump in/i });
+    await act(async () => {
+      fireEvent.click(segmentButton);
+    });
+
+    const audio = document.querySelector("audio");
+    expect(audio?.currentTime).toBe(2.5);
   });
 });

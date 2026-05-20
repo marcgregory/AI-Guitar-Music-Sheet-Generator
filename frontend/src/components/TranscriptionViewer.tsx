@@ -122,6 +122,14 @@ const lyricTime = (seconds: number | undefined): string => {
   return `${minutes}:${remaining.toString().padStart(2, "0")}`;
 };
 
+const lyricSegmentTime = (value: number | undefined): number | null => {
+  const time = Number(value);
+  return Number.isFinite(time) ? time : null;
+};
+
+const lyricSegmentKey = (segment: LyricsSegment, index: number): string =>
+  `${segment.start ?? "start"}-${segment.end ?? "end"}-${index}`;
+
 type DrumTabMeasure = {
   measure: number;
   startSlot: number;
@@ -2155,6 +2163,7 @@ const TranscriptionViewer: React.FC = () => {
     null,
   );
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const lyricSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const generateTabPollingRef = useRef<NodeJS.Timeout | null>(null);
   const isGeneratingTabRef = useRef(false);
   const isGeneratingLyricsRef = useRef(false);
@@ -2674,6 +2683,42 @@ const TranscriptionViewer: React.FC = () => {
     [playbackDuration],
   );
 
+  const lyricsData = useMemo(
+    () => parseLyricsData(transcription?.lyrics_data),
+    [transcription?.lyrics_data],
+  );
+  const lyricsSegments = useMemo(
+    () => (Array.isArray(lyricsData?.segments) ? lyricsData.segments : []),
+    [lyricsData?.segments],
+  );
+  const activeLyricsSegmentIndex = useMemo(() => {
+    if (lyricsSegments.length === 0 || !Number.isFinite(currentPlaybackTime)) {
+      return -1;
+    }
+
+    return lyricsSegments.findIndex((segment, index) => {
+      const start = lyricSegmentTime(segment.start);
+      if (start === null || currentPlaybackTime < start) return false;
+
+      const end = lyricSegmentTime(segment.end);
+      if (end !== null) return currentPlaybackTime <= end;
+
+      const nextStart = lyricSegmentTime(lyricsSegments[index + 1]?.start);
+      return nextStart === null || currentPlaybackTime < nextStart;
+    });
+  }, [currentPlaybackTime, lyricsSegments]);
+
+  useEffect(() => {
+    if (activeLyricsSegmentIndex < 0) return;
+
+    const activeSegment = lyricsSegments[activeLyricsSegmentIndex];
+    const activeKey = activeSegment
+      ? lyricSegmentKey(activeSegment, activeLyricsSegmentIndex)
+      : null;
+    const activeElement = activeKey ? lyricSegmentRefs.current[activeKey] : null;
+    activeElement?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [activeLyricsSegmentIndex, lyricsSegments]);
+
   const handleHeaderPlayPause = async () => {
     const audio = audioElementRef.current;
     if (!audioUrl || !audio) return;
@@ -3112,10 +3157,20 @@ const TranscriptionViewer: React.FC = () => {
   const isDemoTranscription = Boolean(transcription.is_demo);
   const isGeneratingTabsView =
     isGeneratingTab || transcription.processing_status === "processing";
-  const lyricsData = parseLyricsData(transcription.lyrics_data);
   const lyricsGenerationStatus = lyricStatusOf(transcription);
-  const lyricsGenerationActive =
+  const hasLyricsData = Boolean(lyricsData);
+  const hasLyricsSegments = lyricsSegments.length > 0;
+  const lyricsProcessing =
     isGeneratingLyrics || lyricsGenerationStatus === "processing";
+  const lyricsCompleted =
+    lyricsGenerationStatus === "completed" && hasLyricsData;
+  const showGenerateLyricsButton =
+    !lyricsProcessing &&
+    !lyricsCompleted &&
+    (!lyricsData ||
+      ["pending", "failed", "completed_with_warning"].includes(
+        lyricsGenerationStatus,
+      ));
   const selectedStemReady =
     transcription.processing_status === "stem_ready" && !isGeneratingTabsView;
   const hasStemPlayback =
@@ -3572,18 +3627,33 @@ const TranscriptionViewer: React.FC = () => {
               )}
               {isVocalStemReady && !isDemoTranscription && (
                 <div>
-                  <button
-                    type="button"
-                    className="button-primary premium-generate-tab-button"
-                    onClick={handleGenerateLyrics}
-                    disabled={lyricsGenerationActive}
-                  >
-                    <Mic aria-hidden="true" />
-                    {lyricsGenerationActive
-                      ? "Generating lyrics..."
-                      : "Generate Lyrics"}
-                  </button>
-                  {lyricsGenerationActive && (
+                  {lyricsProcessing && (
+                    <button
+                      type="button"
+                      className="button-primary premium-generate-tab-button"
+                      disabled
+                    >
+                      <Mic aria-hidden="true" />
+                      Generating lyrics...
+                    </button>
+                  )}
+                  {lyricsCompleted && (
+                    <span className="premium-completed-badge premium-lyrics-generated-badge">
+                      <CheckCircle2 aria-hidden="true" />
+                      Lyrics generated
+                    </span>
+                  )}
+                  {showGenerateLyricsButton && (
+                    <button
+                      type="button"
+                      className="button-primary premium-generate-tab-button"
+                      onClick={handleGenerateLyrics}
+                    >
+                      <Mic aria-hidden="true" />
+                      Generate Lyrics
+                    </button>
+                  )}
+                  {lyricsProcessing && (
                     <p className="generation-status-subtitle">
                       Generating lyrics...
                       <span className="generation-status-details">
@@ -3597,45 +3667,63 @@ const TranscriptionViewer: React.FC = () => {
           )}
 
           {vocalLyricsAvailable &&
-            (lyricsData || lyricsGenerationActive || lyricsGenerationStatus === "failed") && (
+            (lyricsData || lyricsProcessing || lyricsGenerationStatus === "failed") && (
               <section
                 className="premium-info-section premium-lyrics-section"
                 aria-labelledby="lyrics-heading"
               >
                 <h2 id="lyrics-heading">Lyrics</h2>
                 <div className="premium-lyrics-panel">
-                  {lyricsGenerationActive ? (
+                  {lyricsProcessing ? (
                     <p className="premium-lyrics-status">Generating lyrics...</p>
                   ) : lyricsGenerationStatus === "failed" ? (
                     <div className="alert alert-error">
                       {transcription.processing_error ||
                         "Lyrics generation failed. Please try again with a clearer vocal stem."}
                     </div>
-                  ) : lyricsData?.text ? (
+                  ) : hasLyricsSegments ? (
                     <>
-                      <pre className="premium-lyrics-text">{lyricsData.text}</pre>
-                      {Array.isArray(lyricsData.segments) &&
-                        lyricsData.segments.length > 0 && (
-                          <div
-                            className="premium-lyrics-segments"
-                            aria-label="Timestamped lyrics"
-                          >
-                            {lyricsData.segments.map((segment, index) => (
-                              <button
-                                type="button"
-                                key={`${segment.start ?? index}-${index}`}
-                                onClick={() => seekPlaybackTo(segment.start ?? 0)}
-                              >
-                                <span>
-                                  {lyricTime(segment.start)} -{" "}
-                                  {lyricTime(segment.end)}
-                                </span>
-                                <strong>{segment.text}</strong>
-                              </button>
-                            ))}
-                          </div>
-                        )}
+                      <div
+                        className="premium-lyrics-segments"
+                        aria-label="Timestamped lyrics"
+                      >
+                        {lyricsSegments.map((segment, index) => {
+                          const key = lyricSegmentKey(segment, index);
+                          const isActive = index === activeLyricsSegmentIndex;
+
+                          return (
+                            <button
+                              type="button"
+                              key={key}
+                              ref={(element) => {
+                                lyricSegmentRefs.current[key] = element;
+                              }}
+                              className={isActive ? "is-active" : undefined}
+                              aria-current={isActive ? "true" : undefined}
+                              onClick={() => seekPlaybackTo(segment.start ?? 0)}
+                            >
+                              <span>
+                                {lyricTime(segment.start)}
+                                {segment.end !== undefined
+                                  ? ` - ${lyricTime(segment.end)}`
+                                  : ""}
+                              </span>
+                              <strong>
+                                {segment.text?.trim() || "Untitled lyric segment"}
+                              </strong>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {lyricsData?.text && (
+                        <details className="premium-lyrics-transcript">
+                          <summary>View full transcript</summary>
+                          <pre className="premium-lyrics-text">{lyricsData.text}</pre>
+                        </details>
+                      )}
                     </>
+                  ) : lyricsData?.text ? (
+                    <pre className="premium-lyrics-text">{lyricsData.text}</pre>
                   ) : (
                     <p className="premium-lyrics-status">
                       {lyricsData?.message ||
