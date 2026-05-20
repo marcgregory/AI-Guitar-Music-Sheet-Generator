@@ -3,7 +3,8 @@
 import glob
 import logging
 import os
-from sqlalchemy import text
+import re
+from sqlalchemy import inspect, text
 from alembic.config import Config
 from alembic import command
 from app.database_init import engine
@@ -12,6 +13,115 @@ from app.core.config import settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_ADD_COLUMN_RE = re.compile(
+    r"""
+    ALTER\s+TABLE\s+
+    (?P<table>"?[A-Za-z_][A-Za-z0-9_]*"?)
+    \s+ADD\s+COLUMN\s+
+    (?P<column>"?[A-Za-z_][A-Za-z0-9_]*"?)
+    \s+
+    (?P<definition>.+?)
+    \s*;?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
+
+def _split_sql_statements(sql_content: str) -> list[str]:
+    statements = []
+    current_statement = ""
+    in_dollar_quote = False
+    i = 0
+    while i < len(sql_content):
+        char = sql_content[i]
+        if char == "$" and i + 1 < len(sql_content) and sql_content[i + 1] == "$":
+            current_statement += "$$"
+            i += 2
+            in_dollar_quote = not in_dollar_quote
+            continue
+
+        if char == ";" and not in_dollar_quote:
+            if current_statement.strip():
+                statements.append(current_statement.strip())
+            current_statement = ""
+        else:
+            current_statement += char
+        i += 1
+
+    if current_statement.strip():
+        statements.append(current_statement.strip())
+
+    return statements
+
+
+def _strip_leading_comments(statement: str) -> str:
+    lines = statement.strip().splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and lines[0].lstrip().startswith("--"):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
+def _extract_add_column(statement: str) -> tuple[str, str, str] | None:
+    cleaned = _strip_leading_comments(statement)
+    candidates = [cleaned]
+
+    if cleaned.upper().startswith("DO $$"):
+        candidates = re.findall(
+            r"ALTER\s+TABLE\s+.+?\s+ADD\s+COLUMN\s+.+?(?=;)",
+            cleaned,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+    for candidate in candidates:
+        match = _ADD_COLUMN_RE.match(candidate.strip())
+        if not match:
+            continue
+        table_name = match.group("table").strip('"')
+        column_name = match.group("column").strip('"')
+        column_definition = f"{column_name} {match.group('definition').strip()}"
+        return table_name, column_name, column_definition
+
+    return None
+
+
+def _execute_sql_statement(conn, statement: str) -> None:
+    add_column = _extract_add_column(statement)
+    if not add_column:
+        logger.debug("Executing SQL statement: %s", statement[:120])
+        conn.execute(text(statement))
+        return
+
+    table_name, column_name, column_definition = add_column
+    inspector = inspect(conn)
+    table_names = set(inspector.get_table_names())
+    if table_name not in table_names:
+        logger.debug("Executing SQL statement: %s", statement[:120])
+        conn.execute(text(statement))
+        return
+
+    existing_columns = {
+        column["name"]
+        for column in inspector.get_columns(table_name)
+    }
+    logger.info(
+        "existing_columns_detected table=%s count=%d",
+        table_name,
+        len(existing_columns),
+    )
+
+    if column_name in existing_columns:
+        logger.info(
+            "column_skipped_already_exists table=%s column=%s",
+            table_name,
+            column_name,
+        )
+        return
+
+    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_definition}"))
+    logger.info("column_added table=%s column=%s", table_name, column_name)
 
 
 def _run_sql_migrations() -> None:
@@ -28,37 +138,22 @@ def _run_sql_migrations() -> None:
     logger.info("Found %d SQL migrations", len(migration_files))
     with engine.connect() as conn:
         for migration_file in migration_files:
+            logger.info(
+                "migration_started migration=%s",
+                os.path.basename(migration_file),
+            )
             logger.info("Running SQL migration: %s", os.path.basename(migration_file))
             with open(migration_file, "r", encoding="utf-8") as f:
                 sql_content = f.read()
 
-            statements = []
-            current_statement = ""
-            in_dollar_quote = False
-            i = 0
-            while i < len(sql_content):
-                char = sql_content[i]
-                if char == "$" and i + 1 < len(sql_content) and sql_content[i + 1] == "$":
-                    current_statement += "$$"
-                    i += 2
-                    in_dollar_quote = not in_dollar_quote
-                    continue
-
-                if char == ";" and not in_dollar_quote:
-                    if current_statement.strip():
-                        statements.append(current_statement.strip())
-                    current_statement = ""
-                else:
-                    current_statement += char
-                i += 1
-
-            if current_statement.strip():
-                statements.append(current_statement.strip())
-
+            statements = _split_sql_statements(sql_content)
             for statement in statements:
-                logger.debug("Executing SQL statement: %s", statement[:120])
-                conn.execute(text(statement))
+                _execute_sql_statement(conn, statement)
             conn.commit()
+            logger.info(
+                "migration_completed migration=%s",
+                os.path.basename(migration_file),
+            )
 
 
 def run_migrations() -> None:

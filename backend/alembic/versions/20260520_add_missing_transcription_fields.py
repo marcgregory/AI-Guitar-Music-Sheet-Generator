@@ -1,68 +1,100 @@
+import logging
+
 from alembic import op
+import sqlalchemy as sa
+from sqlalchemy import inspect
 
 revision = "20260520_add_missing_transcription_fields"
 down_revision = None
 branch_labels = None
 depends_on = None
 
+logger = logging.getLogger(__name__)
 
-def _ensure_column(table_name: str, column_definition: str) -> None:
-    op.execute(
-        f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_definition}"
+
+def _transcription_columns() -> list[sa.Column]:
+    return [
+        sa.Column("selected_stem", sa.String(), nullable=False, server_default="other"),
+        sa.Column("audio_file_path", sa.String(), nullable=True),
+        sa.Column("preprocessed_audio_file_path", sa.String(), nullable=True),
+        sa.Column("processing_status", sa.String(), nullable=False, server_default="pending"),
+        sa.Column("queue_position", sa.Integer(), nullable=True),
+        sa.Column("estimated_wait_time", sa.Integer(), nullable=True),
+        sa.Column("celery_task_id", sa.String(), nullable=True),
+        sa.Column("modal_dispatch_status", sa.String(), nullable=True),
+        sa.Column("modal_job_type", sa.String(), nullable=True),
+        sa.Column("modal_dispatched_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("modal_request_id", sa.String(), nullable=True),
+        sa.Column("modal_retry_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("modal_retry_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("separated_audio_file_path", sa.String(), nullable=True),
+        sa.Column("midi_file_path", sa.String(), nullable=True),
+        sa.Column("tab_file_path", sa.String(), nullable=True),
+        sa.Column("youtube_url", sa.String(), nullable=True),
+        sa.Column("source_type", sa.String(), nullable=True),
+        sa.Column("source_url", sa.Text(), nullable=True),
+        sa.Column("normalized_source_id", sa.String(), nullable=True),
+        sa.Column("audio_hash", sa.String(), nullable=True),
+        sa.Column("duplicate_of_id", sa.Integer(), nullable=True),
+        sa.Column("is_demo", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("is_deleted", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("original_audio_url", sa.Text(), nullable=True),
+        sa.Column("original_audio_public_id", sa.String(), nullable=True),
+        sa.Column("separated_audio_url", sa.Text(), nullable=True),
+        sa.Column("separated_audio_public_id", sa.String(), nullable=True),
+        sa.Column("midi_file_url", sa.Text(), nullable=True),
+        sa.Column("midi_file_public_id", sa.String(), nullable=True),
+        sa.Column("tab_file_url", sa.Text(), nullable=True),
+        sa.Column("tab_file_public_id", sa.String(), nullable=True),
+        sa.Column("duration", sa.Integer(), nullable=True),
+        sa.Column("detected_tempo", sa.Integer(), nullable=True),
+        sa.Column("tempo_confidence", sa.Integer(), nullable=True),
+        sa.Column("detected_key", sa.String(), nullable=True),
+        sa.Column("key_confidence", sa.Integer(), nullable=True),
+        sa.Column("project_id", sa.Integer(), nullable=True),
+        sa.Column("is_processed", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("processing_error", sa.Text(), nullable=True),
+        sa.Column("warning_message", sa.Text(), nullable=True),
+        sa.Column("can_generate_score", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column("can_play_stem", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("transcription_attempts", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("notes_data", sa.Text(), nullable=True),
+        sa.Column("chords_data", sa.Text(), nullable=True),
+        sa.Column("tablature_data", sa.Text(), nullable=True),
+        sa.Column("notation_data", sa.Text(), nullable=True),
+        sa.Column("chord_chart_data", sa.Text(), nullable=True),
+    ]
+
+
+def _ensure_transcription_columns() -> None:
+    conn = op.get_bind()
+    inspector = inspect(conn)
+    existing_columns = {
+        column["name"]
+        for column in inspector.get_columns("transcriptions")
+    }
+    logger.info(
+        "existing_columns_detected table=transcriptions count=%d",
+        len(existing_columns),
     )
+
+    for column in _transcription_columns():
+        if column.name in existing_columns:
+            logger.info(
+                "column_skipped_already_exists table=transcriptions column=%s",
+                column.name,
+            )
+            continue
+
+        op.add_column("transcriptions", column)
+        existing_columns.add(column.name)
+        logger.info("column_added table=transcriptions column=%s", column.name)
 
 
 def upgrade() -> None:
-    _ensure_column("transcriptions", "selected_stem VARCHAR NOT NULL DEFAULT 'other'")
-    _ensure_column("transcriptions", "audio_file_path VARCHAR")
-    _ensure_column("transcriptions", "preprocessed_audio_file_path VARCHAR")
-    _ensure_column("transcriptions", "processing_status VARCHAR NOT NULL DEFAULT 'pending'")
-    _ensure_column("transcriptions", "queue_position INTEGER")
-    _ensure_column("transcriptions", "estimated_wait_time INTEGER")
-    _ensure_column("transcriptions", "celery_task_id VARCHAR")
-    _ensure_column("transcriptions", "modal_dispatch_status VARCHAR")
-    _ensure_column("transcriptions", "modal_job_type VARCHAR")
-    _ensure_column("transcriptions", "modal_dispatched_at TIMESTAMP WITH TIME ZONE")
-    _ensure_column("transcriptions", "modal_request_id VARCHAR")
-    _ensure_column("transcriptions", "modal_retry_at TIMESTAMP WITH TIME ZONE")
-    _ensure_column("transcriptions", "modal_retry_count INTEGER NOT NULL DEFAULT 0")
-    _ensure_column("transcriptions", "separated_audio_file_path VARCHAR")
-    _ensure_column("transcriptions", "midi_file_path VARCHAR")
-    _ensure_column("transcriptions", "tab_file_path VARCHAR")
-    _ensure_column("transcriptions", "youtube_url VARCHAR")
-    _ensure_column("transcriptions", "source_type VARCHAR")
-    _ensure_column("transcriptions", "source_url TEXT")
-    _ensure_column("transcriptions", "normalized_source_id VARCHAR")
-    _ensure_column("transcriptions", "audio_hash VARCHAR")
-    _ensure_column("transcriptions", "duplicate_of_id INTEGER")
-    _ensure_column("transcriptions", "is_demo BOOLEAN NOT NULL DEFAULT FALSE")
-    _ensure_column("transcriptions", "is_deleted BOOLEAN NOT NULL DEFAULT FALSE")
-    _ensure_column("transcriptions", "deleted_at TIMESTAMP WITH TIME ZONE")
-    _ensure_column("transcriptions", "original_audio_url TEXT")
-    _ensure_column("transcriptions", "original_audio_public_id VARCHAR")
-    _ensure_column("transcriptions", "separated_audio_url TEXT")
-    _ensure_column("transcriptions", "separated_audio_public_id VARCHAR")
-    _ensure_column("transcriptions", "midi_file_url TEXT")
-    _ensure_column("transcriptions", "midi_file_public_id VARCHAR")
-    _ensure_column("transcriptions", "tab_file_url TEXT")
-    _ensure_column("transcriptions", "tab_file_public_id VARCHAR")
-    _ensure_column("transcriptions", "duration INTEGER")
-    _ensure_column("transcriptions", "detected_tempo INTEGER")
-    _ensure_column("transcriptions", "tempo_confidence INTEGER")
-    _ensure_column("transcriptions", "detected_key VARCHAR")
-    _ensure_column("transcriptions", "key_confidence INTEGER")
-    _ensure_column("transcriptions", "project_id INTEGER")
-    _ensure_column("transcriptions", "is_processed BOOLEAN NOT NULL DEFAULT FALSE")
-    _ensure_column("transcriptions", "processing_error TEXT")
-    _ensure_column("transcriptions", "warning_message TEXT")
-    _ensure_column("transcriptions", "can_generate_score BOOLEAN NOT NULL DEFAULT TRUE")
-    _ensure_column("transcriptions", "can_play_stem BOOLEAN NOT NULL DEFAULT FALSE")
-    _ensure_column("transcriptions", "transcription_attempts INTEGER NOT NULL DEFAULT 0")
-    _ensure_column("transcriptions", "notes_data TEXT")
-    _ensure_column("transcriptions", "chords_data TEXT")
-    _ensure_column("transcriptions", "tablature_data TEXT")
-    _ensure_column("transcriptions", "notation_data TEXT")
-    _ensure_column("transcriptions", "chord_chart_data TEXT")
+    logger.info("migration_started revision=%s", revision)
+    _ensure_transcription_columns()
 
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_transcriptions_modal_retry_at "
@@ -72,6 +104,7 @@ def upgrade() -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_transcriptions_modal_request_id "
         "ON transcriptions (modal_request_id) WHERE modal_request_id IS NOT NULL"
     )
+    logger.info("migration_completed revision=%s", revision)
 
 
 def downgrade() -> None:
