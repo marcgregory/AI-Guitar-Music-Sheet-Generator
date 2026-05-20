@@ -715,6 +715,10 @@ def fail_heavy_celery_task(transcription_id: int | None, message: str) -> dict:
     return {"status": "failed", "message": message, "transcription_id": transcription_id}
 
 
+def audio_processing_mode() -> str:
+    return settings.audio_processing_mode
+
+
 def task_request_id(task) -> str:
     request = getattr(task, "request", None)
     task_id = getattr(request, "id", None)
@@ -1123,10 +1127,11 @@ def process_audio_transcription(
     detection_sensitivity: str | None = None,
     selected_stem_override: str | None = None,
 ):
-    return fail_heavy_celery_task(
-        transcription_id,
-        "Local Celery audio processing is disabled in production. Dispatch this job to Modal.",
-    )
+    if audio_processing_mode() != "local":
+        return fail_heavy_celery_task(
+            transcription_id,
+            "Local Celery audio processing is disabled. Set AUDIO_PROCESSING_MODE=local for local processing.",
+        )
     """
     Process audio transcription asynchronously.
 
@@ -1714,10 +1719,11 @@ def generate_tab_from_separated_stem(
     detection_sensitivity: str | None = None,
 ):
     """Generate notation outputs from an already separated selected stem."""
-    return fail_heavy_celery_task(
-        transcription_id,
-        "Local Celery TAB/score generation is disabled in production. Dispatch this job to Modal.",
-    )
+    if audio_processing_mode() != "local":
+        return fail_heavy_celery_task(
+            transcription_id,
+            "Local Celery TAB/score generation is disabled. Set AUDIO_PROCESSING_MODE=local for local processing.",
+        )
     db_session = None
     try:
         update_task_state(self, state="PROGRESS", meta={"step": "loading_stem"})
@@ -1814,10 +1820,11 @@ def reprocess_instrument_track(self, track_id: int):
         transcription_id = track.transcription_id if track else None
     finally:
         db_session.close()
-    return fail_heavy_celery_task(
-        transcription_id,
-        "Local Celery track reprocessing is disabled in production. Dispatch this job to Modal.",
-    )
+    if audio_processing_mode() != "local":
+        return fail_heavy_celery_task(
+            transcription_id,
+            "Local Celery track reprocessing is disabled. Set AUDIO_PROCESSING_MODE=local for local processing.",
+        )
     db_session = None
     try:
         update_task_state(self, state="PROGRESS", meta={"step": "loading_instrument_track"})

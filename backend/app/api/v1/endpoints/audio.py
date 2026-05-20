@@ -72,27 +72,31 @@ def _run_transcription_locally(
     detection_sensitivity: str | None = None,
     selected_stem_override: str | None = None,
 ):
-    """Deprecated: heavy transcription must run on Modal."""
-    logger.error(
-        "Refusing local heavy transcription for %s; dispatch Modal instead.",
+    """Run the local transcription task directly for development."""
+    from ....tasks import process_audio_transcription
+
+    process_audio_transcription.run(
         transcription_id,
+        detection_sensitivity,
+        selected_stem_override,
     )
 
 
 def _run_instrument_track_reprocess_locally(track_id: int):
-    """Deprecated: heavy track reprocessing must run on Modal."""
-    logger.error("Refusing local heavy track reprocess for %s; dispatch Modal instead.", track_id)
+    """Run local track reprocessing directly for development."""
+    from ....tasks import reprocess_instrument_track
+
+    reprocess_instrument_track.run(track_id)
 
 
 def _run_tab_generation_locally(
     transcription_id: int,
     detection_sensitivity: str | None = None,
 ):
-    """Deprecated: heavy tab generation must run on Modal."""
-    logger.error(
-        "Refusing local heavy tab generation for %s; dispatch Modal instead.",
-        transcription_id,
-    )
+    """Run local tab generation directly for development."""
+    from ....tasks import generate_tab_from_separated_stem
+
+    generate_tab_from_separated_stem.run(transcription_id, detection_sensitivity)
 
 
 def _start_transcription_processing(
@@ -103,15 +107,39 @@ def _start_transcription_processing(
     detection_sensitivity: str | None = None,
     selected_stem_override: str | None = None,
 ) -> str | None:
-    """Start heavy transcription by dispatching Modal only."""
-    background_tasks.add_task(
-        _trigger_modal_worker,
-        transcription_id,
-        "process",
-        detection_sensitivity,
-        None,
-    )
-    return None
+    """Start transcription according to the configured processing mode."""
+    mode = _processing_mode()
+    if mode == "local":
+        if _celery_has_available_worker():
+            result = celery_app.send_task(
+                "app.tasks.process_audio_transcription",
+                args=[transcription_id, detection_sensitivity, selected_stem_override],
+            )
+            return result.id
+
+        logger.info(
+            "No Celery worker detected; running transcription %s in a local background task.",
+            transcription_id,
+        )
+        background_tasks.add_task(
+            _run_transcription_locally,
+            transcription_id,
+            detection_sensitivity,
+            selected_stem_override,
+        )
+        return "local-background"
+
+    if mode == "modal":
+        background_tasks.add_task(_trigger_modal_worker, transcription_id, "process", detection_sensitivity, None)
+        return None
+
+    if mode == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audio processing is disabled by AUDIO_PROCESSING_MODE=disabled.",
+        )
+
+    raise ValueError("Invalid AUDIO_PROCESSING_MODE")
 
 
 def _start_tab_generation(
@@ -120,23 +148,69 @@ def _start_tab_generation(
     *,
     detection_sensitivity: str | None = None,
 ) -> str | None:
-    """Start TAB/score generation by dispatching Modal only."""
-    background_tasks.add_task(
-        _trigger_modal_worker,
-        transcription_id,
-        "generate_tab",
-        detection_sensitivity,
-        None,
-    )
-    return None
+    """Start TAB/score generation according to the configured processing mode."""
+    mode = _processing_mode()
+    if mode == "local":
+        if _celery_has_available_worker():
+            result = celery_app.send_task(
+                "app.tasks.generate_tab_from_separated_stem",
+                args=[transcription_id, detection_sensitivity],
+            )
+            return result.id
+
+        logger.info(
+            "No Celery worker detected; running tab generation %s in a local background task.",
+            transcription_id,
+        )
+        background_tasks.add_task(
+            _run_tab_generation_locally,
+            transcription_id,
+            detection_sensitivity,
+        )
+        return "local-background"
+
+    if mode == "modal":
+        background_tasks.add_task(
+            _trigger_modal_worker,
+            transcription_id,
+            "generate_tab",
+            detection_sensitivity,
+            None,
+        )
+        return None
+
+    if mode == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audio processing is disabled by AUDIO_PROCESSING_MODE=disabled.",
+        )
+
+    raise ValueError("Invalid AUDIO_PROCESSING_MODE")
 
 
 def _processing_mode() -> str:
-    mode = (core.config.settings.PROCESSING_MODE or "local").strip().lower()
-    if mode not in {"local", "external_worker", "modal"}:
-        logger.warning("Unknown PROCESSING_MODE=%s; falling back to local", mode)
-        return "local"
+    mode = core.config.settings.audio_processing_mode
+    if mode not in {"local", "modal", "disabled"}:
+        raise ValueError("Invalid AUDIO_PROCESSING_MODE")
     return mode
+
+
+def _modal_trigger_url_configured() -> bool:
+    return core.config.settings.modal_trigger_url_configured
+
+
+def _validate_processing_mode_ready() -> None:
+    mode = _processing_mode()
+    if mode == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audio processing is disabled by AUDIO_PROCESSING_MODE=disabled.",
+        )
+    if mode == "modal" and not _modal_trigger_url_configured():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Modal processing is enabled but MODAL_TRIGGER_URL is not configured.",
+        )
 
 
 def _build_worker_payload_for_modal(
@@ -275,6 +349,12 @@ def _fetch_next_rate_limited_modal_job(session: Session) -> models.Transcription
 
 
 def retry_rate_limited_modal_jobs_once() -> dict[str, object]:
+    if _processing_mode() != "modal":
+        return {
+            "status": "disabled",
+            "message": "Modal retry scanning is disabled unless AUDIO_PROCESSING_MODE=modal.",
+        }
+
     session = db.SessionLocal()
     try:
         logger.info("[MODAL RETRY SCAN] scanning for rate-limited Modal retries")
@@ -394,16 +474,19 @@ def _trigger_modal_worker(
             return
 
         if not modal_trigger_url:
-            transcription.processing_status = "queued"
+            transcription.processing_status = "failed"
+            transcription.processing_error = (
+                "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
+            )
             transcription.queue_position = None
             transcription.estimated_wait_time = None
-            transcription.modal_dispatch_status = "missing_trigger_url"
+            transcription.modal_dispatch_status = "failed"
             transcription.modal_job_type = job_type
             session.add(transcription)
             session.commit()
-            logger.info(
-                "PROCESSING_MODE=modal but MODAL_TRIGGER_URL is not configured; "
-                "transcription %s remains queued.",
+            logger.error(
+                "AUDIO_PROCESSING_MODE=modal but MODAL_TRIGGER_URL is not configured; "
+                "transcription %s failed instead of remaining queued.",
                 transcription_id,
             )
             return
@@ -521,27 +604,44 @@ def _dispatch_transcription_processing(
 
     mode = _processing_mode()
     if mode == "modal":
+        if not _modal_trigger_url_configured():
+            transcription.processing_status = "failed"
+            transcription.processing_error = (
+                "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
+            )
+            transcription.modal_dispatch_status = "failed"
+            transcription.queue_position = None
+            transcription.estimated_wait_time = None
+            db_session.add(transcription)
+            db_session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Modal processing is enabled but MODAL_TRIGGER_URL is not configured.",
+            )
         logger.info("Dispatching transcription %s to Modal", transcription.id)
         job_type = transcription.modal_job_type or "process"
         background_tasks.add_task(_trigger_modal_worker, transcription.id, job_type, None, None)
         return None
     if mode == "local":
-        logger.warning(
-            "PROCESSING_MODE=local is no longer allowed for heavy processing; "
-            "transcription %s remains queued until Modal is configured.",
-            transcription.id,
-        )
-        transcription.processing_status = "queued"
-        transcription.modal_dispatch_status = "modal_required"
+        logger.info("Dispatching transcription %s to local processing", transcription.id)
+        transcription.modal_dispatch_status = None
         db_session.add(transcription)
         db_session.commit()
-        return None
+        return _start_transcription_processing(transcription.id, background_tasks, db_session)
+    if mode == "disabled":
+        transcription.processing_status = "failed"
+        transcription.processing_error = "Audio processing is disabled by AUDIO_PROCESSING_MODE=disabled."
+        transcription.modal_dispatch_status = "failed"
+        transcription.queue_position = None
+        transcription.estimated_wait_time = None
+        db_session.add(transcription)
+        db_session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audio processing is disabled by AUDIO_PROCESSING_MODE=disabled.",
+        )
 
-    logger.info(
-        "Queued transcription %s for an external selected-stem worker",
-        transcription.id,
-    )
-    return None
+    raise ValueError("Invalid AUDIO_PROCESSING_MODE")
 
 
 def _active_transcription_query(db_session: Session):
@@ -690,12 +790,6 @@ def _trigger_next_queued_transcription(
     background_tasks: BackgroundTasks,
     db_session: Session,
 ) -> models.Transcription | None:
-    if _processing_mode() == "external_worker":
-        logger.info(
-            "PROCESSING_MODE=external_worker; queued jobs will be claimed by worker polling."
-        )
-        return None
-
     promoted = _promote_oldest_queued_transcription(db_session)
     if not promoted:
         return None
@@ -715,9 +809,23 @@ def _start_instrument_track_reprocess(
     background_tasks: BackgroundTasks,
 ):
     """Start one track reprocess by dispatching Modal or local Celery when available."""
-    if _processing_mode() == "local" and _celery_has_available_worker():
-        celery_app.send_task("app.tasks.reprocess_instrument_track", args=[track_id])
+    mode = _processing_mode()
+    if mode == "local":
+        if _celery_has_available_worker():
+            celery_app.send_task("app.tasks.reprocess_instrument_track", args=[track_id])
+            return
+        background_tasks.add_task(_run_instrument_track_reprocess_locally, track_id)
         return
+    if mode == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audio processing is disabled by AUDIO_PROCESSING_MODE=disabled.",
+        )
+    if not _modal_trigger_url_configured():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Modal processing is enabled but MODAL_TRIGGER_URL is not configured.",
+        )
 
     background_tasks.add_task(
         _trigger_modal_worker,
@@ -1527,7 +1635,31 @@ def _status_payload(
         and not _has_score_output(transcription)
     ):
         payload["output_mode"] = "playback_only"
-    return payload
+    return _finalize_status_response_for_mode(payload)
+
+
+def _finalize_status_response_for_mode(payload: dict) -> dict:
+    """Apply response-only local mode masking without mutating stored rows."""
+    if _processing_mode() != "local":
+        return payload
+
+    local_payload = dict(payload)
+    if local_payload.get("status") == "queued":
+        local_payload["message"] = "Queued for local processing."
+
+    message = local_payload.get("message")
+    if isinstance(message, str) and "Modal" in message:
+        local_payload["message"] = (
+            "Queued for local processing."
+            if local_payload.get("status") == "queued"
+            else None
+        )
+
+    if local_payload.get("modal_dispatch_status") == "modal_required":
+        local_payload["modal_dispatch_status"] = None
+        local_payload["modal_retry_at"] = None
+
+    return local_payload
 
 
 @router.post("/modal-retry")
@@ -1907,6 +2039,7 @@ async def upload_audio_file(
     """
     Upload an audio file (MP3 or WAV) for transcription.
     """
+    _validate_processing_mode_ready()
     selected_stem = _validate_selected_stem(selected_stem)
 
     # Validate file extension
@@ -2136,9 +2269,11 @@ async def extract_audio_from_youtube(
     """
     Extract audio from a YouTube URL and save it for transcription.
     """
+    _validate_processing_mode_ready()
     youtube_url = request.youtube_url.strip()
     selected_stem = _validate_selected_stem(request.selected_stem)
     project_id = request.project_id
+    current_user_id = current_user.id
 
     # Validate the YouTube URL (basic validation)
     if not youtube_url:
@@ -2161,7 +2296,7 @@ async def extract_audio_from_youtube(
 
     duplicate = _find_duplicate_transcription(
         db_session,
-        user_id=current_user.id,
+        user_id=current_user_id,
         selected_stem=selected_stem,
         normalized_source_id=normalized_source_id,
     )
@@ -2180,6 +2315,8 @@ async def extract_audio_from_youtube(
         )
 
     initial_processing_status, queue_position, estimated_wait = _queue_metadata_for_new_job(db_session)
+    if db.DATABASE_URL.startswith("sqlite"):
+        db_session.rollback()
 
     # Generate a unique filename for the output (without extension, yt-dlp will add it)
     unique_filename = f"{uuid.uuid4().hex}"
@@ -2271,7 +2408,7 @@ async def extract_audio_from_youtube(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found"
             )
-        if project.owner_id != current_user.id:
+        if project.owner_id != current_user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to upload to this project"
@@ -2288,7 +2425,7 @@ async def extract_audio_from_youtube(
         source_type="youtube",
         source_url=youtube_url,
         normalized_source_id=normalized_source_id,
-        user_id=current_user.id,
+        user_id=current_user_id,
         project_id=project_id,
         is_processed=False
     )
@@ -2440,7 +2577,7 @@ async def get_transcription_status(
 
     selected_stem = transcription.selected_stem or "other"
     if transcription.is_deleted:
-        return {
+        return _finalize_status_response_for_mode({
             "status": transcription.processing_status or "deleted",
             "transcription_id": transcription_id,
             "selected_stem": selected_stem,
@@ -2457,11 +2594,11 @@ async def get_transcription_status(
             "estimated_wait_time": None,
             "modal_dispatch_status": transcription.modal_dispatch_status,
             "modal_retry_at": transcription.modal_retry_at,
-        }
+        })
 
     blocking_error = _blocking_processing_error(transcription)
     if blocking_error or transcription.processing_status == "failed":
-        return {
+        return _finalize_status_response_for_mode({
             "status": "failed",
             "error": blocking_error or transcription.processing_error or "Processing failed",
             "transcription_id": transcription_id,
@@ -2477,7 +2614,7 @@ async def get_transcription_status(
             "estimated_wait_time": None,
             "modal_dispatch_status": transcription.modal_dispatch_status,
             "modal_retry_at": transcription.modal_retry_at,
-        }
+        })
 
     # Return status based on transcription record
     if transcription.is_processed or _is_viewable_stem_ready(transcription):
@@ -2505,12 +2642,15 @@ async def get_transcription_status(
         db_session.commit()
         message = None
         if current_status == "queued":
-            message = (
-                "Queued for Modal processing. It will start when capacity is available."
-            )
+            if _processing_mode() == "local":
+                message = "Queued for local processing."
+            else:
+                message = (
+                    "Queued for Modal processing. It will start when capacity is available."
+                )
         elif current_status == "pending":
             message = "Waiting for the selected-stem job to start."
-        return {
+        return _finalize_status_response_for_mode({
             "status": current_status,
             "transcription_id": transcription_id,
             "selected_stem": selected_stem,
@@ -2526,7 +2666,7 @@ async def get_transcription_status(
             "estimated_wait_time": transcription.estimated_wait_time,
             "modal_dispatch_status": transcription.modal_dispatch_status,
             "modal_retry_at": transcription.modal_retry_at,
-        }
+        })
 
 
 @router.get("/{transcription_id}/source")

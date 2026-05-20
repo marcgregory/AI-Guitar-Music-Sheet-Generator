@@ -58,6 +58,37 @@ type DrumHit = {
   offset?: number;
   intensity?: number;
   confidence?: number;
+  instrument?: string;
+  drum?: string;
+  drum_type?: string;
+  type?: string;
+  label?: string;
+  midi_note?: number;
+  pitch?: number;
+};
+
+type DrumTabLaneKey = "cymbal" | "hihat" | "snare" | "tom" | "kick";
+
+type DrumTabLane = {
+  key: DrumTabLaneKey;
+  label: string;
+  cells: string[];
+};
+
+type DrumTabGrid = {
+  lanes: DrumTabLane[];
+  slotTimes: number[];
+  stepDuration: number;
+  subdivision: "1/4" | "1/8" | "1/16";
+};
+
+type DrumTabMeasure = {
+  measure: number;
+  startSlot: number;
+  endSlot: number;
+  startTime: number;
+  endTime: number;
+  lanes: DrumTabLane[];
 };
 
 type ScoreSystem = {
@@ -367,6 +398,190 @@ const getDrumTotalDuration = (notesData: unknown, hits: DrumHit[]): number => {
     ...hits.map((hit) => Number(hit.offset ?? hit.onset ?? 0)),
     0,
   );
+};
+
+const normalizeDrumLane = (value: unknown): DrumTabLaneKey | null => {
+  const label = String(value ?? "").toLowerCase();
+  if (!label) return null;
+  if (
+    label.includes("kick") ||
+    label.includes("bass drum") ||
+    label === "bd" ||
+    label === "kd"
+  ) {
+    return "kick";
+  }
+  if (label.includes("snare") || label === "sd") return "snare";
+  if (
+    label.includes("hi-hat") ||
+    label.includes("hihat") ||
+    label.includes("hat") ||
+    label === "hh"
+  ) {
+    return "hihat";
+  }
+  if (label.includes("tom") || label === "tt" || label === "ft") return "tom";
+  if (
+    label.includes("cymbal") ||
+    label.includes("crash") ||
+    label.includes("ride") ||
+    label === "cy" ||
+    label === "cr" ||
+    label === "rd"
+  ) {
+    return "cymbal";
+  }
+  return null;
+};
+
+const laneFromMidiNote = (value: unknown): DrumTabLaneKey | null => {
+  const note = Number(value);
+  if (!Number.isFinite(note)) return null;
+  if ([35, 36].includes(note)) return "kick";
+  if ([38, 40].includes(note)) return "snare";
+  if ([42, 44, 46].includes(note)) return "hihat";
+  if ([41, 43, 45, 47, 48, 50].includes(note)) return "tom";
+  if ([49, 51, 52, 53, 55, 57, 59].includes(note)) return "cymbal";
+  return null;
+};
+
+const inferDrumLane = (
+  hit: DrumHit,
+  slotIndex: number,
+  slotCount: number,
+): DrumTabLaneKey => {
+  const explicitLane =
+    normalizeDrumLane(hit.instrument) ??
+    normalizeDrumLane(hit.drum) ??
+    normalizeDrumLane(hit.drum_type) ??
+    normalizeDrumLane(hit.type) ??
+    normalizeDrumLane(hit.label) ??
+    laneFromMidiNote(hit.midi_note) ??
+    laneFromMidiNote(hit.pitch);
+
+  if (explicitLane) return explicitLane;
+
+  const intensity = Math.max(
+    0,
+    Math.min(1, Number(hit.intensity ?? hit.confidence ?? 0.5)),
+  );
+  const sixteenthInBar = slotIndex % 16;
+  const nearMeasureStart = sixteenthInBar <= 1 || sixteenthInBar >= 15;
+  const nearBackbeat =
+    Math.abs(sixteenthInBar - 4) <= 1 ||
+    Math.abs(sixteenthInBar - 12) <= 1;
+  const sparsePattern = slotCount <= 12;
+
+  if (nearMeasureStart && intensity >= 0.82) return "cymbal";
+  if ((sixteenthInBar === 0 || sixteenthInBar === 8) && intensity >= 0.52) {
+    return "kick";
+  }
+  if (nearBackbeat && intensity >= 0.46) return "snare";
+  if (sparsePattern && intensity >= 0.68) return "kick";
+  if (intensity >= 0.74) return "snare";
+  return "hihat";
+};
+
+const drumSymbolForLane = (lane: DrumTabLaneKey): string =>
+  lane === "kick" ? "o" : lane === "snare" || lane === "tom" ? "o" : "x";
+
+const chooseDrumSubdivision = (
+  tempo: number | null | undefined,
+  duration: number,
+): { subdivision: DrumTabGrid["subdivision"]; stepDuration: number } => {
+  const quarterDuration = tempo && tempo > 0 ? 60 / tempo : 0.5;
+  const sixteenthDuration = quarterDuration / 4;
+  const estimatedSlots = duration / sixteenthDuration;
+
+  if (estimatedSlots <= 96) {
+    return { subdivision: "1/16", stepDuration: sixteenthDuration };
+  }
+  if (estimatedSlots <= 192) {
+    return { subdivision: "1/8", stepDuration: quarterDuration / 2 };
+  }
+  return { subdivision: "1/4", stepDuration: quarterDuration };
+};
+
+const buildDrumTabGrid = (
+  hits: DrumHit[],
+  duration: number,
+  tempo?: number | null,
+): DrumTabGrid | null => {
+  if (hits.length < 2) return null;
+
+  const { subdivision, stepDuration } = chooseDrumSubdivision(tempo, duration);
+  const slotCount = Math.max(16, Math.ceil(duration / stepDuration) + 1);
+  const laneDefinitions: Array<{ key: DrumTabLaneKey; label: string }> = [
+    { key: "cymbal", label: "CY" },
+    { key: "hihat", label: "HH" },
+    { key: "snare", label: "SD" },
+    { key: "tom", label: "TM" },
+    { key: "kick", label: "BD" },
+  ];
+  const lanes = laneDefinitions.map(({ key, label }) => ({
+    key,
+    label,
+    cells: Array.from({ length: slotCount }, () => "-"),
+  }));
+
+  hits.forEach((hit) => {
+    const onset = Number(hit.onset ?? 0);
+    const slotIndex = Math.max(
+      0,
+      Math.min(slotCount - 1, Math.round(onset / stepDuration)),
+    );
+    const laneKey = inferDrumLane(hit, slotIndex, slotCount);
+    const lane = lanes.find((item) => item.key === laneKey);
+    if (lane) lane.cells[slotIndex] = drumSymbolForLane(laneKey);
+  });
+
+  const populatedLanes = lanes.filter((lane) =>
+    lane.cells.some((cell) => cell !== "-"),
+  );
+
+  return {
+    lanes: populatedLanes,
+    slotTimes: Array.from(
+      { length: slotCount },
+      (_item, index) => index * stepDuration,
+    ),
+    stepDuration,
+    subdivision,
+  };
+};
+
+const slotsPerDrumMeasure = (subdivision: DrumTabGrid["subdivision"]): number => {
+  if (subdivision === "1/4") return 4;
+  if (subdivision === "1/8") return 8;
+  return 16;
+};
+
+const groupDrumTabMeasures = (grid: DrumTabGrid): DrumTabMeasure[] => {
+  const measureSlots = slotsPerDrumMeasure(grid.subdivision);
+  const measures: DrumTabMeasure[] = [];
+
+  for (
+    let startSlot = 0, measure = 1;
+    startSlot < grid.slotTimes.length;
+    startSlot += measureSlots, measure += 1
+  ) {
+    const endSlot = Math.min(startSlot + measureSlots, grid.slotTimes.length);
+    measures.push({
+      measure,
+      startSlot,
+      endSlot,
+      startTime: grid.slotTimes[startSlot] ?? startSlot * grid.stepDuration,
+      endTime:
+        (grid.slotTimes[endSlot - 1] ?? (endSlot - 1) * grid.stepDuration) +
+        grid.stepDuration,
+      lanes: grid.lanes.map((lane) => ({
+        ...lane,
+        cells: lane.cells.slice(startSlot, endSlot),
+      })),
+    });
+  }
+
+  return measures;
 };
 
 const extractTabNotes = (tablatureData: unknown): ScoreNote[] => {
@@ -1314,10 +1529,12 @@ const AlphaTabScore = ({
 const DrumRhythmLane = ({
   title,
   notesData,
+  tempo,
   currentTime,
 }: {
   title: string;
   notesData: unknown;
+  tempo?: number | null;
   currentTime: number;
 }) => {
   const hits = useMemo(() => extractDrumHits(notesData), [notesData]);
@@ -1325,13 +1542,25 @@ const DrumRhythmLane = ({
     () => getDrumTotalDuration(notesData, hits),
     [hits, notesData],
   );
+  const drumTabGrid = useMemo(
+    () => buildDrumTabGrid(hits, Math.max(totalDuration, 1), tempo),
+    [hits, tempo, totalDuration],
+  );
   const activeTime = Number.isFinite(currentTime) ? currentTime : 0;
   const duration = Math.max(totalDuration, activeTime, 1);
   const playheadLeft = `${Math.max(0, Math.min(100, (activeTime / duration) * 100))}%`;
+  const activeTabSlot =
+    drumTabGrid && drumTabGrid.stepDuration > 0
+      ? Math.max(
+          0,
+          Math.min(
+            drumTabGrid.slotTimes.length - 1,
+            Math.round(activeTime / drumTabGrid.stepDuration),
+          ),
+        )
+      : -1;
   const visibleTitle =
     title && title.length > 62 ? `${title.slice(0, 59)}...` : title;
-
-  if (hits.length === 0) return null;
 
   return (
     <div
@@ -1382,6 +1611,209 @@ const DrumRhythmLane = ({
       <div className="drum-rhythm-footer">
         <span>0:00</span>
         <span>{formatDuration(duration)}</span>
+      </div>
+      <section className="drum-tabs-panel" aria-label="Drum tabs">
+        <div className="drum-tabs-header">
+          <div>
+            <span className="meta-label">Drum notation</span>
+            <strong>Drum Tabs</strong>
+          </div>
+          {drumTabGrid ? <span>{drumTabGrid.subdivision} grid</span> : null}
+        </div>
+        {drumTabGrid ? (
+          <div className="drum-tabs-scroll">
+            <div
+              className="drum-tabs-grid"
+              style={{
+                gridTemplateColumns: `2.8rem repeat(${drumTabGrid.slotTimes.length}, minmax(0.72rem, 1fr))`,
+              }}
+            >
+              {drumTabGrid.lanes.map((lane) => (
+                <React.Fragment key={lane.key}>
+                  <span className="drum-tabs-label">{lane.label}|</span>
+                  {lane.cells.map((cell, index) => (
+                    <span
+                      key={`${lane.key}-${index}`}
+                      className={`drum-tabs-cell ${
+                        index === activeTabSlot ? "active" : ""
+                      } ${index % 16 === 15 ? "measure-end" : ""}`}
+                      title={`${lane.label} ${formatPlaybackTime(
+                        drumTabGrid.slotTimes[index] ?? 0,
+                      )}`}
+                    >
+                      {cell}
+                    </span>
+                  ))}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="drum-tabs-empty">
+            Not enough drum hits detected to generate tabs.
+          </p>
+        )}
+      </section>
+    </div>
+  );
+};
+
+void DrumRhythmLane;
+
+const DrumTabNotation = ({
+  title,
+  notesData,
+  tempo,
+  currentTime,
+  onSeek,
+}: {
+  title: string;
+  notesData: unknown;
+  tempo?: number | null;
+  currentTime: number;
+  onSeek: (time: number) => void;
+}) => {
+  const hits = useMemo(() => extractDrumHits(notesData), [notesData]);
+  const totalDuration = useMemo(
+    () => getDrumTotalDuration(notesData, hits),
+    [hits, notesData],
+  );
+  const drumTabGrid = useMemo(
+    () => buildDrumTabGrid(hits, Math.max(totalDuration, 1), tempo),
+    [hits, tempo, totalDuration],
+  );
+  const drumMeasures = useMemo(
+    () => (drumTabGrid ? groupDrumTabMeasures(drumTabGrid) : []),
+    [drumTabGrid],
+  );
+  const activeTime = Number.isFinite(currentTime) ? currentTime : 0;
+  const duration = Math.max(totalDuration, activeTime, 1);
+  const playheadLeft = `${Math.max(0, Math.min(100, (activeTime / duration) * 100))}%`;
+  const activeTabSlot =
+    drumTabGrid && drumTabGrid.stepDuration > 0
+      ? Math.max(
+          0,
+          Math.min(
+            drumTabGrid.slotTimes.length - 1,
+            Math.round(activeTime / drumTabGrid.stepDuration),
+          ),
+        )
+      : -1;
+  const visibleTitle =
+    title && title.length > 62 ? `${title.slice(0, 59)}...` : title;
+
+  return (
+    <div className="drum-tab-view" role="img" aria-label={`${visibleTitle} drum tabs`}>
+      <div className="drum-tab-view-header">
+        <div>
+          <span className="meta-label">Drum notation</span>
+          <strong>Drum Tabs</strong>
+        </div>
+        <span>
+          {hits.length} hits
+          {drumTabGrid ? ` · ${drumTabGrid.subdivision} grid` : ""}
+        </span>
+      </div>
+
+      {drumMeasures.length > 0 ? (
+        <div className="drum-tab-measure-list">
+          {drumMeasures.map((measure) => {
+            const isActiveMeasure =
+              activeTime >= measure.startTime && activeTime < measure.endTime;
+
+            return (
+              <section
+                key={measure.measure}
+                className={`drum-tab-measure timed-tab-system ${
+                  isActiveMeasure ? "active" : ""
+                }`}
+              >
+                <div className="timed-tab-measure-row" aria-hidden="true">
+                  <span>M{measure.measure}</span>
+                </div>
+                <div
+                  className="drum-tab-grid"
+                  style={{
+                    gridTemplateColumns: `2.6rem repeat(${
+                      measure.endSlot - measure.startSlot
+                    }, minmax(0.58rem, 1fr))`,
+                  }}
+                >
+                  {measure.lanes.map((lane) => (
+                    <React.Fragment key={`${measure.measure}-${lane.key}`}>
+                      <span className="drum-tab-label">{lane.label}|</span>
+                      {lane.cells.map((cell, cellIndex) => {
+                        const absoluteSlot = measure.startSlot + cellIndex;
+                        const slotTime =
+                          drumTabGrid?.slotTimes[absoluteSlot] ??
+                          absoluteSlot * (drumTabGrid?.stepDuration ?? 0);
+                        const isActive = absoluteSlot === activeTabSlot;
+                        const hasHit = cell !== "-";
+
+                        return hasHit ? (
+                          <button
+                            type="button"
+                            key={`${lane.key}-${absoluteSlot}`}
+                            className={`drum-tab-cell active-hit ${
+                              isActive ? "active" : ""
+                            }`}
+                            title={`${lane.label} ${formatPlaybackTime(slotTime)}`}
+                            onClick={() => onSeek(slotTime)}
+                          >
+                            {cell}
+                          </button>
+                        ) : (
+                          <span
+                            key={`${lane.key}-${absoluteSlot}`}
+                            className={`drum-tab-cell ${isActive ? "active" : ""}`}
+                            title={`${lane.label} ${formatPlaybackTime(slotTime)}`}
+                          >
+                            {cell}
+                          </span>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="drum-tabs-empty">
+          Not enough drum hits detected to generate tabs.
+        </p>
+      )}
+
+      <div className="drum-hit-overview" aria-label="Drum hit overview">
+        {hits.map((hit, index) => {
+          const onset = Number(hit.onset ?? 0);
+          const offset = Number(hit.offset ?? onset + 0.08);
+          const intensity = Math.max(
+            0.08,
+            Math.min(1, Number(hit.intensity ?? hit.confidence ?? 0.5)),
+          );
+          const isActive =
+            activeTime >= onset && activeTime <= Math.max(offset, onset + 0.12);
+
+          return (
+            <span
+              key={`${onset}-${index}`}
+              className={`drum-hit-overview-marker ${isActive ? "active" : ""}`}
+              style={{
+                left: `${Math.max(0, Math.min(100, (onset / duration) * 100))}%`,
+                height: `${8 + intensity * 28}px`,
+              }}
+              title={`${formatPlaybackTime(onset)} · ${Math.round(
+                intensity * 100,
+              )}% intensity`}
+            />
+          );
+        })}
+        <span
+          className="drum-hit-overview-playhead"
+          style={{ left: playheadLeft }}
+        />
       </div>
     </div>
   );
@@ -1580,9 +2012,6 @@ const hasNoteEvents = (notesData: unknown): boolean => {
   );
 };
 
-const hasDrumHits = (notesData: unknown): boolean =>
-  extractDrumHits(notesData).length > 0;
-
 const getNotesError = (notesData: unknown): string | null => {
   const parsed = parseJsonField(notesData);
   if (isRecord(parsed) && typeof parsed.error === "string") {
@@ -1678,10 +2107,15 @@ const TranscriptionViewer: React.FC = () => {
   const [isRetryingTranscription, setIsRetryingTranscription] = useState(false);
   const [isGeneratingTab, setIsGeneratingTab] = useState(false);
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
+  const [generationMessage, setGenerationMessage] = useState<string | null>(
+    null,
+  );
   const [reprocessingTrackId, setReprocessingTrackId] = useState<number | null>(
     null,
   );
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const generateTabPollingRef = useRef<NodeJS.Timeout | null>(null);
+  const isGeneratingTabRef = useRef(false);
   const scoreStageRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const { token } = useAuth();
@@ -1782,6 +2216,97 @@ const TranscriptionViewer: React.FC = () => {
       });
     },
     [token, transcription?.selected_stem],
+  );
+
+  const stopGenerateTabPolling = useCallback((reason: string) => {
+    if (generateTabPollingRef.current) {
+      clearInterval(generateTabPollingRef.current);
+      generateTabPollingRef.current = null;
+    }
+    console.log("polling enabled/disabled state", {
+      enabled: false,
+      reason,
+    });
+  }, []);
+
+  const startGenerateTabPolling = useCallback(
+    (transcriptionIdValue: number, isRhythm: boolean) => {
+      if (!token) return;
+      stopGenerateTabPolling("restart generate tabs polling");
+      console.log("polling enabled/disabled state", {
+        enabled: true,
+        transcriptionId: transcriptionIdValue,
+      });
+
+      generateTabPollingRef.current = setInterval(async () => {
+        try {
+          const result = await audioService.getTranscriptionResult(
+            transcriptionIdValue,
+            token,
+          );
+          const fetchedStatus = result.processing_status;
+          console.log("latest fetched transcription status", {
+            transcriptionId: transcriptionIdValue,
+            status: fetchedStatus,
+            processing_error: result.processing_error,
+          });
+
+          const hasError =
+            fetchedStatus === "failed" || Boolean(result.processing_error);
+          if (hasError) {
+            setTranscription(result);
+            setIsGeneratingTab(false);
+            isGeneratingTabRef.current = false;
+            setGenerationStatus(null);
+            setGenerationMessage(null);
+            setError(
+              isRhythm
+                ? "Failed to generate rhythm from this stem"
+                : "Failed to generate tab from this stem",
+            );
+            stopGenerateTabPolling("generation failed");
+            return;
+          }
+
+          const isTerminalSuccess =
+            fetchedStatus === "completed" ||
+            fetchedStatus === "completed_with_warning";
+          if (isTerminalSuccess) {
+            setTranscription(result);
+            setIsGeneratingTab(false);
+            isGeneratingTabRef.current = false;
+            setGenerationStatus(null);
+            setGenerationMessage(null);
+            stopGenerateTabPolling("generation completed");
+            void refreshInstrumentTracks(transcriptionIdValue);
+            return;
+          }
+
+          if (
+            isGeneratingTabRef.current &&
+            fetchedStatus === "stem_ready"
+          ) {
+            console.log("updated local status", {
+              status: "generating_tabs",
+              ignoredFetchedStatus: fetchedStatus,
+            });
+            return;
+          }
+
+          setTranscription(result);
+        } catch (pollErr) {
+          console.warn("Polling error:", pollErr);
+        }
+      }, 2000);
+    },
+    [refreshInstrumentTracks, stopGenerateTabPolling, token],
+  );
+
+  useEffect(
+    () => () => {
+      stopGenerateTabPolling("transcription viewer unmounted");
+    },
+    [stopGenerateTabPolling],
   );
 
   const activeScoreSource: ActiveScoreSource | null = useMemo(() => {
@@ -2272,82 +2797,41 @@ const TranscriptionViewer: React.FC = () => {
     // Prevent multiple concurrent generations
     if (isGeneratingTab) return;
 
-    // Set generation status based on stem type
     const isRhythm = transcription.selected_stem === "drums";
-    setGenerationStatus(
-      isRhythm ? "Generating Rhythm" : "Generating Transcription",
-    );
+    const nextGenerationStatus = isRhythm
+      ? "Generating rhythm..."
+      : "Generating tabs...";
+    console.log("generate tabs clicked", {
+      transcriptionId: transcription.id,
+      selectedStem: transcription.selected_stem,
+    });
+    stopGenerateTabPolling("new generate tabs request");
+    setGenerationStatus(nextGenerationStatus);
+    setGenerationMessage("Tab generation started.");
     setIsGeneratingTab(true);
+    isGeneratingTabRef.current = true;
     setError(null);
 
-    // Start polling for completion
-    let pollingInterval: NodeJS.Timeout | null = null;
-
     try {
-      // Start the generation process
-      await audioService.generateTab(transcription.id, token);
-
-      // Set up polling to check for completion
-      pollingInterval = setInterval(async () => {
-        try {
-          // Fetch latest transcription data
-          const result = await audioService.getTranscriptionResult(
-            transcription.id,
-            token,
-          );
-
-          // Check for error conditions first
-          const hasError =
-            result.processing_status === "failed" || !!result.processing_error;
-
-          if (hasError) {
-            // Generation failed, stop polling
-            if (pollingInterval) {
-              clearInterval(pollingInterval);
-              pollingInterval = null;
+      const response = await audioService.generateTab(transcription.id, token);
+      console.log("API response", response);
+      setGenerationMessage(response.message ?? "Tab generation started.");
+      setTranscription((current) =>
+        current
+          ? {
+              ...current,
+              is_processed: false,
+              processing_error: null,
+              processing_status: "processing",
             }
-            // Update transcription state to show error
-            setTranscription(result);
-            // Reset generation states
-            setIsGeneratingTab(false);
-            setGenerationStatus(null);
-            setError(
-              transcription.selected_stem === "drums"
-                ? "Failed to generate rhythm from this stem"
-                : "Failed to generate tab from this stem",
-            );
-            return;
-          }
-
-          // Check if generation is complete based on stem type
-          let isComplete = false;
-
-          if (isRhythm) {
-            // For rhythm generation, check if notesData contains drum hits
-            isComplete = hasDrumHits(result.notes_data);
-          } else {
-            // For tab generation, check if tablature_data is populated
-            isComplete =
-              !!result.tablature_data && result.tablature_data.length > 0;
-          }
-
-          if (isComplete) {
-            // Generation is complete, stop polling
-            if (pollingInterval) {
-              clearInterval(pollingInterval);
-              pollingInterval = null;
-            }
-            // Update transcription state to trigger UI refresh
-            setTranscription(result);
-            // Reset generation states
-            setIsGeneratingTab(false);
-            setGenerationStatus(null);
-          }
-        } catch (pollErr) {
-          // Continue polling on error, but log it
-          console.warn("Polling error:", pollErr);
-        }
-      }, 2000); // Poll every 2 seconds
+          : current,
+      );
+      console.log("updated local status", {
+        transcriptionId: transcription.id,
+        status: "processing",
+        message: response.message ?? "Tab generation started.",
+      });
+      startGenerateTabPolling(transcription.id, isRhythm);
     } catch (err: unknown) {
       setError(
         errorMessageOf(
@@ -2357,14 +2841,11 @@ const TranscriptionViewer: React.FC = () => {
             : "Failed to generate tab from this stem",
         ),
       );
-    } finally {
-      // Clean up polling
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-        pollingInterval = null;
-      }
       setIsGeneratingTab(false);
+      isGeneratingTabRef.current = false;
       setGenerationStatus(null);
+      setGenerationMessage(null);
+      stopGenerateTabPolling("generate tabs request failed");
     }
   };
 
@@ -2469,10 +2950,8 @@ const TranscriptionViewer: React.FC = () => {
       scoreSource?.instrumentType.toLowerCase() ?? "",
     ),
   );
-  const selectedTrackHasDrumRhythm = Boolean(
-    scoreSource?.instrumentType.toLowerCase() === "drums" &&
-    hasDrumHits(scoreSource.notesData),
-  );
+  const selectedTrackIsDrums =
+    scoreSource?.instrumentType.toLowerCase() === "drums";
   const selectedTrackReprocessSupported = Boolean(
     selectedTrack &&
     ["guitar", "bass", "drums", "vocals"].includes(
@@ -2519,15 +2998,18 @@ const TranscriptionViewer: React.FC = () => {
   const canGenerateScore = Boolean(
     scoreSource &&
     ((scoreGenerationAllowed && selectedTrackHasScore) ||
-      selectedTrackHasDrumRhythm),
+      selectedTrackIsDrums),
   );
   const displayedAsciiTab = asciiTab || globalAsciiTab;
   const canShowTabView = displayedAsciiTab.length > 0;
   const activeScoreViewMode = canShowTabView ? scoreViewMode : "score";
   const scoreControlsAvailable =
-    canGenerateScore && !selectedTrackHasDrumRhythm;
+    canGenerateScore && !selectedTrackIsDrums;
   const isDemoTranscription = Boolean(transcription.is_demo);
-  const selectedStemReady = transcription.processing_status === "stem_ready";
+  const isGeneratingTabsView =
+    isGeneratingTab || transcription.processing_status === "processing";
+  const selectedStemReady =
+    transcription.processing_status === "stem_ready" && !isGeneratingTabsView;
   const hasStemPlayback =
     transcription.can_play_stem !== false &&
     Boolean(
@@ -2550,18 +3032,30 @@ const TranscriptionViewer: React.FC = () => {
     transcription.selected_stem === "drums"
       ? "Generate Rhythm (Experimental)"
       : "Generate Tabs (Experimental)";
+  const generatingTitle =
+    transcription.selected_stem === "drums"
+      ? "Generating rhythm..."
+      : "Generating tabs...";
+  const generatingDetails =
+    transcription.selected_stem === "drums"
+      ? "Creating rhythm data from the isolated drum stem..."
+      : "Creating tabs and score from the isolated stem...";
   const stemReadyMessage = isVocalStemReady
     ? "Vocal stem is ready for playback. Listen to the separated vocal stem; tab generation is not available for vocals."
     : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";
   const displayedProcessingStatus =
-    transcription.processing_status === "completed_with_warning"
+    isGeneratingTabsView
+      ? "processing"
+      : transcription.processing_status === "completed_with_warning"
       ? "completed_with_warning"
       : transcription.processing_status === "failed" ||
           scoreSource?.processingStatus === "failed"
         ? "failed"
         : (scoreSource?.processingStatus ?? "completed");
   const displayedStatusLabel =
-    transcription.processing_status === "completed_with_warning"
+    isGeneratingTabsView
+      ? generationStatus || generatingTitle
+      : transcription.processing_status === "completed_with_warning"
       ? "Stem Ready"
       : statusLabel(displayedProcessingStatus);
   const playbackProgress =
@@ -2897,6 +3391,39 @@ const TranscriptionViewer: React.FC = () => {
             <p>{transcriptionInfoMessage}</p>
           </section>
 
+          {isGeneratingTabsView && (
+            <section
+              className="premium-stem-review-panel"
+              aria-label="Tab generation"
+            >
+              <div>
+                <span
+                  className={`premium-source-badge stem-tone-${transcriptionMetadata.tone}`}
+                >
+                  {transcriptionMetadata.stemLabel}
+                </span>
+                <strong>{displayProjectTitle}</strong>
+                <p>{generationMessage || "Tab generation started."}</p>
+              </div>
+              <div>
+                <button
+                  type="button"
+                  className="button-primary premium-generate-tab-button"
+                  disabled
+                >
+                  <FileDown aria-hidden="true" />
+                  {generationStatus || generatingTitle}
+                </button>
+                <p className="generation-status-subtitle">
+                  {generationStatus || generatingTitle}
+                  <span className="generation-status-details">
+                    {generatingDetails}
+                  </span>
+                </p>
+              </div>
+            </section>
+          )}
+
           {selectedStemReady && (
             <section
               className="premium-stem-review-panel"
@@ -2928,9 +3455,7 @@ const TranscriptionViewer: React.FC = () => {
                     <p className="generation-status-subtitle">
                       {generationStatus}
                       <span className="generation-status-details">
-                        {transcription.selected_stem === "drums"
-                          ? "Creating rhythm data from the isolated drum stem…"
-                          : "Creating tabs and score from the isolated stem…"}
+                        {generatingDetails}
                       </span>
                     </p>
                   )}
@@ -3136,11 +3661,13 @@ const TranscriptionViewer: React.FC = () => {
                     />
                   ) : scoreSource &&
                     canGenerateScore &&
-                    selectedTrackHasDrumRhythm ? (
-                    <DrumRhythmLane
+                    selectedTrackIsDrums ? (
+                    <DrumTabNotation
                       title={scoreSource.title}
                       notesData={scoreSource.notesData}
+                      tempo={transcription.detected_tempo}
                       currentTime={currentPlaybackTime}
+                      onSeek={seekPlaybackTo}
                     />
                   ) : scoreSource &&
                     canGenerateScore &&
@@ -3179,14 +3706,18 @@ const TranscriptionViewer: React.FC = () => {
                   ) : (
                     <div className="premium-inline-empty-state">
                       <strong>
-                        {selectedStemReady
+                        {isGeneratingTabsView
+                          ? generationStatus || generatingTitle
+                          : selectedStemReady
                           ? "Stem playback is ready for review."
                           : transcriptionMetadata.capabilities.playback
                             ? "Stem playback is available, but no reliable notes were detected for this stem."
                             : "No note events detected for this stem."}
                       </strong>
                       <p>
-                        {selectedStemReady
+                        {isGeneratingTabsView
+                          ? generatingDetails
+                          : selectedStemReady
                           ? "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
                           : transcription.selected_stem === "drums"
                             ? "This stem currently supports rhythm playback only when drum hits are detected."
@@ -3212,15 +3743,15 @@ const TranscriptionViewer: React.FC = () => {
                               <p className="generation-status-subtitle">
                                 {generationStatus}
                                 <span className="generation-status-details">
-                                  {transcription.selected_stem === "drums"
-                                    ? "Creating rhythm data from the isolated drum stem…"
-                                    : "Creating tabs and score from the isolated stem…"}
+                                  {generatingDetails}
                                 </span>
                               </p>
                             )}
                           </div>
                         )}
-                        {!isDemoTranscription && !selectedStemReady && (
+                        {!isDemoTranscription &&
+                          !selectedStemReady &&
+                          !isGeneratingTabsView && (
                           <button
                             type="button"
                             className="button-primary"

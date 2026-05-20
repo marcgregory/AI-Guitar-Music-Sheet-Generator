@@ -27,9 +27,28 @@ async def _modal_retry_scheduler() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.processing_backend = "modal"
+    processing_mode = settings.audio_processing_mode
+    app.state.processing_backend = processing_mode
+    logger.info("AUDIO_PROCESSING_MODE=%s", processing_mode)
+    logger.info(
+        "MODAL_TRIGGER_URL configured=%s",
+        settings.modal_trigger_url_configured,
+    )
+    logger.info("Redis configured=%s", settings.redis_configured)
+    logger.info("Celery enabled=%s", settings.celery_enabled)
+    if (
+        processing_mode == "modal"
+        and not settings.modal_trigger_url_configured
+    ):
+        logger.error(
+            "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
+        )
     init_db()
-    app.state.modal_retry_task = asyncio.create_task(_modal_retry_scheduler())
+    app.state.modal_retry_task = (
+        asyncio.create_task(_modal_retry_scheduler())
+        if processing_mode == "modal"
+        else None
+    )
     try:
         yield
     finally:
@@ -78,5 +97,5 @@ async def root():
 async def health_check():
     return {
         "status": "healthy",
-        "processing_backend": getattr(app.state, "processing_backend", "modal"),
+        "processing_backend": getattr(app.state, "processing_backend", "local"),
     }

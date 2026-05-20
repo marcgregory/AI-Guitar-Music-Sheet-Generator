@@ -40,6 +40,10 @@ client = TestClient(app)
 def reset_database():
     models.Base.metadata.drop_all(bind=engine)
     models.Base.metadata.create_all(bind=engine)
+    config.settings.CLOUDINARY_URL = None
+    config.settings.CLOUDINARY_CLOUD_NAME = None
+    config.settings.CLOUDINARY_API_KEY = None
+    config.settings.CLOUDINARY_API_SECRET = None
 
 
 def create_user(session, username: str, email: str):
@@ -391,10 +395,14 @@ def test_upload_audio_requires_selected_stem():
 def test_upload_audio_rejects_when_active_transcription_exists():
     reset_database()
     session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
     original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
     try:
         owner = create_user(session, "active-owner", "active-owner@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
         config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
         transcription = models.Transcription(
             title="Processing track",
             audio_file_path="uploads/processing.wav",
@@ -419,7 +427,9 @@ def test_upload_audio_rejects_when_active_transcription_exists():
                 files={"file": ("sample.wav", b"RIFF....", "audio/wav")},
             )
     finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
         config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
 
     assert response.status_code == 409
     assert response.json()["detail"] == (
@@ -466,18 +476,26 @@ def test_upload_audio_reuses_completed_duplicate_same_hash_and_stem():
     send_task_mock.assert_not_called()
 
 
-def test_upload_audio_external_worker_mode_queues_without_celery():
+def test_legacy_processing_mode_is_ignored_for_local_default():
     reset_database()
     session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
     original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
     try:
         create_user(session, "external-mode-owner", "external-mode@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = None
         config.settings.PROCESSING_MODE = "external_worker"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
     finally:
         session.close()
 
     try:
-        with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+        with (
+            patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=False),
+            patch("app.api.v1.endpoints.audio._run_transcription_locally") as local_runner_mock,
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock,
+        ):
             response = client.post(
                 "/api/v1/audio/upload",
                 headers=auth_headers("external-mode-owner"),
@@ -485,22 +503,249 @@ def test_upload_audio_external_worker_mode_queues_without_celery():
                 files={"file": ("external.wav", b"RIFF external", "audio/wav")},
             )
     finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "processing"
+    assert payload["selected_stem"] == "other"
+    assert payload["modal_dispatch_status"] != "modal_required"
+    local_runner_mock.assert_called_once()
+    modal_trigger_mock.assert_not_called()
+
+
+def test_upload_audio_local_mode_does_not_require_modal_and_runs_background_fallback():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_legacy_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    try:
+        create_user(session, "local-mode-owner", "local-mode@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        config.settings.PROCESSING_MODE = None
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    finally:
+        session.close()
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=False),
+            patch("app.api.v1.endpoints.audio._run_transcription_locally") as local_runner_mock,
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock,
+        ):
+            response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("local-mode-owner"),
+                data={"selected_stem": "other"},
+                files={"file": ("local.wav", b"RIFF local", "audio/wav")},
+            )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_legacy_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "processing"
+    assert payload["modal_dispatch_status"] != "modal_required"
+    local_runner_mock.assert_called_once()
+    modal_trigger_mock.assert_not_called()
+
+
+def test_upload_audio_modal_mode_requires_modal_trigger_url():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_legacy_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    try:
+        create_user(session, "modal-config-owner", "modal-config@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
+        config.settings.PROCESSING_MODE = None
+        config.settings.MODAL_TRIGGER_URL = None
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            "/api/v1/audio/upload",
+            headers=auth_headers("modal-config-owner"),
+            data={"selected_stem": "other"},
+            files={"file": ("modal-missing.wav", b"RIFF modal missing", "audio/wav")},
+        )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_legacy_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
+    )
+
+
+def test_upload_audio_disabled_mode_returns_clear_error_without_queueing():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_legacy_mode = config.settings.PROCESSING_MODE
+    try:
+        create_user(session, "disabled-mode-owner", "disabled-mode@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "disabled"
+        config.settings.PROCESSING_MODE = None
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            "/api/v1/audio/upload",
+            headers=auth_headers("disabled-mode-owner"),
+            data={"selected_stem": "other"},
+            files={"file": ("disabled.wav", b"RIFF disabled", "audio/wav")},
+        )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_legacy_mode
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Audio processing is disabled by AUDIO_PROCESSING_MODE=disabled."
+    )
+    session = TestingSessionLocal()
+    try:
+        assert session.query(models.Transcription).count() == 0
+    finally:
+        session.close()
+
+
+def test_local_status_response_masks_stale_modal_required_without_mutating_row():
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    session = TestingSessionLocal()
+    retry_at = datetime.utcnow() + timedelta(minutes=10)
+    try:
+        owner = create_user(session, "local-stale-owner", "local-stale@example.com")
+        transcription = models.Transcription(
+            title="Stale modal row",
+            user_id=owner.id,
+            selected_stem="other",
+            is_processed=False,
+            processing_status="queued",
+            modal_dispatch_status="modal_required",
+            modal_retry_at=retry_at,
+            modal_request_id="modal-request-1",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        config.settings.PROCESSING_MODE = None
+    finally:
+        session.close()
+
+    try:
+        response = client.get(
+            f"/api/v1/audio/{transcription_id}/status",
+            headers=auth_headers("local-stale-owner"),
+        )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
         config.settings.PROCESSING_MODE = original_mode
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["processing_status"] in {"pending", "queued"}
-    assert payload["selected_stem"] == "other"
-    send_task_mock.assert_not_called()
+    assert payload["status"] == "queued"
+    assert payload["message"] == "Queued for local processing."
+    assert "Queued for Modal processing" not in json.dumps(payload)
+    assert payload["modal_dispatch_status"] is None
+    assert payload["modal_retry_at"] is None
+
+    session = TestingSessionLocal()
+    try:
+        stored = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert stored.modal_dispatch_status == "modal_required"
+        assert stored.modal_request_id == "modal-request-1"
+        assert stored.modal_retry_at is not None
+    finally:
+        session.close()
+
+
+def test_modal_status_response_preserves_modal_required_fields():
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    session = TestingSessionLocal()
+    retry_at = datetime.utcnow() + timedelta(minutes=10)
+    try:
+        owner = create_user(session, "modal-stale-owner", "modal-stale@example.com")
+        transcription = models.Transcription(
+            title="Modal queued row",
+            user_id=owner.id,
+            selected_stem="other",
+            is_processed=False,
+            processing_status="queued",
+            modal_dispatch_status="modal_required",
+            modal_retry_at=retry_at,
+            modal_request_id="modal-request-2",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
+        config.settings.PROCESSING_MODE = None
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    finally:
+        session.close()
+
+    try:
+        response = client.get(
+            f"/api/v1/audio/{transcription_id}/status",
+            headers=auth_headers("modal-stale-owner"),
+        )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "queued"
+    assert payload["message"] == (
+        "Queued for Modal processing. It will start when capacity is available."
+    )
+    assert payload["modal_dispatch_status"] == "modal_required"
+    assert payload["modal_retry_at"] is not None
+
+    session = TestingSessionLocal()
+    try:
+        stored = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert stored.modal_dispatch_status == "modal_required"
+        assert stored.modal_request_id == "modal-request-2"
+        assert stored.modal_retry_at is not None
+    finally:
+        session.close()
 
 
 def test_upload_audio_modal_mode_triggers_modal_path_without_celery():
     reset_database()
     session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
     original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
     try:
         create_user(session, "modal-mode-owner", "modal-mode@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
         config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
     finally:
         session.close()
 
@@ -516,7 +761,9 @@ def test_upload_audio_modal_mode_triggers_modal_path_without_celery():
                 files={"file": ("modal.wav", b"RIFF modal", "audio/wav")},
             )
     finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
         config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
 
     assert response.status_code == 200
     assert response.json()["selected_stem"] == "bass"
@@ -528,10 +775,14 @@ def test_upload_audio_modal_mode_triggers_modal_path_without_celery():
 def test_upload_audio_modal_second_job_is_rejected_while_first_is_processing():
     reset_database()
     session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
     original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
     try:
         create_user(session, "modal-queue-owner", "modal-queue@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
         config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
     finally:
         session.close()
 
@@ -550,7 +801,9 @@ def test_upload_audio_modal_second_job_is_rejected_while_first_is_processing():
                 files={"file": ("second.wav", b"RIFF second", "audio/wav")},
             )
     finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
         config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
 
     assert first.status_code == 200
     assert second.status_code == 409
@@ -564,7 +817,9 @@ def test_upload_audio_modal_second_job_is_rejected_while_first_is_processing():
 def test_worker_complete_triggers_oldest_queued_modal_job():
     reset_database()
     original_token = config.settings.WORKER_API_TOKEN
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
     original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
     session = TestingSessionLocal()
     try:
         owner = create_user(session, "handoff-owner", "handoff@example.com")
@@ -590,7 +845,9 @@ def test_worker_complete_triggers_oldest_queued_modal_job():
         first_id = first.id
         second_id = second.id
         config.settings.WORKER_API_TOKEN = "test-worker-token"
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
         config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
     finally:
         session.close()
 
@@ -606,7 +863,9 @@ def test_worker_complete_triggers_oldest_queued_modal_job():
             )
     finally:
         config.settings.WORKER_API_TOKEN = original_token
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
         config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
 
     assert response.status_code == 200
     modal_trigger_mock.assert_called_once_with(second_id, "process", None, None)
@@ -624,11 +883,15 @@ def test_worker_complete_triggers_oldest_queued_modal_job():
 def test_second_modal_upload_does_not_become_processing_while_first_is_active():
     reset_database()
     session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
     original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
     try:
         create_user(session, "race-owner-a", "race-a@example.com")
         create_user(session, "race-owner-b", "race-b@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
         config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
     finally:
         session.close()
 
@@ -647,7 +910,9 @@ def test_second_modal_upload_does_not_become_processing_while_first_is_active():
                 upload("race-owner-b", "race-b.wav", b"RIFF race b"),
             ]
     finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
         config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
 
     assert sorted(response.status_code for response in responses) == [200, 409]
     session = TestingSessionLocal()

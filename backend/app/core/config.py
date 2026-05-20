@@ -2,8 +2,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 from urllib.parse import urlsplit
 
+LOCAL_ENVIRONMENTS = {"development", "local", "test"}
+VALID_AUDIO_PROCESSING_MODES = {"local", "modal", "disabled"}
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(case_sensitive=True, env_file=".env")
+    model_config = SettingsConfigDict(
+        case_sensitive=True,
+        env_file=(".env", ".env.local"),
+    )
 
     PROJECT_NAME: str = "AI Guitar Music Sheet Generator"
     API_V1_STR: str = "/api/v1"
@@ -25,7 +32,10 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
 
     # Selected-stem processing orchestration
-    PROCESSING_MODE: str = "local"
+    # AUDIO_PROCESSING_MODE is the explicit current setting:
+    # local | modal | disabled. PROCESSING_MODE is deprecated and ignored.
+    AUDIO_PROCESSING_MODE: str | None = None
+    PROCESSING_MODE: str | None = None
     WORKER_API_TOKEN: str | None = None
     MODAL_TRIGGER_URL: str | None = None
     MODAL_TOKEN_ID: str | None = None
@@ -99,5 +109,46 @@ class Settings(BaseSettings):
     @property
     def jwt_secret_key(self) -> str:
         return self.JWT_SECRET_KEY or self.SECRET_KEY
+
+    @property
+    def audio_processing_mode(self) -> str:
+        """Resolve the active audio processing backend."""
+        if isinstance(self.AUDIO_PROCESSING_MODE, str) and self.AUDIO_PROCESSING_MODE.strip():
+            return self._clean_mode(self.AUDIO_PROCESSING_MODE)
+
+        environment = (self.ENVIRONMENT or "").strip().lower()
+        if environment in LOCAL_ENVIRONMENTS:
+            return "local"
+        raise ValueError("Invalid AUDIO_PROCESSING_MODE")
+
+    @staticmethod
+    def _clean_mode(mode: str) -> str:
+        normalized = mode.strip().lower()
+        if normalized not in VALID_AUDIO_PROCESSING_MODES:
+            raise ValueError("Invalid AUDIO_PROCESSING_MODE")
+        return normalized
+
+    @property
+    def raw_audio_processing_mode(self) -> str | None:
+        """Return the configured raw mode value for diagnostics."""
+        if not isinstance(self.AUDIO_PROCESSING_MODE, str):
+            return None
+        normalized = self.AUDIO_PROCESSING_MODE.strip().lower()
+        return normalized or None
+
+    @property
+    def modal_trigger_url_configured(self) -> bool:
+        return bool((self.MODAL_TRIGGER_URL or "").strip())
+
+    @property
+    def redis_configured(self) -> bool:
+        return bool((self.REDIS_URL or "").strip())
+
+    @property
+    def celery_enabled(self) -> bool:
+        return bool(
+            (self.CELERY_BROKER_URL or "").strip()
+            and (self.CELERY_RESULT_BACKEND or "").strip()
+        )
 
 settings = Settings()
