@@ -537,7 +537,10 @@ def generate_lyrics_output_for_transcription(
     transcription.lyrics_generation_status = (
         "completed" if text else "completed_with_warning"
     )
+    transcription.processing_status = transcription.processing_status or "stem_ready"
+    transcription.is_processed = True
     transcription.processing_error = None
+    transcription.can_play_stem = stem_playback_available(transcription)
     db_session.add(transcription)
     db_session.commit()
     logger.info(
@@ -549,168 +552,7 @@ def generate_lyrics_output_for_transcription(
         segment_count,
         lyrics_result.get("language"),
     )
-
-    generate_single_track_transcription_output(
-        track,
-        db_session,
-        clear_existing=True,
-        detection_sensitivity=detection_sensitivity,
-        selected_stem=selected_stem,
-    )
-    db_session.refresh(track)
-
-    transcription.notes_data = track.notes_json
-    transcription.tablature_data = track.tab_json
-    transcription.notation_data = track.notation_json
-    transcription.chords_data = track.chords_json
-    transcription.can_play_stem = stem_playback_available(transcription)
-
-    if track.processing_status == "failed":
-        raise RuntimeError(track.confidence_notes or "Selected stem analysis failed.")
-
-    if track.processing_status == "completed_with_warning":
-        set_transcription_warning(
-            transcription,
-            track.confidence_notes or (
-                "No drum hits detected for this stem." if selected_stem == "drums" else NO_NOTES_WARNING
-            ),
-            can_generate_score=False,
-        )
-
-    if selected_stem in {"other", "bass"} and has_note_events(transcription.notes_data):
-        transcription.can_generate_score = True
-        try:
-            midi_file_path = midi.save_midi_from_transcription(
-                transcription.notes_data,
-                transcription.id,
-                settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
-            )
-            transcription.midi_file_path = midi_file_path
-            midi_upload = upload_transcription_artifact(
-                transcription,
-                midi_file_path,
-                folder_name="exports",
-            )
-            if midi_upload:
-                transcription.midi_file_url = midi_upload["secure_url"]
-                transcription.midi_file_public_id = midi_upload["public_id"]
-            if not transcription.notation_data:
-                transcription.notation_data = midi.midi_to_musicxml(midi_file_path)
-        except Exception as midi_e:
-            print(f"Failed to generate MIDI for transcription {transcription.id}: {str(midi_e)}")
-
-        try:
-            tablature.save_tablature_from_transcription(
-                transcription.notes_data,
-                transcription.id,
-                settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
-            )
-            transcription.tablature_data = json.dumps(
-                tablature.notes_to_tablature(
-                    transcription.notes_data,
-                    instrument_type=analysis_instrument,
-                )
-            )
-            transcription.tab_file_path = save_ascii_tab_artifact(
-                transcription,
-                transcription.tablature_data,
-                settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads",
-            )
-            tab_upload = upload_transcription_artifact(
-                transcription,
-                transcription.tab_file_path,
-                folder_name="exports",
-            )
-            if tab_upload:
-                transcription.tab_file_url = tab_upload["secure_url"]
-                transcription.tab_file_public_id = tab_upload["public_id"]
-        except Exception as tab_e:
-            print(f"Failed to generate tablature for transcription {transcription.id}: {str(tab_e)}")
-    elif selected_stem == "drums" and has_drum_hits(transcription.notes_data):
-        transcription.can_generate_score = False
-        transcription.warning_message = None
-    else:
-        transcription.can_generate_score = False
-        transcription.midi_file_path = None
-        transcription.midi_file_url = None
-        transcription.midi_file_public_id = None
-        transcription.tab_file_path = None
-        transcription.tab_file_url = None
-        transcription.tab_file_public_id = None
-
-    try:
-        beat_result = audio.detect_beat_and_tempo(separated_path)
-        transcription.detected_tempo = int(round(beat_result["tempo"]))
-        transcription.tempo_confidence = beat_result.get("tempo_confidence", 0)
-    except Exception:
-        pass
-
-    try:
-        key_result = audio.detect_key(separated_path)
-        transcription.detected_key = key_result["key"]
-        transcription.key_confidence = key_result.get("confidence", 0)
-    except Exception:
-        pass
-
-    if selected_stem != "drums":
-        try:
-            rhythm_result = audio.detect_rhythm(separated_path)
-            existing_notes = json.loads(transcription.notes_data) if transcription.notes_data else {}
-            pitch_info = []
-            if isinstance(existing_notes, dict):
-                pitch_info = existing_notes.get("notes", [])
-            elif isinstance(existing_notes, list):
-                pitch_info = existing_notes
-            enhanced_notes_data = {
-                "pitch_info": pitch_info,
-                "rhythm_analysis": rhythm_result,
-                "analysis_timestamp": datetime.now().isoformat(),
-            }
-            if isinstance(existing_notes, dict) and existing_notes.get("error"):
-                enhanced_notes_data["error"] = existing_notes["error"]
-            transcription.notes_data = json.dumps(enhanced_notes_data)
-            track.notes_json = transcription.notes_data
-            if rhythm_result.get("total_duration") is not None:
-                transcription.duration = int(round(rhythm_result["total_duration"]))
-        except Exception:
-            pass
-
-    if selected_stem in {"other", "bass"}:
-        try:
-            chord_result = audio.detect_chords(separated_path)
-            transcription.chords_data = json.dumps(chord_result)
-            track.chords_json = transcription.chords_data
-            try:
-                transcription.chord_chart_data = chord_chart.chord_data_to_chord_chart_json(
-                    transcription.chords_data
-                )
-            except Exception as chart_e:
-                print(f"Failed to generate chord charts for transcription {transcription.id}: {str(chart_e)}")
-        except Exception:
-            transcription.chords_data = json.dumps({})
-    else:
-        transcription.chords_data = json.dumps({})
-        transcription.chord_chart_data = None
-
-    transcription.is_processed = True
-    transcription.processing_status = (
-        "completed_with_warning"
-        if transcription.warning_message and not transcription.can_generate_score
-        else "completed"
-    )
-    transcription.processing_error = None
-    transcription.queue_position = None
-    transcription.estimated_wait_time = None
-    transcription.celery_task_id = None
-    transcription.can_play_stem = stem_playback_available(transcription)
-    transcription.can_generate_score = bool(
-        stem_can_generate_score(selected_stem, analysis_instrument)
-        and has_note_events(transcription.notes_data)
-    )
-    db_session.add(track)
-    db_session.add(transcription)
-    db_session.commit()
-
+    return None
 
 def get_db_session() -> Session:
     """Create a new database session for Celery tasks."""

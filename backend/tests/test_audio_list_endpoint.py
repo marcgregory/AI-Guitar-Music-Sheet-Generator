@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import db, models
+from app import db, models, tasks
 from app.core import config
 from app.core.security import create_access_token, get_password_hash
 from app.services import storage
@@ -1423,6 +1423,135 @@ def test_generate_lyrics_rejects_non_vocal_stem():
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Lyrics generation is only available for vocal stems."
+
+
+def test_generate_lyrics_output_returns_after_saving_lyrics_result(tmp_path):
+    reset_database()
+    stem_path = tmp_path / "vocals.wav"
+    stem_path.write_bytes(b"fake wav")
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-direct-owner", "lyrics-direct@example.com")
+        transcription = models.Transcription(
+            title="Direct vocal lyrics",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_file_path=str(stem_path),
+            processing_status="stem_ready",
+            lyrics_generation_status="processing",
+            notes_data='{"notes": [{"pitch": 60}]}',
+            tablature_data='{"tablature": [{"fret": 3}]}',
+            midi_file_path="/tmp/original.mid",
+            tab_file_path="/tmp/original.tab",
+            can_play_stem=True,
+            can_generate_score=False,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+
+        lyrics_result = {
+            "text": "hello there",
+            "segments": [{"start": 0, "end": 1.2, "text": "hello there"}],
+            "language": "en",
+            "model": "faster-whisper",
+            "model_size": "base",
+            "device": "cpu",
+            "compute_type": "int8",
+            "message": None,
+        }
+        with (
+            patch("app.tasks.lyrics.resolve_whisper_runtime", return_value={
+                "model_size": "base",
+                "device": "cpu",
+                "compute_type": "int8",
+            }),
+            patch("app.tasks.lyrics.transcribe_vocal_stem", return_value=lyrics_result) as transcribe_mock,
+            patch("app.tasks.generate_single_track_transcription_output") as track_mock,
+            patch("app.tasks.audio.detect_beat_and_tempo") as tempo_mock,
+            patch("app.tasks.audio.detect_key") as key_mock,
+            patch("app.tasks.audio.detect_rhythm") as rhythm_mock,
+            patch("app.tasks.audio.detect_chords") as chords_mock,
+        ):
+            result = tasks.generate_lyrics_output_for_transcription(transcription, session)
+
+        assert result is None
+        transcribe_mock.assert_called_once_with(str(stem_path))
+        track_mock.assert_not_called()
+        tempo_mock.assert_not_called()
+        key_mock.assert_not_called()
+        rhythm_mock.assert_not_called()
+        chords_mock.assert_not_called()
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.lyrics_generation_status == "completed"
+        assert json.loads(refreshed.lyrics_data)["text"] == "hello there"
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.notes_data == '{"notes": [{"pitch": 60}]}'
+        assert refreshed.tablature_data == '{"tablature": [{"fret": 3}]}'
+        assert refreshed.midi_file_path == "/tmp/original.mid"
+        assert refreshed.tab_file_path == "/tmp/original.tab"
+        assert refreshed.can_play_stem is True
+    finally:
+        session.close()
+
+
+def test_generate_lyrics_output_empty_text_completes_with_warning(tmp_path):
+    reset_database()
+    stem_path = tmp_path / "vocals.wav"
+    stem_path.write_bytes(b"fake wav")
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-warning-owner", "lyrics-warning@example.com")
+        transcription = models.Transcription(
+            title="Quiet vocal lyrics",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_file_path=str(stem_path),
+            processing_status="stem_ready",
+            lyrics_generation_status="processing",
+            can_play_stem=True,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+
+        lyrics_result = {
+            "text": "",
+            "segments": [],
+            "language": None,
+            "model": "faster-whisper",
+            "model_size": "base",
+            "device": "cpu",
+            "compute_type": "int8",
+            "message": "No clear vocals detected for lyrics generation.",
+        }
+        with (
+            patch("app.tasks.lyrics.resolve_whisper_runtime", return_value={
+                "model_size": "base",
+                "device": "cpu",
+                "compute_type": "int8",
+            }),
+            patch("app.tasks.lyrics.transcribe_vocal_stem", return_value=lyrics_result),
+            patch("app.tasks.generate_single_track_transcription_output") as track_mock,
+        ):
+            tasks.generate_lyrics_output_for_transcription(transcription, session)
+
+        track_mock.assert_not_called()
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        payload = json.loads(refreshed.lyrics_data)
+        assert refreshed.lyrics_generation_status == "completed_with_warning"
+        assert payload["message"] == "No clear vocals detected for lyrics generation."
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.can_play_stem is True
+    finally:
+        session.close()
 
 
 def test_worker_lyrics_failure_keeps_vocal_stem_playable_and_viewer_status():
