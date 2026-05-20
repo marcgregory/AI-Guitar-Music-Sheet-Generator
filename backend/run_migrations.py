@@ -156,10 +156,57 @@ def _run_sql_migrations() -> None:
             )
 
 
+def _ensure_alembic_version_table(conn) -> None:
+    inspector = inspect(conn)
+    table_names = set(inspector.get_table_names())
+
+    if "alembic_version" not in table_names:
+        conn.execute(
+            text(
+                "CREATE TABLE alembic_version ("
+                "version_num VARCHAR(255) NOT NULL PRIMARY KEY"
+                ")"
+            )
+        )
+        logger.info("alembic_version_table_created version_num_length=255")
+        return
+
+    version_column = next(
+        (
+            column
+            for column in inspector.get_columns("alembic_version")
+            if column["name"] == "version_num"
+        ),
+        None,
+    )
+    if not version_column:
+        logger.warning("alembic_version_missing_version_num_column")
+        return
+
+    version_length = getattr(version_column["type"], "length", None)
+    if conn.dialect.name == "postgresql" and version_length and version_length < 255:
+        conn.execute(
+            text(
+                "ALTER TABLE alembic_version "
+                "ALTER COLUMN version_num TYPE VARCHAR(255)"
+            )
+        )
+        logger.info(
+            "alembic_version_column_widened old_length=%s new_length=255",
+            version_length,
+        )
+
+
+def _prepare_alembic_version_table() -> None:
+    with engine.begin() as conn:
+        _ensure_alembic_version_table(conn)
+
+
 def run_migrations() -> None:
     logger.info("Creating base metadata tables if missing")
     Base.metadata.create_all(bind=engine)
     _run_sql_migrations()
+    _prepare_alembic_version_table()
 
     alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
     alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
