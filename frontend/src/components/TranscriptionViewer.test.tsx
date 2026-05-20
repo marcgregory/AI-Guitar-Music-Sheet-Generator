@@ -19,6 +19,7 @@ vi.mock("../services/audioService", () => ({
     getTranscriptionResult: vi.fn(),
     listInstrumentTracks: vi.fn(),
     generateTab: vi.fn(),
+    generateLyrics: vi.fn(),
     resolvePlayableAudioUrl: vi.fn((value: string | null | undefined) =>
       value || null,
     ),
@@ -55,6 +56,7 @@ describe("TranscriptionViewer generate tabs polling", () => {
       getTranscriptionResult: ReturnType<typeof vi.fn>;
       listInstrumentTracks: ReturnType<typeof vi.fn>;
       generateTab: ReturnType<typeof vi.fn>;
+      generateLyrics: ReturnType<typeof vi.fn>;
     };
 
     mockedAudioService.getTranscriptionResult.mockResolvedValue({
@@ -65,6 +67,12 @@ describe("TranscriptionViewer generate tabs polling", () => {
       status: "processing",
       transcription_id: 42,
       message: "Tab generation started.",
+    });
+    mockedAudioService.generateLyrics.mockResolvedValue({
+      status: "stem_ready",
+      lyrics_generation_status: "processing",
+      transcription_id: 42,
+      message: "Lyrics generation started.",
     });
   });
 
@@ -142,5 +150,38 @@ describe("TranscriptionViewer generate tabs polling", () => {
     expect(screen.getByText("HH|")).toBeInTheDocument();
     expect(screen.getByText("SD|")).toBeInTheDocument();
     expect(screen.getByText("BD|")).toBeInTheDocument();
+  });
+
+  it("shows vocal lyrics generation without switching to audio processing UI", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Vocal Result",
+        selected_stem: "vocals",
+        processing_status: "stem_ready",
+        lyrics_generation_status: null,
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    const lyricsButton = await screen.findByRole("button", {
+      name: /Generate Lyrics/i,
+    });
+    expect(
+      screen.queryByRole("button", { name: /Generate Tabs/i }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(lyricsButton);
+
+    await waitFor(() => {
+      expect(audioService.generateLyrics).toHaveBeenCalledWith(42, "test-token");
+      expect(screen.getAllByText(/Generating lyrics\.\.\./i).length).toBeGreaterThan(0);
+    });
+
+    expect(
+      screen.queryByText(/Preparing your score, tabs, and playback workspace/i),
+    ).not.toBeInTheDocument();
   });
 });

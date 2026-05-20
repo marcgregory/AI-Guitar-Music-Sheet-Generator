@@ -56,6 +56,7 @@ def _transcription_columns() -> list[sa.Column]:
         sa.Column("is_processed", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("processing_error", sa.Text(), nullable=True),
         sa.Column("warning_message", sa.Text(), nullable=True),
+        sa.Column("lyrics_generation_status", sa.String(), nullable=True, server_default="pending"),
         sa.Column("can_generate_score", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("can_play_stem", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("transcription_attempts", sa.Integer(), nullable=False, server_default="0"),
@@ -64,6 +65,7 @@ def _transcription_columns() -> list[sa.Column]:
         sa.Column("tablature_data", sa.Text(), nullable=True),
         sa.Column("notation_data", sa.Text(), nullable=True),
         sa.Column("chord_chart_data", sa.Text(), nullable=True),
+        sa.Column("lyrics_data", sa.Text(), nullable=True),
     ]
 
 

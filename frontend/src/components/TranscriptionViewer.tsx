@@ -20,6 +20,7 @@ import {
   FolderOpen,
   Info,
   Link as LinkIcon,
+  Mic,
   Music2,
   Pause,
   Play,
@@ -80,6 +81,45 @@ type DrumTabGrid = {
   slotTimes: number[];
   stepDuration: number;
   subdivision: "1/4" | "1/8" | "1/16";
+};
+
+type LyricsSegment = {
+  start?: number;
+  end?: number;
+  text?: string;
+};
+
+type LyricsData = {
+  text?: string;
+  segments?: LyricsSegment[];
+  language?: string | null;
+  model?: string;
+  message?: string | null;
+};
+
+const parseLyricsData = (
+  value: string | null | undefined,
+): LyricsData | null => {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as LyricsData;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
+const lyricStatusOf = (transcription: Transcription): string =>
+  transcription.lyrics_generation_status || "pending";
+
+const lyricTime = (seconds: number | undefined): string => {
+  const value = Math.max(0, Number(seconds ?? 0));
+  const minutes = Math.floor(value / 60);
+  const remaining = Math.floor(value % 60);
+  return `${minutes}:${remaining.toString().padStart(2, "0")}`;
 };
 
 type DrumTabMeasure = {
@@ -2106,6 +2146,7 @@ const TranscriptionViewer: React.FC = () => {
   const [scoreViewMode, setScoreViewMode] = useState<"score" | "tab">("score");
   const [isRetryingTranscription, setIsRetryingTranscription] = useState(false);
   const [isGeneratingTab, setIsGeneratingTab] = useState(false);
+  const [isGeneratingLyrics, setIsGeneratingLyrics] = useState(false);
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [generationMessage, setGenerationMessage] = useState<string | null>(
     null,
@@ -2116,6 +2157,7 @@ const TranscriptionViewer: React.FC = () => {
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const generateTabPollingRef = useRef<NodeJS.Timeout | null>(null);
   const isGeneratingTabRef = useRef(false);
+  const isGeneratingLyricsRef = useRef(false);
   const scoreStageRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const { token } = useAuth();
@@ -2230,9 +2272,12 @@ const TranscriptionViewer: React.FC = () => {
   }, []);
 
   const startGenerateTabPolling = useCallback(
-    (transcriptionIdValue: number, isRhythm: boolean) => {
+    (
+      transcriptionIdValue: number,
+      mode: "tabs" | "rhythm" | "lyrics",
+    ) => {
       if (!token) return;
-      stopGenerateTabPolling("restart generate tabs polling");
+      stopGenerateTabPolling("restart generation polling");
       console.log("polling enabled/disabled state", {
         enabled: true,
         transcriptionId: transcriptionIdValue,
@@ -2245,40 +2290,62 @@ const TranscriptionViewer: React.FC = () => {
             token,
           );
           const fetchedStatus = result.processing_status;
+          const fetchedLyricsStatus = lyricStatusOf(result);
+          const isLyrics = mode === "lyrics";
           console.log("latest fetched transcription status", {
             transcriptionId: transcriptionIdValue,
             status: fetchedStatus,
+            lyricsStatus: fetchedLyricsStatus,
             processing_error: result.processing_error,
           });
 
-          const hasError =
-            fetchedStatus === "failed" || Boolean(result.processing_error);
+          const hasError = isLyrics
+            ? fetchedLyricsStatus === "failed"
+            : fetchedStatus === "failed" || Boolean(result.processing_error);
           if (hasError) {
             setTranscription(result);
             setIsGeneratingTab(false);
+            setIsGeneratingLyrics(false);
             isGeneratingTabRef.current = false;
+            isGeneratingLyricsRef.current = false;
             setGenerationStatus(null);
             setGenerationMessage(null);
-            setError(
-              isRhythm
-                ? "Failed to generate rhythm from this stem"
-                : "Failed to generate tab from this stem",
-            );
+            if (!isLyrics) {
+              setError(
+                mode === "rhythm"
+                  ? "Failed to generate rhythm from this stem"
+                  : "Failed to generate tab from this stem",
+              );
+            }
             stopGenerateTabPolling("generation failed");
             return;
           }
 
-          const isTerminalSuccess =
-            fetchedStatus === "completed" ||
-            fetchedStatus === "completed_with_warning";
+          const isTerminalSuccess = isLyrics
+            ? fetchedLyricsStatus === "completed" ||
+              fetchedLyricsStatus === "completed_with_warning"
+            : fetchedStatus === "completed" ||
+              fetchedStatus === "completed_with_warning";
           if (isTerminalSuccess) {
             setTranscription(result);
             setIsGeneratingTab(false);
+            setIsGeneratingLyrics(false);
             isGeneratingTabRef.current = false;
+            isGeneratingLyricsRef.current = false;
             setGenerationStatus(null);
             setGenerationMessage(null);
             stopGenerateTabPolling("generation completed");
-            void refreshInstrumentTracks(transcriptionIdValue);
+            if (!isLyrics) {
+              void refreshInstrumentTracks(transcriptionIdValue);
+            }
+            return;
+          }
+
+          if (
+            isGeneratingLyricsRef.current &&
+            fetchedLyricsStatus === "processing"
+          ) {
+            setTranscription(result);
             return;
           }
 
@@ -2831,7 +2898,10 @@ const TranscriptionViewer: React.FC = () => {
         status: "processing",
         message: response.message ?? "Tab generation started.",
       });
-      startGenerateTabPolling(transcription.id, isRhythm);
+      startGenerateTabPolling(
+        transcription.id,
+        isRhythm ? "rhythm" : "tabs",
+      );
     } catch (err: unknown) {
       setError(
         errorMessageOf(
@@ -2846,6 +2916,40 @@ const TranscriptionViewer: React.FC = () => {
       setGenerationStatus(null);
       setGenerationMessage(null);
       stopGenerateTabPolling("generate tabs request failed");
+    }
+  };
+
+  const handleGenerateLyrics = async () => {
+    if (!token || !transcription?.id || transcription.is_demo) return;
+    if (isGeneratingLyrics) return;
+
+    stopGenerateTabPolling("new generate lyrics request");
+    setGenerationStatus("Generating lyrics...");
+    setGenerationMessage("Lyrics generation started.");
+    setIsGeneratingLyrics(true);
+    isGeneratingLyricsRef.current = true;
+    setError(null);
+
+    try {
+      const response = await audioService.generateLyrics(transcription.id, token);
+      setGenerationMessage(response.message ?? "Lyrics generation started.");
+      setTranscription((current) =>
+        current
+          ? {
+              ...current,
+              lyrics_generation_status: "processing",
+              processing_error: null,
+            }
+          : current,
+      );
+      startGenerateTabPolling(transcription.id, "lyrics");
+    } catch (err: unknown) {
+      setError(errorMessageOf(err, "Failed to generate lyrics from this stem"));
+      setIsGeneratingLyrics(false);
+      isGeneratingLyricsRef.current = false;
+      setGenerationStatus(null);
+      setGenerationMessage(null);
+      stopGenerateTabPolling("generate lyrics request failed");
     }
   };
 
@@ -3008,6 +3112,10 @@ const TranscriptionViewer: React.FC = () => {
   const isDemoTranscription = Boolean(transcription.is_demo);
   const isGeneratingTabsView =
     isGeneratingTab || transcription.processing_status === "processing";
+  const lyricsData = parseLyricsData(transcription.lyrics_data);
+  const lyricsGenerationStatus = lyricStatusOf(transcription);
+  const lyricsGenerationActive =
+    isGeneratingLyrics || lyricsGenerationStatus === "processing";
   const selectedStemReady =
     transcription.processing_status === "stem_ready" && !isGeneratingTabsView;
   const hasStemPlayback =
@@ -3020,6 +3128,7 @@ const TranscriptionViewer: React.FC = () => {
     );
   const isVocalStemReady =
     selectedStemReady && transcription.selected_stem === "vocals";
+  const vocalLyricsAvailable = transcription.selected_stem === "vocals";
   const generateTabAllowed = Boolean(
     selectedStemReady &&
     hasStemPlayback &&
@@ -3041,7 +3150,7 @@ const TranscriptionViewer: React.FC = () => {
       ? "Creating rhythm data from the isolated drum stem..."
       : "Creating tabs and score from the isolated stem...";
   const stemReadyMessage = isVocalStemReady
-    ? "Vocal stem is ready for playback. Listen to the separated vocal stem; tab generation is not available for vocals."
+    ? "Vocal stem is ready for playback. Generate lyrics when you want a timestamped transcription."
     : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";
   const displayedProcessingStatus =
     isGeneratingTabsView
@@ -3461,8 +3570,81 @@ const TranscriptionViewer: React.FC = () => {
                   )}
                 </div>
               )}
+              {isVocalStemReady && !isDemoTranscription && (
+                <div>
+                  <button
+                    type="button"
+                    className="button-primary premium-generate-tab-button"
+                    onClick={handleGenerateLyrics}
+                    disabled={lyricsGenerationActive}
+                  >
+                    <Mic aria-hidden="true" />
+                    {lyricsGenerationActive
+                      ? "Generating lyrics..."
+                      : "Generate Lyrics"}
+                  </button>
+                  {lyricsGenerationActive && (
+                    <p className="generation-status-subtitle">
+                      Generating lyrics...
+                      <span className="generation-status-details">
+                        Transcribing the separated vocal stem locally.
+                      </span>
+                    </p>
+                  )}
+                </div>
+              )}
             </section>
           )}
+
+          {vocalLyricsAvailable &&
+            (lyricsData || lyricsGenerationActive || lyricsGenerationStatus === "failed") && (
+              <section
+                className="premium-info-section premium-lyrics-section"
+                aria-labelledby="lyrics-heading"
+              >
+                <h2 id="lyrics-heading">Lyrics</h2>
+                <div className="premium-lyrics-panel">
+                  {lyricsGenerationActive ? (
+                    <p className="premium-lyrics-status">Generating lyrics...</p>
+                  ) : lyricsGenerationStatus === "failed" ? (
+                    <div className="alert alert-error">
+                      {transcription.processing_error ||
+                        "Lyrics generation failed. Please try again with a clearer vocal stem."}
+                    </div>
+                  ) : lyricsData?.text ? (
+                    <>
+                      <pre className="premium-lyrics-text">{lyricsData.text}</pre>
+                      {Array.isArray(lyricsData.segments) &&
+                        lyricsData.segments.length > 0 && (
+                          <div
+                            className="premium-lyrics-segments"
+                            aria-label="Timestamped lyrics"
+                          >
+                            {lyricsData.segments.map((segment, index) => (
+                              <button
+                                type="button"
+                                key={`${segment.start ?? index}-${index}`}
+                                onClick={() => seekPlaybackTo(segment.start ?? 0)}
+                              >
+                                <span>
+                                  {lyricTime(segment.start)} -{" "}
+                                  {lyricTime(segment.end)}
+                                </span>
+                                <strong>{segment.text}</strong>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                    </>
+                  ) : (
+                    <p className="premium-lyrics-status">
+                      {lyricsData?.message ||
+                        "No clear vocals detected for lyrics generation."}
+                    </p>
+                  )}
+                </div>
+              </section>
+            )}
 
           <section
             className="premium-info-section"

@@ -91,6 +91,7 @@ def _ensure_transcription_phase1_columns():
         "is_processed": "BOOLEAN DEFAULT FALSE",
         "processing_error": "TEXT",
         "warning_message": "TEXT",
+        "lyrics_generation_status": "VARCHAR DEFAULT 'pending'",
         "can_generate_score": "BOOLEAN DEFAULT TRUE",
         "can_play_stem": "BOOLEAN DEFAULT FALSE",
         "transcription_attempts": "INTEGER DEFAULT 0",
@@ -99,6 +100,7 @@ def _ensure_transcription_phase1_columns():
         "tablature_data": "TEXT",
         "notation_data": "TEXT",
         "chord_chart_data": "TEXT",
+        "lyrics_data": "TEXT",
     }
 
     with engine.connect() as conn:

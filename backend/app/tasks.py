@@ -36,6 +36,7 @@ audio = _LazyService("app.services.audio")
 midi = _LazyService("app.services.midi")
 tablature = _LazyService("app.services.tablature")
 chord_chart = _LazyService("app.services.chord_chart")
+lyrics = _LazyService("app.services.lyrics")
 
 
 INSTRUMENT_DISPLAY_NAMES = {
@@ -58,6 +59,7 @@ UNSUPPORTED_STEM_WARNING = (
     "Stem separated successfully, but notation generation is not supported for this stem in the MVP."
 )
 STEM_READY_MESSAGE = "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+LYRICS_FAILED_MESSAGE = "Lyrics generation failed. Please try again with a clearer vocal stem."
 
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
 STEM_TO_ANALYSIS_INSTRUMENT = {
@@ -508,6 +510,45 @@ def generate_tab_outputs_for_transcription(
     track.stem_audio_path = separated_path
     db_session.add(track)
     db_session.commit()
+
+
+def generate_lyrics_output_for_transcription(
+    transcription: models.Transcription,
+    db_session: Session,
+) -> None:
+    selected_stem = (transcription.selected_stem or "other").strip().lower()
+    if selected_stem != "vocals":
+        raise ValueError("Lyrics generation is only available for vocal stems.")
+
+    separated_path = ensure_local_separated_stem(transcription, selected_stem)
+    runtime = lyrics.resolve_whisper_runtime()
+    logger.info(
+        "lyrics_generation_requested transcription_id=%s selected_stem=%s whisper_model=%s whisper_device=%s",
+        transcription.id,
+        selected_stem,
+        runtime["model_size"],
+        runtime["device"],
+    )
+
+    lyrics_result = lyrics.transcribe_vocal_stem(separated_path)
+    text = str(lyrics_result.get("text") or "").strip()
+    segment_count = len(lyrics_result.get("segments") or [])
+    transcription.lyrics_data = json.dumps(lyrics_result)
+    transcription.lyrics_generation_status = (
+        "completed" if text else "completed_with_warning"
+    )
+    transcription.processing_error = None
+    db_session.add(transcription)
+    db_session.commit()
+    logger.info(
+        "lyrics_generation_completed transcription_id=%s selected_stem=%s whisper_model=%s whisper_device=%s segment_count=%s detected_language=%s",
+        transcription.id,
+        selected_stem,
+        lyrics_result.get("model_size") or runtime["model_size"],
+        lyrics_result.get("device") or runtime["device"],
+        segment_count,
+        lyrics_result.get("language"),
+    )
 
     generate_single_track_transcription_output(
         track,
@@ -1802,6 +1843,81 @@ def generate_tab_from_separated_stem(
             self,
             state="FAILURE",
             meta={"exc_type": type(e).__name__, "exc_message": str(e)},
+        )
+        raise
+    finally:
+        if db_session:
+            db_session.close()
+
+
+@celery_app.task(bind=True)
+def generate_lyrics_from_vocal_stem(self, transcription_id: int):
+    """Generate lyrics from an already separated vocal stem without changing audio status."""
+    if audio_processing_mode() != "local":
+        return fail_heavy_celery_task(
+            transcription_id,
+            "Local Celery lyrics generation is disabled. Set AUDIO_PROCESSING_MODE=local for local processing.",
+        )
+    db_session = None
+    try:
+        update_task_state(self, state="PROGRESS", meta={"step": "lyrics_generation"})
+        db_session = get_db_session()
+        transcription = db_session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        if not transcription:
+            raise ValueError(f"Transcription with ID {transcription_id} not found")
+        if transcription.is_deleted:
+            return {
+                "status": transcription.lyrics_generation_status or "cancelled",
+                "transcription_id": transcription_id,
+                "message": "Transcription was deleted before lyrics generation started",
+            }
+
+        selected_stem = (transcription.selected_stem or "other").strip().lower()
+        if selected_stem != "vocals":
+            raise ValueError("Lyrics generation is only available for vocal stems.")
+        if not stem_playback_available(transcription):
+            raise ValueError("Separated vocal stem is required before generating lyrics.")
+
+        transcription.lyrics_generation_status = "processing"
+        transcription.processing_error = None
+        db_session.add(transcription)
+        db_session.commit()
+
+        generate_lyrics_output_for_transcription(transcription, db_session)
+        db_session.refresh(transcription)
+
+        return {
+            "status": transcription.lyrics_generation_status,
+            "transcription_id": transcription_id,
+            "selected_stem": selected_stem,
+            "can_play_stem": transcription.can_play_stem,
+            "message": "Lyrics generation completed.",
+        }
+    except Exception as exc:
+        if db_session:
+            try:
+                transcription = db_session.query(models.Transcription).filter(
+                    models.Transcription.id == transcription_id
+                ).first()
+                if transcription and not transcription.is_deleted:
+                    transcription.lyrics_generation_status = "failed"
+                    transcription.processing_error = LYRICS_FAILED_MESSAGE
+                    db_session.add(transcription)
+                    db_session.commit()
+                    logger.exception(
+                        "lyrics_generation_failed transcription_id=%s selected_stem=%s",
+                        transcription_id,
+                        transcription.selected_stem,
+                    )
+            except Exception:
+                pass
+
+        update_task_state(
+            self,
+            state="FAILURE",
+            meta={"exc_type": type(exc).__name__, "exc_message": str(exc)},
         )
         raise
     finally:

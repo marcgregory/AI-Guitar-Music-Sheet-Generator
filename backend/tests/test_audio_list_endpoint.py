@@ -1350,6 +1350,186 @@ def test_generate_tab_endpoint_accepts_high_sensitivity_option():
         session.close()
 
 
+def test_generate_lyrics_endpoint_uses_lyrics_status_without_processing_audio():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-owner", "lyrics-owner@example.com")
+        transcription = models.Transcription(
+            title="Vocal stem",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/vocals.wav",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_lyrics_generation", return_value="lyrics-task") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/generate-lyrics",
+            headers=auth_headers("lyrics-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stem_ready"
+    assert payload["lyrics_generation_status"] == "processing"
+    assert payload["message"] == "Lyrics generation started."
+    assert start_mock.call_args.args[0] == transcription_id
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.lyrics_generation_status == "processing"
+        assert refreshed.celery_task_id == "lyrics-task"
+        assert refreshed.separated_audio_url.endswith("vocals.wav")
+    finally:
+        session.close()
+
+
+def test_generate_lyrics_rejects_non_vocal_stem():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-bass-owner", "lyrics-bass-owner@example.com")
+        transcription = models.Transcription(
+            title="Bass stem",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.post(
+        f"/api/v1/audio/{transcription_id}/generate-lyrics",
+        headers=auth_headers("lyrics-bass-owner"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Lyrics generation is only available for vocal stems."
+
+
+def test_worker_lyrics_failure_keeps_vocal_stem_playable_and_viewer_status():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-fail-owner", "lyrics-fail-owner@example.com")
+        transcription = models.Transcription(
+            title="Vocal failure",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/vocals.wav",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            lyrics_generation_status="processing",
+            modal_job_type="generate_lyrics",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/failed",
+            headers={"Authorization": "Bearer test-worker-token"},
+            json={"error": "internal stack detail"},
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "stem_ready"
+    assert payload["lyrics_generation_status"] == "failed"
+    assert payload["can_play_stem"] is True
+    assert payload["separated_audio_url"].endswith("vocals.wav")
+
+    status_response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("lyrics-fail-owner"),
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "stem_ready"
+    assert status_response.json()["lyrics_generation_status"] == "failed"
+
+
+def test_worker_lyrics_complete_only_updates_lyrics_fields():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-complete-owner", "lyrics-complete@example.com")
+        transcription = models.Transcription(
+            title="Vocal complete",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/vocals.wav",
+            notes_data='{"notes": [{"pitch": 60}]}',
+            tablature_data='{"tablature": [{"fret": 3}]}',
+            midi_file_path="/tmp/original.mid",
+            tab_file_path="/tmp/original.tab",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            lyrics_generation_status="processing",
+            modal_job_type="generate_lyrics",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"Authorization": "Bearer test-worker-token"},
+            json={
+                "lyrics_data": {
+                    "text": "hello there",
+                    "segments": [{"start": 0, "end": 1.2, "text": "hello there"}],
+                    "language": "en",
+                    "model": "faster-whisper",
+                }
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "stem_ready"
+    assert payload["lyrics_generation_status"] == "completed"
+    assert json.loads(payload["lyrics_data"])["text"] == "hello there"
+    assert payload["notes_data"] == '{"notes": [{"pitch": 60}]}'
+    assert payload["tablature_data"] == '{"tablature": [{"fret": 3}]}'
+    assert payload["midi_file_path"] == "/tmp/original.mid"
+    assert payload["tab_file_path"] == "/tmp/original.tab"
+    assert payload["separated_audio_url"].endswith("vocals.wav")
+
+
 def test_worker_failed_saves_sanitized_error_without_internal_logs():
     reset_database()
     original_token = config.settings.WORKER_API_TOKEN
@@ -1635,6 +1815,146 @@ def test_youtube_raw_cookies_with_escaped_newlines_are_normalized():
             cookiefile.unlink()
         config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
         config.settings.YOUTUBE_COOKIES = original_cookies
+
+
+def test_youtube_env_cookies_win_and_ignore_placeholder_file(tmp_path, caplog):
+    from app.api.v1.endpoints.audio import _get_youtube_cookiefile
+
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    cookie_file = tmp_path / "youtube.cookies.txt"
+    cookie_file.write_text("# Place your YouTube browser cookies here.\n", encoding="utf-8")
+    raw_secret_cookie = "fresh-secret-cookie"
+    config.settings.YOUTUBE_COOKIES_FILE = str(cookie_file)
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\n"
+        f".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\t{raw_secret_cookie}\n"
+    )
+    caplog.set_level("INFO", logger="app.api.v1.endpoints.audio")
+
+    cookiefile = None
+    try:
+        resolved = _get_youtube_cookiefile()
+        cookiefile = Path(resolved.path)
+
+        assert resolved.loaded is True
+        assert resolved.cleanup is True
+        assert resolved.source == "YOUTUBE_COOKIES"
+        assert cookiefile.exists()
+        assert "Using YOUTUBE_COOKIES from environment; ignoring YOUTUBE_COOKIES_FILE." in caplog.text
+        assert "effective cookie source=env" in caplog.text
+        assert "has_youtube_domain=True" in caplog.text
+        assert "cookie fingerprint=" in caplog.text
+        assert raw_secret_cookie not in caplog.text
+    finally:
+        if cookiefile and cookiefile.exists():
+            cookiefile.unlink()
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+
+def test_youtube_cookie_diagnostics_warn_for_low_count_and_do_not_log_raw_values(caplog):
+    from app.api.v1.endpoints.audio import _get_youtube_cookiefile
+
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    raw_secret_cookie = "raw-cookie-value-that-must-not-appear"
+    cookie_payload = (
+        "# Netscape HTTP Cookie File\n"
+        f".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\t{raw_secret_cookie}\n"
+    )
+    expected_fingerprint = hashlib.sha256(cookie_payload.encode("utf-8")).hexdigest()[:8]
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = cookie_payload
+    caplog.set_level("INFO", logger="app.api.v1.endpoints.audio")
+
+    cookiefile = None
+    try:
+        resolved = _get_youtube_cookiefile()
+        cookiefile = Path(resolved.path)
+
+        assert resolved.cookie_count == 1
+        assert f"cookie fingerprint={expected_fingerprint}" in caplog.text
+        assert "cookie_count=1" in caplog.text
+        assert "has_youtube_domain=True" in caplog.text
+        assert "SID': True" in caplog.text
+        assert "YouTube cookie count appears low; cookies may be incomplete or expired." in caplog.text
+        assert raw_secret_cookie not in caplog.text
+        assert cookie_payload not in caplog.text
+    finally:
+        if cookiefile and cookiefile.exists():
+            cookiefile.unlink()
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+
+def test_extract_audio_from_youtube_rejects_malformed_env_cookies_before_ytdlp():
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = "not netscape cookies"
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-bad-env-cookies", "youtube-bad-env-cookies@example.com")
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL") as youtube_dl:
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-bad-env-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "YOUTUBE_COOKIES is configured but is not valid Netscape cookie format."
+    )
+    youtube_dl.assert_not_called()
+
+
+def test_extract_audio_from_youtube_rejects_env_cookies_without_youtube_domain_before_ytdlp():
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\n"
+        ".google.com\tTRUE\t/\tTRUE\t2147483647\tSID\tgoogle-cookie\n"
+    )
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-no-domain-cookies", "youtube-no-domain-cookies@example.com")
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL") as youtube_dl:
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-no-domain-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "YOUTUBE_COOKIES is configured but does not contain YouTube cookies."
+    )
+    youtube_dl.assert_not_called()
 
 
 def test_extract_audio_from_youtube_returns_cookie_rejected_detail_when_loaded_cookies_fail():

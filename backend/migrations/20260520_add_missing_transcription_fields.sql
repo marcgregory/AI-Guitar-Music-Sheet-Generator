@@ -123,3 +123,17 @@ BEGIN
         ALTER TABLE transcriptions ADD COLUMN chord_chart_data TEXT;
     END IF;
 END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='transcriptions' AND column_name='lyrics_generation_status') THEN
+        ALTER TABLE transcriptions ADD COLUMN lyrics_generation_status VARCHAR DEFAULT 'pending';
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='transcriptions' AND column_name='lyrics_data') THEN
+        ALTER TABLE transcriptions ADD COLUMN lyrics_data TEXT;
+    END IF;
+END $$;

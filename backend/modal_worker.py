@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-# Force TensorFlow to CPU-only before any TensorFlow or Basic Pitch imports.
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+# TensorFlow is forced to CPU inside Basic Pitch inference so Whisper can still
+# use the Modal GPU when available.
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
@@ -37,6 +37,8 @@ image = (
     "music21==9.9.2",
     "fastapi[standard]==0.115.6",
     "cloudinary==1.44.1",
+    "faster-whisper",
+    "ctranslate2",
     "requests==2.32.3",
     "urllib3<2.6",
     "charset-normalizer<4",
@@ -51,6 +53,9 @@ secrets = [
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
 DEFAULT_DEMUCS_MODEL = "htdemucs"
 DEFAULT_TIMEOUT_SECONDS = 1800
+NO_CLEAR_VOCALS_MESSAGE = "No clear vocals detected for lyrics generation."
+_WHISPER_MODEL = None
+_WHISPER_MODEL_CONFIG: dict[str, str] | None = None
 
 def _worker_headers() -> dict[str, str]:
     token = os.environ.get("WORKER_API_TOKEN")
@@ -102,6 +107,91 @@ def _download_suffix(url: str) -> str:
     if suffix in {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".webm", ".mp4"}:
         return suffix
     return ".audio"
+
+
+def _cuda_available() -> bool:
+    try:
+        import ctranslate2
+
+        return bool(ctranslate2.get_cuda_device_count())
+    except Exception:
+        return False
+
+
+def _resolve_whisper_runtime() -> dict[str, str]:
+    requested_device = os.environ.get("WHISPER_DEVICE", "auto").strip().lower()
+    requested_compute_type = os.environ.get("WHISPER_COMPUTE_TYPE", "auto").strip().lower()
+    device = "cuda" if requested_device == "auto" and _cuda_available() else requested_device
+    if device == "auto":
+        device = "cpu"
+    compute_type = (
+        "float16" if requested_compute_type == "auto" and device == "cuda"
+        else "int8" if requested_compute_type == "auto"
+        else requested_compute_type
+    )
+    return {
+        "model_size": os.environ.get("WHISPER_MODEL_SIZE", "base").strip() or "base",
+        "device": device,
+        "compute_type": compute_type,
+    }
+
+
+def _get_whisper_model():
+    global _WHISPER_MODEL, _WHISPER_MODEL_CONFIG
+
+    config = _resolve_whisper_runtime()
+    if _WHISPER_MODEL is not None and _WHISPER_MODEL_CONFIG == config:
+        return _WHISPER_MODEL
+
+    from faster_whisper import WhisperModel
+
+    logger.info(
+        "loading_whisper_model whisper_model=%s whisper_device=%s compute_type=%s",
+        config["model_size"],
+        config["device"],
+        config["compute_type"],
+    )
+    _WHISPER_MODEL = WhisperModel(
+        config["model_size"],
+        device=config["device"],
+        compute_type=config["compute_type"],
+    )
+    _WHISPER_MODEL_CONFIG = config
+    return _WHISPER_MODEL
+
+
+def _transcribe_vocal_stem(stem_path: Path) -> dict[str, Any]:
+    runtime = _resolve_whisper_runtime()
+    model = _get_whisper_model()
+    segments_iter, info = model.transcribe(str(stem_path), vad_filter=True, beam_size=5)
+    segments = [
+        {
+            "start": round(float(segment.start), 3),
+            "end": round(float(segment.end), 3),
+            "text": str(segment.text or "").strip(),
+        }
+        for segment in segments_iter
+        if str(segment.text or "").strip()
+    ]
+    text = "\n".join(segment["text"] for segment in segments).strip()
+    language = getattr(info, "language", None)
+    logger.info(
+        "lyrics_generation_completed whisper_model=%s whisper_device=%s segment_count=%s detected_language=%s",
+        runtime["model_size"],
+        runtime["device"],
+        len(segments),
+        language,
+    )
+    return {
+        "text": text,
+        "segments": segments,
+        "language": language,
+        "model": "faster-whisper",
+        "model_size": runtime["model_size"],
+        "device": runtime["device"],
+        "compute_type": runtime["compute_type"],
+        "message": None if text else NO_CLEAR_VOCALS_MESSAGE,
+    }
 
 
 def _find_selected_stem(output_dir: Path, model_name: str, input_stem: str, selected_stem: str) -> Path:
@@ -565,6 +655,7 @@ def _complete_job(
         "tab_file_url": analysis_result.get("tab_file_url"),
         "tab_file_public_id": analysis_result.get("tab_file_public_id"),
         "tablature_data": analysis_result.get("tablature_data"),
+        "lyrics_data": analysis_result.get("lyrics_data"),
         "confidence": analysis_result.get("confidence", 90),
         "duration": analysis_result.get("duration"),
         "detected_tempo": analysis_result.get("detected_tempo"),
@@ -595,7 +686,7 @@ def _normalize_job(job: dict[str, Any]) -> dict[str, Any]:
     if not job.get("original_audio_url"):
         if str(job.get("job_type") or "process") == "process":
             raise ValueError("original_audio_url is required")
-    if str(job.get("job_type") or "process") in {"generate_tab", "reprocess_track"} and not job.get("separated_audio_url"):
+    if str(job.get("job_type") or "process") in {"generate_tab", "reprocess_track", "generate_lyrics"} and not job.get("separated_audio_url"):
         raise ValueError("separated_audio_url is required for this Modal job")
 
     selected_stem = str(job.get("selected_stem") or job.get("demucs_stem") or "other").strip().lower()
@@ -695,6 +786,24 @@ def _generate_tab_from_stem(
     return analysis
 
 
+def _generate_lyrics_from_stem(
+    stem_path: Path,
+    transcription_id: int,
+    selected_stem: str,
+) -> dict[str, Any]:
+    if selected_stem != "vocals":
+        raise ValueError("Lyrics generation is only available for vocal stems.")
+    runtime = _resolve_whisper_runtime()
+    logger.info(
+        "lyrics_generation_requested transcription_id=%s selected_stem=%s whisper_model=%s whisper_device=%s",
+        transcription_id,
+        selected_stem,
+        runtime["model_size"],
+        runtime["device"],
+    )
+    return {"lyrics_data": _transcribe_vocal_stem(stem_path)}
+
+
 def _process_job(job: dict[str, Any]) -> dict[str, Any]:
     job = _normalize_job(job)
     transcription_id = int(job["transcription_id"])
@@ -723,6 +832,12 @@ def _process_job(job: dict[str, Any]) -> dict[str, Any]:
                 transcription_id,
                 selected_stem,
                 sensitivity=sensitivity,
+            )
+        elif job_type == "generate_lyrics":
+            analysis_result = _generate_lyrics_from_stem(
+                selected_stem_path,
+                transcription_id,
+                selected_stem,
             )
         else:
             analysis_result = _generate_analysis_and_exports(

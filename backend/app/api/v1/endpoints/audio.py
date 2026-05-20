@@ -53,6 +53,21 @@ STEM_READY_MESSAGE = "Stem is ready. Listen first, then generate tabs if the ste
 YOUTUBE_COOKIE_REJECTED_DETAIL = (
     "Cookies were loaded, but YouTube rejected them. Re-export fresh cookies or upload audio directly."
 )
+YOUTUBE_COOKIES_MALFORMED_DETAIL = (
+    "YOUTUBE_COOKIES is configured but is not valid Netscape cookie format."
+)
+YOUTUBE_COOKIES_NO_YOUTUBE_DOMAIN_DETAIL = (
+    "YOUTUBE_COOKIES is configured but does not contain YouTube cookies."
+)
+IMPORTANT_YOUTUBE_COOKIE_NAMES = {
+    "SID",
+    "HSID",
+    "SSID",
+    "SAPISID",
+    "LOGIN_INFO",
+    "VISITOR_INFO1_LIVE",
+}
+LOW_YOUTUBE_COOKIE_COUNT_THRESHOLD = 3
 
 # Define the upload directory relative to the backend package so the location is
 # stable whether uvicorn is launched from the repo root or from backend/.
@@ -101,6 +116,13 @@ def _run_tab_generation_locally(
     from ....tasks import generate_tab_from_separated_stem
 
     generate_tab_from_separated_stem.run(transcription_id, detection_sensitivity)
+
+
+def _run_lyrics_generation_locally(transcription_id: int):
+    """Run local lyrics generation directly for development."""
+    from ....tasks import generate_lyrics_from_vocal_stem
+
+    generate_lyrics_from_vocal_stem.run(transcription_id)
 
 
 def _start_transcription_processing(
@@ -179,6 +201,46 @@ def _start_tab_generation(
             transcription_id,
             "generate_tab",
             detection_sensitivity,
+            None,
+        )
+        return None
+
+    if mode == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audio processing is disabled by AUDIO_PROCESSING_MODE=disabled.",
+        )
+
+    raise ValueError("Invalid AUDIO_PROCESSING_MODE")
+
+
+def _start_lyrics_generation(
+    transcription_id: int,
+    background_tasks: BackgroundTasks,
+) -> str | None:
+    """Start vocal lyrics generation without changing the main processing state."""
+    mode = _processing_mode()
+    if mode == "local":
+        if _celery_has_available_worker():
+            result = celery_app.send_task(
+                "app.tasks.generate_lyrics_from_vocal_stem",
+                args=[transcription_id],
+            )
+            return result.id
+
+        logger.info(
+            "No Celery worker detected; running lyrics generation %s in a local background task.",
+            transcription_id,
+        )
+        background_tasks.add_task(_run_lyrics_generation_locally, transcription_id)
+        return "local-background"
+
+    if mode == "modal":
+        background_tasks.add_task(
+            _trigger_modal_worker,
+            transcription_id,
+            "generate_lyrics",
+            None,
             None,
         )
         return None
@@ -439,8 +501,14 @@ def _trigger_modal_worker(
             )
             return
 
-        # Skip if in a terminal state
-        if transcription.processing_status in {"completed", "completed_with_warning", "failed", "stem_ready"}:
+        is_lyrics_job = job_type == "generate_lyrics"
+
+        # Skip if in a terminal state. Lyrics jobs are allowed to run from
+        # playback-ready terminal states because they have their own status.
+        if (
+            not is_lyrics_job
+            and transcription.processing_status in {"completed", "completed_with_warning", "failed", "stem_ready"}
+        ):
             logger.info(
                 "Skipping Modal dispatch for transcription %s with terminal status %s.",
                 transcription_id,
@@ -448,7 +516,7 @@ def _trigger_modal_worker(
             )
             return
 
-        if transcription.processing_status != "processing":
+        if not is_lyrics_job and transcription.processing_status != "processing":
             logger.info(
                 "Skipping Modal dispatch for transcription %s with status %s.",
                 transcription_id,
@@ -478,12 +546,16 @@ def _trigger_modal_worker(
             return
 
         if not modal_trigger_url:
-            transcription.processing_status = "failed"
-            transcription.processing_error = (
-                "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
-            )
-            transcription.queue_position = None
-            transcription.estimated_wait_time = None
+            if is_lyrics_job:
+                transcription.lyrics_generation_status = "failed"
+                transcription.processing_error = "Lyrics generation is not configured."
+            else:
+                transcription.processing_status = "failed"
+                transcription.processing_error = (
+                    "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
+                )
+                transcription.queue_position = None
+                transcription.estimated_wait_time = None
             transcription.modal_dispatch_status = "failed"
             transcription.modal_job_type = job_type
             session.add(transcription)
@@ -535,6 +607,21 @@ def _trigger_modal_worker(
         )
 
         if response.status_code == 429:
+            if is_lyrics_job:
+                transcription.lyrics_generation_status = "failed"
+                transcription.processing_error = (
+                    "Lyrics generation is temporarily unavailable. Please retry later."
+                )
+                transcription.modal_dispatch_status = "rate_limited"
+                transcription.modal_retry_at = None
+                transcription.celery_task_id = None
+                session.add(transcription)
+                session.commit()
+                logger.warning(
+                    "Modal rate limited lyrics generation for transcription %s.",
+                    transcription_id,
+                )
+                return
             retry_after_header = response.headers.get("Retry-After")
             try:
                 retry_after = int(retry_after_header) if retry_after_header else None
@@ -578,7 +665,15 @@ def _trigger_modal_worker(
                 models.Transcription.id == transcription_id
             ).first()
             # Only schedule retry if still processing (not already failed/completed/etc.)
-            if transcription and transcription.processing_status == "processing":
+            if transcription and job_type == "generate_lyrics":
+                transcription.lyrics_generation_status = "failed"
+                transcription.processing_error = (
+                    "Lyrics generation could not be started. Please retry later."
+                )
+                transcription.modal_dispatch_status = "failed"
+                session.add(transcription)
+                session.commit()
+            elif transcription and transcription.processing_status == "processing":
                 _mark_modal_retry(
                     transcription,
                     session,
@@ -1359,6 +1454,11 @@ def _blocking_processing_error(transcription: models.Transcription) -> str | Non
     error = transcription.processing_error
     if transcription.processing_status in {"pending", "queued", "processing"}:
         return None
+    if (
+        transcription.lyrics_generation_status in {"failed", "completed_with_warning"}
+        and transcription.processing_status not in {"failed"}
+    ):
+        return None
     if transcription.modal_dispatch_status in {"rate_limited", "retry_queued"}:
         return None
     if _is_non_blocking_processing_warning(error):
@@ -1616,6 +1716,8 @@ def _status_payload(
         "can_play_stem": can_play_stem,
         "can_generate_score": can_generate_score,
         "warning_message": warning,
+        "lyrics_generation_status": transcription.lyrics_generation_status,
+        "lyrics_data": transcription.lyrics_data,
         "separated_audio_url": transcription.separated_audio_url,
         "available_exports": _available_exports(transcription),
         "is_demo": transcription.is_demo,
@@ -2223,21 +2325,53 @@ class YouTubeCookiefile:
     cookie_count: int = 0
 
 
+@dataclass(frozen=True)
+class YouTubeCookieDiagnostics:
+    valid: bool
+    line_count: int
+    cookie_count: int
+    has_youtube_domain: bool
+    important_cookie_names: frozenset[str]
+    fingerprint: str
+
+
 def _normalize_youtube_cookies_text(cookies_text: str) -> str:
     if "\\n" in cookies_text and "\n" not in cookies_text:
         cookies_text = cookies_text.replace("\\n", "\n")
     return cookies_text
 
 
-def _inspect_youtube_cookies_text(cookies_text: str) -> tuple[bool, int, int]:
+def _inspect_youtube_cookies_text(cookies_text: str) -> YouTubeCookieDiagnostics:
     normalized = _normalize_youtube_cookies_text(cookies_text)
     lines = [line.strip() for line in normalized.splitlines()]
     meaningful_lines = [
         line for line in lines
         if line and not line.startswith("#")
     ]
-    cookie_count = sum(1 for line in meaningful_lines if len(line.split("\t")) >= 7)
-    return cookie_count > 0, len(lines), cookie_count
+    cookie_count = 0
+    has_youtube_domain = False
+    important_cookie_names: set[str] = set()
+    for line in meaningful_lines:
+        fields = line.split("\t")
+        if len(fields) < 7:
+            continue
+        cookie_count += 1
+        domain = fields[0].strip().lower()
+        name = fields[5].strip()
+        if domain == ".youtube.com" or domain.endswith(".youtube.com"):
+            has_youtube_domain = True
+        if name in IMPORTANT_YOUTUBE_COOKIE_NAMES:
+            important_cookie_names.add(name)
+
+    fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return YouTubeCookieDiagnostics(
+        valid=cookie_count > 0,
+        line_count=len(lines),
+        cookie_count=cookie_count,
+        has_youtube_domain=has_youtube_domain,
+        important_cookie_names=frozenset(important_cookie_names),
+        fingerprint=fingerprint,
+    )
 
 
 def _invalid_youtube_cookies_detail(source: str) -> str:
@@ -2246,6 +2380,61 @@ def _invalid_youtube_cookies_detail(source: str) -> str:
         "For Render, set YOUTUBE_COOKIES to fresh Netscape-format browser cookies, "
         "or upload the audio file directly."
     )
+
+
+def _get_ytdlp_version() -> str:
+    version_module = getattr(yt_dlp, "version", None)
+    version = getattr(version_module, "__version__", None)
+    return str(version or "unknown")
+
+
+def _effective_youtube_cookie_source(cookies_text: str | None, cookies_file: str | None) -> str:
+    if cookies_text:
+        return "env"
+    if cookies_file:
+        return "file"
+    return "none"
+
+
+def _log_youtube_cookie_environment(
+    cookies_text: str | None,
+    cookies_file: str | None,
+    effective_source: str,
+) -> None:
+    logger.info(
+        "YouTube cookie config: YOUTUBE_COOKIES configured=%s "
+        "YOUTUBE_COOKIES_FILE configured=%s effective cookie source=%s "
+        "yt-dlp version=%s",
+        bool(cookies_text),
+        bool(cookies_file),
+        effective_source,
+        _get_ytdlp_version(),
+    )
+
+
+def _log_youtube_cookie_diagnostics(
+    source: str,
+    diagnostics: YouTubeCookieDiagnostics,
+) -> None:
+    important_presence = {
+        name: name in diagnostics.important_cookie_names
+        for name in sorted(IMPORTANT_YOUTUBE_COOKIE_NAMES)
+    }
+    logger.info(
+        "yt-dlp cookies source=%s lines=%s cookie_count=%s "
+        "has_youtube_domain=%s important_cookie_names=%s "
+        "cookie fingerprint=%s",
+        source,
+        diagnostics.line_count,
+        diagnostics.cookie_count,
+        diagnostics.has_youtube_domain,
+        important_presence,
+        diagnostics.fingerprint,
+    )
+    if diagnostics.cookie_count < LOW_YOUTUBE_COOKIE_COUNT_THRESHOLD:
+        logger.warning(
+            "YouTube cookie count appears low; cookies may be incomplete or expired."
+        )
 
 
 def _write_youtube_cookies_tempfile(cookies_text: str) -> str:
@@ -2285,15 +2474,40 @@ def _read_youtube_cookies_file(cookies_file: str) -> str:
 
 def _get_youtube_cookiefile() -> YouTubeCookiefile:
     cookies_file = (core.config.settings.YOUTUBE_COOKIES_FILE or "").strip()
-    if cookies_file:
-        cookies_text = _read_youtube_cookies_file(cookies_file)
-        valid, line_count, cookie_count = _inspect_youtube_cookies_text(cookies_text)
-        logger.info(
-            "yt-dlp cookies source=file readable=true lines=%s cookie_count=%s",
-            line_count,
-            cookie_count,
+    cookies_text = core.config.settings.YOUTUBE_COOKIES
+    effective_source = _effective_youtube_cookie_source(cookies_text, cookies_file)
+    _log_youtube_cookie_environment(cookies_text, cookies_file, effective_source)
+
+    if cookies_text and cookies_file:
+        logger.info("Using YOUTUBE_COOKIES from environment; ignoring YOUTUBE_COOKIES_FILE.")
+
+    if cookies_text:
+        diagnostics = _inspect_youtube_cookies_text(cookies_text)
+        _log_youtube_cookie_diagnostics("env", diagnostics)
+        if not diagnostics.valid:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=YOUTUBE_COOKIES_MALFORMED_DETAIL,
+            )
+        if not diagnostics.has_youtube_domain:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=YOUTUBE_COOKIES_NO_YOUTUBE_DOMAIN_DETAIL,
+            )
+        return YouTubeCookiefile(
+            path=_write_youtube_cookies_tempfile(cookies_text),
+            cleanup=True,
+            loaded=True,
+            source="YOUTUBE_COOKIES",
+            line_count=diagnostics.line_count,
+            cookie_count=diagnostics.cookie_count,
         )
-        if not valid:
+
+    if cookies_file:
+        file_cookies_text = _read_youtube_cookies_file(cookies_file)
+        diagnostics = _inspect_youtube_cookies_text(file_cookies_text)
+        _log_youtube_cookie_diagnostics("file", diagnostics)
+        if not diagnostics.valid:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=_invalid_youtube_cookies_detail("YOUTUBE_COOKIES_FILE"),
@@ -2303,30 +2517,8 @@ def _get_youtube_cookiefile() -> YouTubeCookiefile:
             cleanup=False,
             loaded=True,
             source="YOUTUBE_COOKIES_FILE",
-            line_count=line_count,
-            cookie_count=cookie_count,
-        )
-
-    cookies_text = core.config.settings.YOUTUBE_COOKIES
-    if cookies_text:
-        valid, line_count, cookie_count = _inspect_youtube_cookies_text(cookies_text)
-        logger.info(
-            "yt-dlp cookies source=env lines=%s cookie_count=%s",
-            line_count,
-            cookie_count,
-        )
-        if not valid:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=_invalid_youtube_cookies_detail("YOUTUBE_COOKIES"),
-            )
-        return YouTubeCookiefile(
-            path=_write_youtube_cookies_tempfile(cookies_text),
-            cleanup=True,
-            loaded=True,
-            source="YOUTUBE_COOKIES",
-            line_count=line_count,
-            cookie_count=cookie_count,
+            line_count=diagnostics.line_count,
+            cookie_count=diagnostics.cookie_count,
         )
 
     logger.info("yt-dlp cookies source=none")
@@ -2686,6 +2878,8 @@ async def get_transcription_status(
             "selected_stem": selected_stem,
             "warning": transcription.warning_message,
             "warning_message": transcription.warning_message,
+            "lyrics_generation_status": transcription.lyrics_generation_status,
+            "lyrics_data": transcription.lyrics_data,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
             "separated_audio_url": transcription.separated_audio_url,
@@ -2708,6 +2902,8 @@ async def get_transcription_status(
             "selected_stem": selected_stem,
             "warning": transcription.warning_message,
             "warning_message": transcription.warning_message,
+            "lyrics_generation_status": transcription.lyrics_generation_status,
+            "lyrics_data": transcription.lyrics_data,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
             "separated_audio_url": transcription.separated_audio_url,
@@ -2759,6 +2955,8 @@ async def get_transcription_status(
             "selected_stem": selected_stem,
             "warning": transcription.warning_message,
             "warning_message": transcription.warning_message,
+            "lyrics_generation_status": transcription.lyrics_generation_status,
+            "lyrics_data": transcription.lyrics_data,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
             "separated_audio_url": transcription.separated_audio_url,
@@ -2952,6 +3150,98 @@ async def generate_tab(
         "separated_audio_url": transcription.separated_audio_url,
         "is_demo": transcription.is_demo,
         "message": "Tab generation started.",
+    }
+
+
+@router.post("/transcriptions/{transcription_id}/generate-lyrics")
+@router.post("/{transcription_id}/generate-lyrics")
+async def generate_lyrics(
+    transcription_id: int,
+    background_tasks: BackgroundTasks,
+    db_session: Session = Depends(db.get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """
+    Generate lyrics from an existing separated vocal stem.
+
+    This intentionally uses lyrics_generation_status instead of changing the
+    main processing_status, so the viewer remains open and stem playback stays
+    available while lyrics are transcribed.
+    """
+    transcription = _get_accessible_transcription(transcription_id, db_session, current_user)
+    if transcription.is_demo:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Demo transcriptions already include their example outputs.",
+        )
+    if transcription.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot generate lyrics for a deleted transcription.",
+        )
+
+    selected_stem = _validate_selected_stem(transcription.selected_stem)
+    if selected_stem != "vocals":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Lyrics generation is only available for vocal stems.",
+        )
+    if not _can_play_stem(transcription) or not _has_stem_audio_reference(transcription):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Separated vocal stem is required before generating lyrics.",
+        )
+    if transcription.lyrics_generation_status == "processing":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Lyrics generation is already processing.",
+        )
+
+    runtime = None
+    try:
+        from ....services.lyrics import resolve_whisper_runtime
+
+        runtime = resolve_whisper_runtime()
+    except Exception:
+        runtime = {
+            "model_size": core.config.settings.WHISPER_MODEL_SIZE,
+            "device": core.config.settings.WHISPER_DEVICE,
+        }
+    logger.info(
+        "lyrics_generation_requested transcription_id=%s selected_stem=%s whisper_model=%s whisper_device=%s",
+        transcription.id,
+        selected_stem,
+        runtime.get("model_size"),
+        runtime.get("device"),
+    )
+
+    transcription.lyrics_generation_status = "processing"
+    transcription.processing_error = None
+    transcription.modal_job_type = "generate_lyrics"
+    transcription.modal_request_id = None
+    transcription.modal_dispatch_status = None
+    transcription.modal_retry_at = None
+    transcription.modal_dispatched_at = None
+    db_session.add(transcription)
+    db_session.commit()
+    db_session.refresh(transcription)
+
+    task_id = _start_lyrics_generation(transcription.id, background_tasks)
+    if task_id:
+        transcription.celery_task_id = task_id
+        db_session.add(transcription)
+        db_session.commit()
+        db_session.refresh(transcription)
+
+    return {
+        "status": transcription.processing_status,
+        "lyrics_generation_status": transcription.lyrics_generation_status,
+        "transcription_id": transcription.id,
+        "selected_stem": selected_stem,
+        "can_play_stem": _can_play_stem(transcription),
+        "separated_audio_url": transcription.separated_audio_url,
+        "is_demo": transcription.is_demo,
+        "message": "Lyrics generation started.",
     }
 
 

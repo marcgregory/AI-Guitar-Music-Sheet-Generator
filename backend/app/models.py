@@ -83,6 +83,7 @@ class Transcription(Base):
     is_processed = Column(Boolean, default=False)
     processing_error = Column(Text, nullable=True)
     warning_message = Column(Text, nullable=True)
+    lyrics_generation_status = Column(String, nullable=True, default="pending")
     can_generate_score = Column(Boolean, default=True, nullable=False)
     can_play_stem = Column(Boolean, default=False, nullable=False)
     transcription_attempts = Column(Integer, default=0, nullable=False)
@@ -104,6 +105,7 @@ class Transcription(Base):
     tablature_data = Column(Text, nullable=True)  # JSON string of generated tablature
     notation_data = Column(Text, nullable=True)  # MusicXML string of standard notation
     chord_chart_data = Column(Text, nullable=True)  # SVG string of chord chart
+    lyrics_data = Column(Text, nullable=True)  # JSON string of generated lyrics
 
 
 class InstrumentTrack(Base):

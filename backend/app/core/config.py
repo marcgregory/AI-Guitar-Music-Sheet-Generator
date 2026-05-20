@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     NOTE_DETECTION_SENSITIVITY: str = "normal"
     NOTE_CONFIDENCE_THRESHOLD: float = 0.35
     NOTE_CONFIDENCE_THRESHOLD_LOW: float = 0.2
+    WHISPER_MODEL_SIZE: str = "base"
+    WHISPER_DEVICE: str = "auto"
+    WHISPER_COMPUTE_TYPE: str = "auto"
 
     @property
     def get_allowed_origins(self) -> List[str]:

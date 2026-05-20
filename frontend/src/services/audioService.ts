@@ -42,6 +42,7 @@ export interface Transcription {
   is_processed: boolean;
   processing_error?: string | null;
   warning_message?: string | null;
+  lyrics_generation_status?: LyricsGenerationStatusValue | null;
   instrument_type?: string | null;
   output_mode?: string | null;
   can_generate_tab?: boolean | null;
@@ -58,6 +59,7 @@ export interface Transcription {
   tablature_data?: string | null;
   notation_data?: string | null;
   chord_chart_data?: string | null;
+  lyrics_data?: string | null;
   created_at: string;
   updated_at?: string | null;
 }
@@ -96,10 +98,18 @@ export interface TranscriptionStatus {
   estimated_wait_time?: number | null;
   duplicate_reused?: boolean;
   duplicate_message?: string | null;
+  lyrics_generation_status?: LyricsGenerationStatusValue | null;
+  lyrics_data?: string | null;
 }
 
 export type StemSelection = "vocals" | "drums" | "bass" | "other";
 export type ExportFormat = "midi" | "musicxml" | "tab";
+export type LyricsGenerationStatusValue =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "completed_with_warning"
+  | "failed";
 export type ProcessingStatusValue =
   | "pending"
   | "queued"
@@ -398,6 +408,19 @@ const audioService = {
       {
         sensitivity: options?.sensitivity,
       },
+    );
+
+    return response.data;
+  },
+
+  generateLyrics: async (
+    transcriptionId: number,
+    token: string,
+  ): Promise<TranscriptionStatus> => {
+    void token;
+    const response = await apiClient.post(
+      `/audio/${transcriptionId}/generate-lyrics`,
+      {},
     );
 
     return response.data;

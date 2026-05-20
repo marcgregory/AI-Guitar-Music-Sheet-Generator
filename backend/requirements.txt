@@ -11,7 +11,9 @@ alembic==1.10.0
 redis==5.0.1
 celery==5.3.4
 cloudinary==1.44.1
-# Heavy audio/AI dependencies live in backend/modal_worker.py's Modal image.
+faster-whisper
+ctranslate2
+# Demucs/Basic Pitch dependencies live in backend/modal_worker.py's Modal image.
 # Railway/FastAPI must not install or execute torch, demucs, librosa,
 # Basic Pitch, or local MIDI/score generation libraries in production.
 yt-dlp==2026.3.17

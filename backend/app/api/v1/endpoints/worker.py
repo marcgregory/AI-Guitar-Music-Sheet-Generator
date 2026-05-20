@@ -158,6 +158,31 @@ async def complete_worker_job(
             detail="Transcription was deleted before worker completion.",
         )
 
+    is_generate_lyrics_job = transcription.modal_job_type == "generate_lyrics"
+    if is_generate_lyrics_job:
+        lyrics_payload = payload.lyrics_data if isinstance(payload.lyrics_data, dict) else {}
+        lyrics_text = str(lyrics_payload.get("text") or "").strip()
+        transcription.lyrics_data = _json_or_text(payload.lyrics_data)
+        transcription.lyrics_generation_status = (
+            "completed" if lyrics_text else "completed_with_warning"
+        )
+        transcription.processing_error = None
+        transcription.modal_dispatch_status = "completed"
+        transcription.modal_retry_at = None
+        transcription.modal_retry_count = 0
+        transcription.celery_task_id = None
+        db_session.add(transcription)
+        db_session.commit()
+        db_session.refresh(transcription)
+        logger.info(
+            "lyrics_generation_completed transcription_id=%s selected_stem=%s segment_count=%s detected_language=%s",
+            transcription.id,
+            transcription.selected_stem,
+            len(lyrics_payload.get("segments") or []),
+            lyrics_payload.get("language"),
+        )
+        return transcription
+
     transcription.separated_audio_url = payload.separated_audio_url or transcription.separated_audio_url
     transcription.separated_audio_public_id = (
         payload.separated_audio_public_id or transcription.separated_audio_public_id
@@ -294,14 +319,27 @@ async def fail_worker_job(
             _json_or_text(payload.internal_logs) if payload.internal_logs else None,
         )
 
-        transcription.processing_status = "failed"
-        transcription.is_processed = False
-        transcription.processing_error = sanitized_error
-        transcription.queue_position = None
-        transcription.estimated_wait_time = None
-        transcription.celery_task_id = None
-        transcription.modal_dispatch_status = "failed"
-        transcription.modal_retry_at = None
+        if transcription.modal_job_type == "generate_lyrics":
+            transcription.lyrics_generation_status = "failed"
+            transcription.processing_error = "Lyrics generation failed. Please try again with a clearer vocal stem."
+            transcription.celery_task_id = None
+            transcription.modal_dispatch_status = "failed"
+            transcription.modal_retry_at = None
+            logger.error(
+                "lyrics_generation_failed transcription_id=%s selected_stem=%s error=%s",
+                transcription_id,
+                transcription.selected_stem,
+                sanitized_error,
+            )
+        else:
+            transcription.processing_status = "failed"
+            transcription.is_processed = False
+            transcription.processing_error = sanitized_error
+            transcription.queue_position = None
+            transcription.estimated_wait_time = None
+            transcription.celery_task_id = None
+            transcription.modal_dispatch_status = "failed"
+            transcription.modal_retry_at = None
         db_session.add(transcription)
         db_session.commit()
         db_session.refresh(transcription)

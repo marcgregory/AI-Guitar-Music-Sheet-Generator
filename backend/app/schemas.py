@@ -111,6 +111,7 @@ class TranscriptionBase(BaseModel):
     detected_key: Optional[str] = None
     key_confidence: Optional[int] = None
     warning_message: Optional[str] = None
+    lyrics_generation_status: Optional[str] = None
     instrument_type: Optional[str] = None
     output_mode: Optional[str] = None
     can_generate_tab: Optional[bool] = False
@@ -137,6 +138,7 @@ class TranscriptionUpdate(BaseModel):
     processing_status: Optional[str] = None
     processing_error: Optional[str] = None
     warning_message: Optional[str] = None
+    lyrics_generation_status: Optional[str] = None
     can_generate_score: Optional[bool] = None
     can_play_stem: Optional[bool] = None
     transcription_attempts: Optional[int] = None
@@ -152,6 +154,7 @@ class TranscriptionInDBBase(TranscriptionBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     chord_chart_data: Optional[str] = None
+    lyrics_data: Optional[str] = None
 
 class TranscriptionInDB(TranscriptionInDBBase):
     notes_data: Optional[str] = None
@@ -159,6 +162,7 @@ class TranscriptionInDB(TranscriptionInDBBase):
     tablature_data: Optional[str] = None
     notation_data: Optional[str] = None
     chord_chart_data: Optional[str] = None
+    lyrics_data: Optional[str] = None
 
 class Transcription(TranscriptionInDBBase):
     notes_data: Optional[str] = None
@@ -166,6 +170,7 @@ class Transcription(TranscriptionInDBBase):
     tablature_data: Optional[str] = None
     notation_data: Optional[str] = None
     chord_chart_data: Optional[str] = None
+    lyrics_data: Optional[str] = None
 
 
 class InstrumentTrackBase(BaseModel):
@@ -244,6 +249,7 @@ class WorkerCompleteRequest(BaseModel):
     chords_data: Optional[Any] = None
     chord_chart_data: Optional[Any] = None
     tablature_data: Optional[Any] = None
+    lyrics_data: Optional[Any] = None
     track_metadata: Optional[dict[str, Any]] = None
 
 
