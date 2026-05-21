@@ -331,6 +331,25 @@ def _modal_retry_delay_seconds(retry_count: int) -> int:
     return int(min(ceiling, delay))
 
 
+def _manual_generation_field(selected_stem: str | None) -> str | None:
+    stem = (selected_stem or "other").strip().lower()
+    if stem == "drums":
+        return "rhythm_generation_status"
+    if stem in {"bass", "other"}:
+        return "tab_generation_status"
+    return None
+
+
+def _set_manual_generation_status(
+    transcription: models.Transcription,
+    generation_status: str,
+) -> None:
+    field_name = _manual_generation_field(transcription.selected_stem)
+    if not field_name:
+        return
+    setattr(transcription, field_name, generation_status)
+
+
 def _mark_modal_retry(
     transcription: models.Transcription,
     session: Session,
@@ -352,6 +371,8 @@ def _mark_modal_retry(
         transcription.processing_status = "failed"
         transcription.processing_error = error
         transcription.modal_dispatch_status = "failed"
+        if transcription.modal_job_type == "generate_tab":
+            _set_manual_generation_status(transcription, "failed")
         transcription.modal_retry_at = None
         transcription.queue_position = None
         transcription.estimated_wait_time = None
@@ -369,6 +390,8 @@ def _mark_modal_retry(
             "Modal capacity unavailable. Please retry later."
         )
         transcription.modal_dispatch_status = "failed"
+        if transcription.modal_job_type == "generate_tab":
+            _set_manual_generation_status(transcription, "failed")
         transcription.modal_retry_at = None
         transcription.queue_position = None
         transcription.estimated_wait_time = None
@@ -378,6 +401,8 @@ def _mark_modal_retry(
         transcription.processing_status = "queued"
         transcription.processing_error = error
         transcription.modal_dispatch_status = "rate_limited" if rate_limited else "retry_queued"
+        if transcription.modal_job_type == "generate_tab":
+            _set_manual_generation_status(transcription, "queued")
         transcription.modal_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
         transcription.modal_retry_count = next_retry_count
         transcription.queue_position = None
@@ -439,6 +464,8 @@ def retry_rate_limited_modal_jobs_once() -> dict[str, object]:
         transcription.processing_status = "processing"
         transcription.processing_error = None
         transcription.modal_dispatch_status = "rate_limited"
+        if transcription.modal_job_type == "generate_tab":
+            _set_manual_generation_status(transcription, "processing")
         session.add(transcription)
         session.commit()
 
@@ -554,6 +581,8 @@ def _trigger_modal_worker(
                 transcription.processing_error = (
                     "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
                 )
+                if job_type == "generate_tab":
+                    _set_manual_generation_status(transcription, "failed")
                 transcription.queue_position = None
                 transcription.estimated_wait_time = None
             transcription.modal_dispatch_status = "failed"
@@ -1684,6 +1713,8 @@ def _metadata_payload(transcription: models.Transcription) -> dict:
         "selected_stem": selected_stem,
         "separated_audio_url": transcription.separated_audio_url,
         "warning_message": transcription.warning_message,
+        "tab_generation_status": transcription.tab_generation_status or "idle",
+        "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
         "available_exports": _available_exports(transcription),
         "instrument_type": _instrument_type_for(transcription),
         "output_mode": output_mode,
@@ -1717,6 +1748,8 @@ def _status_payload(
         "can_generate_score": can_generate_score,
         "warning_message": warning,
         "lyrics_generation_status": transcription.lyrics_generation_status,
+        "tab_generation_status": transcription.tab_generation_status or "idle",
+        "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
         "lyrics_data": transcription.lyrics_data,
         "separated_audio_url": transcription.separated_audio_url,
         "available_exports": _available_exports(transcription),
@@ -2879,6 +2912,8 @@ async def get_transcription_status(
             "warning": transcription.warning_message,
             "warning_message": transcription.warning_message,
             "lyrics_generation_status": transcription.lyrics_generation_status,
+            "tab_generation_status": transcription.tab_generation_status or "idle",
+            "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
             "lyrics_data": transcription.lyrics_data,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
@@ -2903,6 +2938,8 @@ async def get_transcription_status(
             "warning": transcription.warning_message,
             "warning_message": transcription.warning_message,
             "lyrics_generation_status": transcription.lyrics_generation_status,
+            "tab_generation_status": transcription.tab_generation_status or "idle",
+            "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
             "lyrics_data": transcription.lyrics_data,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
@@ -2956,6 +2993,8 @@ async def get_transcription_status(
             "warning": transcription.warning_message,
             "warning_message": transcription.warning_message,
             "lyrics_generation_status": transcription.lyrics_generation_status,
+            "tab_generation_status": transcription.tab_generation_status or "idle",
+            "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
             "lyrics_data": transcription.lyrics_data,
             "can_play_stem": _can_play_stem(transcription),
             "can_generate_score": _can_generate_score(transcription),
@@ -3121,13 +3160,22 @@ async def generate_tab(
             detail="This transcription is already processing.",
         )
 
+    relevant_generation_status = (
+        transcription.rhythm_generation_status
+        if selected_stem == "drums"
+        else transcription.tab_generation_status
+    ) or "idle"
+    existing_score_ready = _can_generate_score(transcription)
     transcription.processing_status = "processing"
     transcription.is_processed = False
-    transcription.processing_error = None
-    transcription.warning_message = None
+    transcription.can_generate_score = existing_score_ready
+    if relevant_generation_status == "failed":
+        transcription.processing_error = None
+        transcription.warning_message = None
     transcription.queue_position = 0
     transcription.estimated_wait_time = 0
     transcription.modal_job_type = "generate_tab"
+    _set_manual_generation_status(transcription, "processing")
     transcription.modal_request_id = None
     transcription.modal_dispatch_status = None
     transcription.modal_retry_at = None
@@ -3136,11 +3184,16 @@ async def generate_tab(
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(transcription)
-    _start_tab_generation(
+    task_id = _start_tab_generation(
         transcription.id,
         background_tasks,
         detection_sensitivity=request.sensitivity,
     )
+    if task_id:
+        transcription.celery_task_id = task_id
+        db_session.add(transcription)
+        db_session.commit()
+        db_session.refresh(transcription)
     return {
         "status": transcription.processing_status,
         "transcription_id": transcription.id,
@@ -3149,6 +3202,8 @@ async def generate_tab(
         "can_generate_score": transcription.can_generate_score,
         "separated_audio_url": transcription.separated_audio_url,
         "is_demo": transcription.is_demo,
+        "tab_generation_status": transcription.tab_generation_status or "idle",
+        "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
         "message": "Tab generation started.",
     }
 
@@ -3236,6 +3291,8 @@ async def generate_lyrics(
     return {
         "status": transcription.processing_status,
         "lyrics_generation_status": transcription.lyrics_generation_status,
+        "tab_generation_status": transcription.tab_generation_status or "idle",
+        "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
         "transcription_id": transcription.id,
         "selected_stem": selected_stem,
         "can_play_stem": _can_play_stem(transcription),

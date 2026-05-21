@@ -1334,6 +1334,8 @@ def test_generate_tab_endpoint_accepts_high_sensitivity_option():
     assert payload["selected_stem"] == "bass"
     assert payload["can_play_stem"] is True
     assert payload["can_generate_score"] is False
+    assert payload["tab_generation_status"] == "processing"
+    assert payload["rhythm_generation_status"] == "idle"
     assert payload["message"] == "Tab generation started."
     assert start_mock.call_args.args[0] == transcription_id
     assert start_mock.call_args.kwargs["detection_sensitivity"] == "high"
@@ -1345,6 +1347,8 @@ def test_generate_tab_endpoint_accepts_high_sensitivity_option():
             models.Transcription.id == transcription_id
         ).one()
         assert refreshed.processing_status == "processing"
+        assert refreshed.tab_generation_status == "processing"
+        assert refreshed.rhythm_generation_status == "idle"
         assert refreshed.celery_task_id == "tab-task"
     finally:
         session.close()
@@ -1380,6 +1384,8 @@ def test_generate_lyrics_endpoint_uses_lyrics_status_without_processing_audio():
     payload = response.json()
     assert payload["status"] == "stem_ready"
     assert payload["lyrics_generation_status"] == "processing"
+    assert payload["tab_generation_status"] == "idle"
+    assert payload["rhythm_generation_status"] == "idle"
     assert payload["message"] == "Lyrics generation started."
     assert start_mock.call_args.args[0] == transcription_id
 
@@ -1390,6 +1396,8 @@ def test_generate_lyrics_endpoint_uses_lyrics_status_without_processing_audio():
         ).one()
         assert refreshed.processing_status == "stem_ready"
         assert refreshed.lyrics_generation_status == "processing"
+        assert refreshed.tab_generation_status == "idle"
+        assert refreshed.rhythm_generation_status == "idle"
         assert refreshed.celery_task_id == "lyrics-task"
         assert refreshed.separated_audio_url.endswith("vocals.wav")
     finally:

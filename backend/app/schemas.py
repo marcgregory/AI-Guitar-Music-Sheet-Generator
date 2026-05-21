@@ -112,6 +112,8 @@ class TranscriptionBase(BaseModel):
     key_confidence: Optional[int] = None
     warning_message: Optional[str] = None
     lyrics_generation_status: Optional[str] = None
+    tab_generation_status: Optional[str] = "idle"
+    rhythm_generation_status: Optional[str] = "idle"
     instrument_type: Optional[str] = None
     output_mode: Optional[str] = None
     can_generate_tab: Optional[bool] = False
@@ -139,6 +141,8 @@ class TranscriptionUpdate(BaseModel):
     processing_error: Optional[str] = None
     warning_message: Optional[str] = None
     lyrics_generation_status: Optional[str] = None
+    tab_generation_status: Optional[str] = None
+    rhythm_generation_status: Optional[str] = None
     can_generate_score: Optional[bool] = None
     can_play_stem: Optional[bool] = None
     transcription_attempts: Optional[int] = None

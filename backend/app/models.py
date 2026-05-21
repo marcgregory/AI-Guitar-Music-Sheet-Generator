@@ -84,6 +84,8 @@ class Transcription(Base):
     processing_error = Column(Text, nullable=True)
     warning_message = Column(Text, nullable=True)
     lyrics_generation_status = Column(String, nullable=True, default="pending")
+    tab_generation_status = Column(String, nullable=False, default="idle", server_default="idle")
+    rhythm_generation_status = Column(String, nullable=False, default="idle", server_default="idle")
     can_generate_score = Column(Boolean, default=True, nullable=False)
     can_play_stem = Column(Boolean, default=False, nullable=False)
     transcription_attempts = Column(Integer, default=0, nullable=False)

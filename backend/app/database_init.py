@@ -92,6 +92,8 @@ def _ensure_transcription_phase1_columns():
         "processing_error": "TEXT",
         "warning_message": "TEXT",
         "lyrics_generation_status": "VARCHAR DEFAULT 'pending'",
+        "tab_generation_status": "VARCHAR DEFAULT 'idle'",
+        "rhythm_generation_status": "VARCHAR DEFAULT 'idle'",
         "can_generate_score": "BOOLEAN DEFAULT TRUE",
         "can_play_stem": "BOOLEAN DEFAULT FALSE",
         "transcription_attempts": "INTEGER DEFAULT 0",
@@ -111,6 +113,20 @@ def _ensure_transcription_phase1_columns():
             conn.execute(
                 text(f"ALTER TABLE transcriptions ADD COLUMN {column_name} {ddl_type}")
             )
+        conn.execute(
+            text(
+                "UPDATE transcriptions "
+                "SET tab_generation_status = 'idle' "
+                "WHERE tab_generation_status IS NULL"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE transcriptions "
+                "SET rhythm_generation_status = 'idle' "
+                "WHERE rhythm_generation_status IS NULL"
+            )
+        )
         conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_transcriptions_modal_retry_at "

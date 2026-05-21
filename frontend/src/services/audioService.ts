@@ -43,6 +43,11 @@ export interface Transcription {
   processing_error?: string | null;
   warning_message?: string | null;
   lyrics_generation_status?: LyricsGenerationStatusValue | null;
+  tab_generation_status?: GenerationStatusValue | null;
+  rhythm_generation_status?: GenerationStatusValue | null;
+  modal_dispatch_status?: string | null;
+  modal_job_type?: string | null;
+  modal_retry_at?: string | null;
   instrument_type?: string | null;
   output_mode?: string | null;
   can_generate_tab?: boolean | null;
@@ -99,6 +104,11 @@ export interface TranscriptionStatus {
   duplicate_reused?: boolean;
   duplicate_message?: string | null;
   lyrics_generation_status?: LyricsGenerationStatusValue | null;
+  tab_generation_status?: GenerationStatusValue | null;
+  rhythm_generation_status?: GenerationStatusValue | null;
+  modal_dispatch_status?: string | null;
+  modal_job_type?: string | null;
+  modal_retry_at?: string | null;
   lyrics_data?: string | null;
 }
 
@@ -109,6 +119,12 @@ export type LyricsGenerationStatusValue =
   | "processing"
   | "completed"
   | "completed_with_warning"
+  | "failed";
+export type GenerationStatusValue =
+  | "idle"
+  | "queued"
+  | "processing"
+  | "completed"
   | "failed";
 export type ProcessingStatusValue =
   | "pending"

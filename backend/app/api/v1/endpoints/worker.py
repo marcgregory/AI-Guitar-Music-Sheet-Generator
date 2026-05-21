@@ -21,6 +21,25 @@ STEM_TO_ANALYSIS_INSTRUMENT = {
     "bass": "bass",
     "other": "guitar",
 }
+
+
+def _manual_generation_field(selected_stem: str | None) -> str | None:
+    stem = (selected_stem or "other").strip().lower()
+    if stem == "drums":
+        return "rhythm_generation_status"
+    if stem in {"bass", "other"}:
+        return "tab_generation_status"
+    return None
+
+
+def _set_manual_generation_status(
+    transcription: models.Transcription,
+    generation_status: str,
+) -> None:
+    field_name = _manual_generation_field(transcription.selected_stem)
+    if not field_name:
+        return
+    setattr(transcription, field_name, generation_status)
 INSTRUMENT_DISPLAY_NAMES = {
     "vocals": "Vocals",
     "drums": "Drums",
@@ -223,6 +242,7 @@ async def complete_worker_job(
     is_generate_tab_job = transcription.modal_job_type == "generate_tab"
     if is_generate_tab_job:
         transcription.can_generate_score = bool(selected_stem in {"bass", "other"} and has_notes)
+        _set_manual_generation_status(transcription, "completed")
         transcription.processing_status = (
             "completed"
             if transcription.can_generate_score or (selected_stem == "drums" and has_drum_hits)
@@ -331,6 +351,16 @@ async def fail_worker_job(
                 transcription.selected_stem,
                 sanitized_error,
             )
+        elif transcription.modal_job_type == "generate_tab":
+            _set_manual_generation_status(transcription, "failed")
+            transcription.processing_status = "stem_ready"
+            transcription.is_processed = True
+            transcription.processing_error = sanitized_error
+            transcription.queue_position = None
+            transcription.estimated_wait_time = None
+            transcription.celery_task_id = None
+            transcription.modal_dispatch_status = "failed"
+            transcription.modal_retry_at = None
         else:
             transcription.processing_status = "failed"
             transcription.is_processed = False

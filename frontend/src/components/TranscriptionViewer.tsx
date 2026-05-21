@@ -115,6 +115,39 @@ const parseLyricsData = (
 const lyricStatusOf = (transcription: Transcription): string =>
   transcription.lyrics_generation_status || "pending";
 
+const isGenerationInProgressStatus = (status: string | null | undefined) =>
+  status === "queued" || status === "processing";
+
+const isGenerationCompleteStatus = (status: string | null | undefined) =>
+  status === "completed";
+
+const isGenerationFailedStatus = (status: string | null | undefined) =>
+  status === "failed";
+
+const tabStatusOf = (transcription: Transcription): string =>
+  transcription.tab_generation_status || "idle";
+
+const rhythmStatusOf = (transcription: Transcription): string =>
+  transcription.rhythm_generation_status || "idle";
+
+const generationStatusForMode = (
+  transcription: Transcription,
+  mode: "tabs" | "rhythm" | "lyrics",
+): string => {
+  if (mode === "rhythm") return rhythmStatusOf(transcription);
+  if (mode === "tabs") return tabStatusOf(transcription);
+  return lyricStatusOf(transcription);
+};
+
+const isTabsGenerating = (transcription: Transcription): boolean =>
+  (transcription.selected_stem === "other" ||
+    transcription.selected_stem === "bass") &&
+  isGenerationInProgressStatus(tabStatusOf(transcription));
+
+const isRhythmGenerating = (transcription: Transcription): boolean =>
+  transcription.selected_stem === "drums" &&
+  isGenerationInProgressStatus(rhythmStatusOf(transcription));
+
 const lyricTime = (seconds: number | undefined): string => {
   const value = Math.max(0, Number(seconds ?? 0));
   const minutes = Math.floor(value / 60);
@@ -2300,17 +2333,22 @@ const TranscriptionViewer: React.FC = () => {
           );
           const fetchedStatus = result.processing_status;
           const fetchedLyricsStatus = lyricStatusOf(result);
+          const fetchedGenerationStatus = generationStatusForMode(
+            result,
+            mode,
+          );
           const isLyrics = mode === "lyrics";
           console.log("latest fetched transcription status", {
             transcriptionId: transcriptionIdValue,
             status: fetchedStatus,
             lyricsStatus: fetchedLyricsStatus,
+            generationStatus: fetchedGenerationStatus,
             processing_error: result.processing_error,
           });
 
           const hasError = isLyrics
             ? fetchedLyricsStatus === "failed"
-            : fetchedStatus === "failed" || Boolean(result.processing_error);
+            : isGenerationFailedStatus(fetchedGenerationStatus);
           if (hasError) {
             setTranscription(result);
             setIsGeneratingTab(false);
@@ -2333,8 +2371,7 @@ const TranscriptionViewer: React.FC = () => {
           const isTerminalSuccess = isLyrics
             ? fetchedLyricsStatus === "completed" ||
               fetchedLyricsStatus === "completed_with_warning"
-            : fetchedStatus === "completed" ||
-              fetchedStatus === "completed_with_warning";
+            : isGenerationCompleteStatus(fetchedGenerationStatus);
           if (isTerminalSuccess) {
             setTranscription(result);
             setIsGeneratingTab(false);
@@ -2360,12 +2397,9 @@ const TranscriptionViewer: React.FC = () => {
 
           if (
             isGeneratingTabRef.current &&
-            fetchedStatus === "stem_ready"
+            isGenerationInProgressStatus(fetchedGenerationStatus)
           ) {
-            console.log("updated local status", {
-              status: "generating_tabs",
-              ignoredFetchedStatus: fetchedStatus,
-            });
+            setTranscription(result);
             return;
           }
 
@@ -2384,6 +2418,25 @@ const TranscriptionViewer: React.FC = () => {
     },
     [stopGenerateTabPolling],
   );
+
+  useEffect(() => {
+    if (!transcription?.id || generateTabPollingRef.current) return;
+
+    const shouldResumeTabs = isTabsGenerating(transcription);
+    const shouldResumeRhythm = isRhythmGenerating(transcription);
+    if (!shouldResumeTabs && !shouldResumeRhythm) return;
+
+    isGeneratingTabRef.current = true;
+    setIsGeneratingTab(true);
+    setGenerationStatus(
+      shouldResumeRhythm ? "Generating rhythm..." : "Generating tabs...",
+    );
+    setGenerationMessage("Generation is still in progress.");
+    startGenerateTabPolling(
+      transcription.id,
+      shouldResumeRhythm ? "rhythm" : "tabs",
+    );
+  }, [startGenerateTabPolling, transcription]);
 
   const activeScoreSource: ActiveScoreSource | null = useMemo(() => {
     if (!transcription) return null;
@@ -2907,7 +2960,13 @@ const TranscriptionViewer: React.FC = () => {
     if (!token || !transcription?.id || transcription.is_demo) return;
 
     // Prevent multiple concurrent generations
-    if (isGeneratingTab) return;
+    if (
+      isGeneratingTab ||
+      isTabsGenerating(transcription) ||
+      isRhythmGenerating(transcription)
+    ) {
+      return;
+    }
 
     const isRhythm = transcription.selected_stem === "drums";
     const nextGenerationStatus = isRhythm
@@ -2935,6 +2994,11 @@ const TranscriptionViewer: React.FC = () => {
               is_processed: false,
               processing_error: null,
               processing_status: "processing",
+              tab_generation_status:
+                isRhythm ? current.tab_generation_status : "processing",
+              rhythm_generation_status: isRhythm
+                ? "processing"
+                : current.rhythm_generation_status,
             }
           : current,
       );
@@ -3155,8 +3219,10 @@ const TranscriptionViewer: React.FC = () => {
   const scoreControlsAvailable =
     canGenerateScore && !selectedTrackIsDrums;
   const isDemoTranscription = Boolean(transcription.is_demo);
+  const backendTabsGenerating = isTabsGenerating(transcription);
+  const backendRhythmGenerating = isRhythmGenerating(transcription);
   const isGeneratingTabsView =
-    isGeneratingTab || transcription.processing_status === "processing";
+    isGeneratingTab || backendTabsGenerating || backendRhythmGenerating;
   const lyricsGenerationStatus = lyricStatusOf(transcription);
   const hasLyricsData = Boolean(lyricsData);
   const hasLyricsSegments = lyricsSegments.length > 0;
@@ -3184,14 +3250,23 @@ const TranscriptionViewer: React.FC = () => {
   const isVocalStemReady =
     selectedStemReady && transcription.selected_stem === "vocals";
   const vocalLyricsAvailable = transcription.selected_stem === "vocals";
-  const generateTabAllowed = Boolean(
+  const tabStemSupported =
+    transcription.selected_stem === "other" ||
+    transcription.selected_stem === "bass";
+  const rhythmStemSupported = transcription.selected_stem === "drums";
+  const canGenerateTabs = Boolean(
     selectedStemReady &&
     hasStemPlayback &&
-    (transcription.selected_stem === "other" ||
-      transcription.selected_stem === "bass" ||
-      transcription.selected_stem === "drums") &&
+    tabStemSupported &&
     !isDemoTranscription,
   );
+  const canGenerateRhythm = Boolean(
+    selectedStemReady &&
+    hasStemPlayback &&
+    rhythmStemSupported &&
+    !isDemoTranscription,
+  );
+  const generateTabAllowed = canGenerateTabs || canGenerateRhythm;
   const generateTabLabel =
     transcription.selected_stem === "drums"
       ? "Generate Rhythm (Experimental)"

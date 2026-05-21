@@ -582,6 +582,8 @@ def fail_heavy_celery_task(transcription_id: int | None, message: str) -> dict:
             if transcription and not transcription.is_deleted:
                 transcription.processing_status = "failed"
                 transcription.processing_error = message
+                if getattr(transcription, "modal_job_type", None) == "generate_tab":
+                    set_manual_generation_status(transcription, "failed")
                 transcription.queue_position = None
                 transcription.estimated_wait_time = None
                 transcription.celery_task_id = None
@@ -695,6 +697,22 @@ def save_ascii_tab_artifact(transcription, tablature_json: str, uploads_dir: str
 def ensure_transcription_not_deleted(transcription) -> None:
     if getattr(transcription, "is_deleted", False):
         raise RuntimeError("Transcription was deleted before processing completed.")
+
+
+def manual_generation_field(selected_stem: str | None) -> str | None:
+    stem = (selected_stem or "other").strip().lower()
+    if stem == "drums":
+        return "rhythm_generation_status"
+    if stem in {"bass", "other"}:
+        return "tab_generation_status"
+    return None
+
+
+def set_manual_generation_status(transcription, generation_status: str) -> None:
+    field_name = manual_generation_field(getattr(transcription, "selected_stem", None))
+    if not field_name:
+        return
+    setattr(transcription, field_name, generation_status)
 
 
 def generate_derived_outputs(transcription, db_session: Session) -> None:
@@ -1629,9 +1647,16 @@ def generate_tab_from_separated_stem(
         if not stem_playback_available(transcription):
             raise ValueError("Separated stem is missing. Run stem separation before generating tabs.")
 
+        current_generation_status = (
+            transcription.rhythm_generation_status
+            if selected_stem == "drums"
+            else transcription.tab_generation_status
+        ) or "idle"
         transcription.processing_status = "processing"
-        transcription.processing_error = None
-        transcription.warning_message = None
+        if current_generation_status == "failed":
+            transcription.processing_error = None
+            transcription.warning_message = None
+        set_manual_generation_status(transcription, "processing")
         transcription.can_generate_score = False
         transcription.can_play_stem = True
         transcription.queue_position = 0
@@ -1650,6 +1675,9 @@ def generate_tab_from_separated_stem(
             ),
         )
         db_session.refresh(transcription)
+        set_manual_generation_status(transcription, "completed")
+        db_session.add(transcription)
+        db_session.commit()
         cleanup_transient_audio_files(transcription, db_session)
 
         return {
@@ -1671,9 +1699,10 @@ def generate_tab_from_separated_stem(
                     if transcription.is_deleted:
                         transcription.processing_status = "cancelled"
                     else:
-                        transcription.processing_status = "failed"
+                        set_manual_generation_status(transcription, "failed")
+                        transcription.processing_status = "stem_ready"
                         transcription.processing_error = str(e)
-                        transcription.is_processed = False
+                        transcription.is_processed = True
                     transcription.queue_position = None
                     transcription.estimated_wait_time = None
                     db_session.add(transcription)

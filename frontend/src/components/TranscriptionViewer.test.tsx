@@ -32,6 +32,8 @@ const stemReadyTranscription: Transcription = {
   title: "Stem Ready Song",
   selected_stem: "other",
   processing_status: "stem_ready",
+  tab_generation_status: "idle",
+  rhythm_generation_status: "idle",
   separated_audio_url: "/demo/stem.wav",
   can_play_stem: true,
   can_generate_score: false,
@@ -85,6 +87,23 @@ describe("TranscriptionViewer generate tabs polling", () => {
   });
 
   it("keeps generating UI when polling returns stale stem_ready", async () => {
+    (audioService.generateTab as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        status: "processing",
+        transcription_id: 42,
+        message: "Tab generation started.",
+        tab_generation_status: "processing",
+      });
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        ...stemReadyTranscription,
+      })
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        processing_status: "processing",
+        tab_generation_status: "processing",
+      });
+
     render(<TranscriptionViewer />);
 
     const generateButton = await screen.findByRole("button", {
@@ -113,6 +132,66 @@ describe("TranscriptionViewer generate tabs polling", () => {
       ),
     ).not.toBeInTheDocument();
   }, 10000);
+
+  it("does not treat generic audio processing as manual tab generation", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        processing_status: "processing",
+        tab_generation_status: "idle",
+        rhythm_generation_status: "idle",
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    await waitFor(() => {
+      expect(audioService.getTranscriptionResult).toHaveBeenCalled();
+    });
+    expect(
+      screen.queryByRole("button", { name: /Generating tabs/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("restores manual tab generation state from backend status on mount", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        processing_status: "processing",
+        tab_generation_status: "processing",
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    const generatingButton = await screen.findByRole("button", {
+      name: /Generating tabs/i,
+    });
+    expect(generatingButton).toBeDisabled();
+  });
+
+  it("restores manual rhythm generation state from backend status on mount", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Drum generation",
+        selected_stem: "drums",
+        processing_status: "processing",
+        tab_generation_status: "idle",
+        rhythm_generation_status: "queued",
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    const generatingButton = await screen.findByRole("button", {
+      name: /Generating rhythm/i,
+    });
+    expect(generatingButton).toBeDisabled();
+  });
 
   it("renders readable drum tabs as wrapped measure notation", async () => {
     const drumNotes = JSON.stringify({

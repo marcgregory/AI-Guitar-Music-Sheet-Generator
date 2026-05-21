@@ -371,7 +371,7 @@ Transcription
 - [x] Add zoom controls for notation viewer
 - [x] Implement dark/light mode toggle
 - [x] Add download buttons for each export format (MIDI, MusicXML, TXT, PDF later) - MIDI, MusicXML, and TAB buttons are wired; PDF remains Phase 6
-- [ ] Responsive stabilization must follow the "Critical Responsive Layout Rules" from `skill.md`; layout fixes should prioritize minimum width constraints, earlier stacking/wrapping, and preserving desktop composition integrity instead of overflow masking.
+- [ ] Responsive stabilization must follow the "Critical Responsive Layout Rules" from `skill.md`; layout fixes should prioritize minimum width constraints, earlier stacking/wrapping, preserving desktop composition integrity instead of overflow masking, mobile hero preview height caps, and compact auth/login/register tablet/mobile layouts.
 
 ### Selected-Stem Track Interface
 
