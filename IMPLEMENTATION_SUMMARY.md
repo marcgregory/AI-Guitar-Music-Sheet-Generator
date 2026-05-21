@@ -74,11 +74,15 @@ To verify the implementation:
 
 The current implementation uses a fixed tempo (120 BPM) for MIDI timing when the detected tempo is not available in the pitch detection data. For improved accuracy, future versions could use the detected_tempo from the transcription record.
 
-## Resume Point - Next Task
+## Current MVP Direction
 
-Completed: piano stem note/staff notation support.
+Completed historical note/staff work should be interpreted through the current selected-stem MVP architecture. Vocal stems now use Generate Lyrics with faster-whisper and separate `lyrics_generation_status`; vocal melody/staff notation is future work.
 
-Next: implement vocal melody note data and staff notation from vocal stems.
+Next priorities:
+
+- Keep result fetching gated behind `/status`; call `/result` only after a ready status such as `stem_ready`, `completed`, or `completed_with_warning`.
+- Preserve non-vocal Generate Tabs behavior for `other` and `bass`.
+- Keep Modal as the heavy AI/audio worker with `AUDIO_PROCESSING_MODE=modal`.
 
 Relevant files:
 

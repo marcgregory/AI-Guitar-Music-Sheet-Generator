@@ -11360,6 +11360,13 @@ button.drum-tab-cell {
   min-width: 0;
 }
 
+.dashboard-page .project-body,
+.dashboard-page .project-menu-shell,
+.dashboard-page .project-actions,
+.dashboard-page .project-list-actions {
+  min-width: 0;
+}
+
 .dashboard-page .project-list-title,
 .dashboard-page .project-title {
   overflow-wrap: normal;
@@ -11485,12 +11492,16 @@ button.drum-tab-cell {
 
   .dashboard-page .project-card:not(.featured-project-card),
   .dashboard-page .project-list-item {
-    grid-template-columns: 84px minmax(0, 1fr);
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .dashboard-page .project-card:not(.featured-project-card) .project-cover,
   .dashboard-page .project-list-item .project-cover {
-    width: 84px;
+    width: 100%;
+    min-height: 136px;
+    max-height: 176px;
+    aspect-ratio: 16 / 9;
   }
 }
 
@@ -11652,4 +11663,806 @@ button.drum-tab-cell {
 
 .app-shell-main {
   padding-top: 72px;
+}
+
+/* Phase 1 responsive stabilization: page clipping, safe shrinkage, and contained wide content. */
+html,
+body,
+#root,
+.site-shell,
+.app-shell,
+.public-shell,
+.app-shell-main {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+@supports not (overflow: clip) {
+  html,
+  body,
+  #root,
+  .site-shell,
+  .app-shell,
+  .public-shell,
+  .app-shell-main {
+    overflow-x: hidden;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+img,
+video,
+canvas,
+iframe,
+object,
+embed {
+  max-width: 100%;
+}
+
+svg {
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  max-width: 100%;
+}
+
+table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+pre {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  -webkit-overflow-scrolling: touch;
+}
+
+code {
+  overflow-wrap: anywhere;
+}
+
+pre code {
+  white-space: inherit;
+  overflow-wrap: normal;
+}
+
+.min-w-0 {
+  min-width: 0;
+}
+
+.scroll-x {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.stable-panel {
+  min-width: min(100%, 280px);
+  min-height: 120px;
+}
+
+.app-container {
+  width: var(--app-container-width, min(1200px, calc(100vw - 2rem)));
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+.layout-surface {
+  width: 100%;
+  max-width: 100%;
+  min-width: min(100%, 280px);
+}
+
+.auth-page,
+.dashboard-page,
+.audio-upload-container,
+.processing-status-container,
+.transcription-viewer-container,
+.transcription-premium-page,
+.landing-page,
+.landing-hero,
+.landing-services,
+.landing-workflow {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+}
+
+@supports not (overflow: clip) {
+  .auth-page,
+  .dashboard-page,
+  .audio-upload-container,
+  .processing-status-container,
+  .transcription-viewer-container,
+  .transcription-premium-page,
+  .landing-page,
+  .landing-hero,
+  .landing-services,
+  .landing-workflow {
+    overflow-x: hidden;
+  }
+}
+
+.auth-container,
+.auth-form,
+.dashboard-content,
+.dashboard-main,
+.processing-status-content,
+.transcription-viewer-content,
+.audio-upload-stage,
+.transcription-upload-shell,
+.upload-card,
+.upload-primary-column,
+.upload-help-column,
+.file-upload-area,
+.youtube-upload-section,
+.processing-slot-busy-card,
+.audio-player-container,
+.premium-transcription-card,
+.premium-transcription-body,
+.premium-project-hero,
+.premium-hero-audio,
+.premium-score-workspace,
+.premium-score-sidebar,
+.premium-score-stage,
+.premium-lyrics-panel,
+.premium-bottom-bar,
+.studio-confirm-dialog,
+.alert,
+.empty-state,
+.loading-state {
+  width: min(100%, var(--app-container-width, 100%));
+  max-width: 100%;
+  min-width: min(100%, 280px);
+}
+
+.dashboard-content,
+.dashboard-main,
+.processing-status-content,
+.transcription-viewer-content,
+.audio-upload-stage,
+.transcription-upload-shell,
+.upload-card,
+.upload-primary-column,
+.upload-help-column,
+.premium-transcription-card,
+.premium-transcription-body,
+.premium-project-hero,
+.premium-hero-audio,
+.premium-score-workspace,
+.premium-score-sidebar,
+.premium-score-stage,
+.premium-lyrics-panel,
+.premium-bottom-bar,
+.project-body,
+.project-list-content,
+.quick-action-content,
+.processing-info,
+.processing-details,
+.premium-title-block,
+.premium-source-line,
+.premium-playback-metadata,
+.premium-status-badge-row,
+.premium-info-section,
+.premium-horizontal-card,
+.premium-stem-review-panel > div,
+.premium-lyrics-segments,
+.premium-lyrics-transcript,
+.premium-view-tabs,
+.premium-track-list,
+.premium-option-list {
+  min-width: 0;
+}
+
+.project-card,
+.project-list-item,
+.stat-card,
+.quick-action-button,
+.service-card,
+.upload-help-item,
+.stem-selector,
+.stem-option,
+.processing-slot-busy-card,
+.processing-status-content,
+.premium-horizontal-card,
+.premium-stem-review-panel,
+.premium-feature-card,
+.studio-confirm-dialog {
+  min-width: min(100%, 280px);
+}
+
+.file-upload-area,
+.youtube-upload-section,
+.audio-player-container,
+.premium-hero-audio,
+.premium-score-stage,
+.premium-lyrics-panel,
+.transcription-upload-shell,
+.upload-card {
+  min-width: min(100%, 320px);
+}
+
+.dashboard-header,
+.transcription-viewer-header,
+.audio-upload-header,
+.processing-status-header,
+.transcription-footer,
+.premium-bottom-bar,
+.premium-source-line,
+.premium-hero-audio-controls,
+.audio-player-main-controls,
+.audio-player-volume-controls,
+.youtube-input-group,
+.selected-file,
+.studio-dialog-actions,
+.processing-actions,
+.transcription-actions {
+  max-width: 100%;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.project-title,
+.project-list-title,
+.project-description,
+.project-list-description,
+.meta-value,
+.info-value,
+.premium-title-block h1,
+.premium-title-block p,
+.premium-source-filename,
+.premium-lyrics-text,
+.premium-lyrics-segments,
+.studio-confirm-dialog p,
+.alert {
+  overflow-wrap: anywhere;
+}
+
+.site-nav {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.site-nav-menu {
+  display: contents;
+}
+
+.site-nav-menu-toggle {
+  display: none;
+  place-items: center;
+  justify-self: end;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-h);
+  padding: 0;
+}
+
+.site-nav-menu-toggle svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.public-site-nav .site-nav-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.site-nav-brand,
+.site-nav-links,
+.site-nav-actions,
+.site-nav-cta,
+.site-nav-link {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.site-nav-brand {
+  overflow-wrap: anywhere;
+}
+
+.brand-copy,
+.site-nav-brand > span:not(.brand-mark) {
+  display: grid;
+  min-width: 0;
+  line-height: 1.05;
+}
+
+.site-nav-links {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.site-nav-links::-webkit-scrollbar {
+  display: none;
+}
+
+.project-action-menu,
+.premium-speed-menu {
+  max-width: min(100vw - 1rem, 18rem);
+}
+
+.studio-modal-backdrop {
+  max-width: 100%;
+  padding: 1rem;
+}
+
+.studio-confirm-dialog {
+  max-height: min(90svh, 720px);
+  overflow-y: auto;
+}
+
+.projects-grid,
+.dashboard-stats,
+.quick-actions-grid,
+.service-grid,
+.premium-feature-grid,
+.stem-option-grid {
+  max-width: 100%;
+}
+
+.projects-container,
+.projects-list,
+.project-capability-preview,
+.project-badge-row,
+.project-instrument-row,
+.project-tags,
+.premium-hero-chips,
+.premium-stem-summary,
+.premium-playback-metadata,
+.premium-status-badge-row,
+.premium-warning-stack {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.score-viewer,
+.premium-score-viewer,
+.drum-tabs-scroll,
+.premium-view-tabs,
+.premium-track-list,
+.premium-option-list,
+.premium-lyrics-transcript,
+.premium-lyrics-text,
+.tablature-code,
+.notation-code,
+.alphatab-score-surface,
+.table-scroll,
+.code-scroll {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.premium-waveform,
+.premium-waveform-button,
+.audio-player-seek-bar,
+.audio-player-volume-bar,
+.stem-volume-slider {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.score-sheet-frame,
+.alphatab-score-shell,
+.alphatab-fallback-note,
+.drum-rhythm-frame {
+  max-width: 100%;
+}
+
+@media (min-width: 981px) {
+  .projects-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  }
+}
+
+@media (max-width: 1180px) {
+  .landing-hero,
+  .landing-section-heading,
+  .workflow-heading {
+    grid-template-columns: 1fr;
+  }
+
+  .service-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .premium-project-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .premium-score-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 860px) {
+  .site-nav,
+  .app-shell .app-site-nav.site-nav {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.75rem;
+    padding-inline: clamp(0.75rem, 4vw, 1.25rem);
+  }
+
+  .site-nav-menu-toggle,
+  .app-shell .app-site-nav.site-nav .site-nav-menu-toggle {
+    display: inline-grid;
+  }
+
+  .public-shell .site-nav-menu-toggle,
+  .app-shell .app-site-nav.site-nav .site-nav-menu-toggle {
+    border-color: rgba(255, 244, 223, 0.16);
+    background: rgba(255, 244, 223, 0.08);
+    color: #fff4df;
+  }
+
+  .site-nav-menu {
+    position: absolute;
+    top: calc(100% + 1px);
+    right: clamp(0.75rem, 4vw, 1.25rem);
+    left: clamp(0.75rem, 4vw, 1.25rem);
+    z-index: 120;
+    display: none;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.72), rgba(255, 246, 223, 0.52)),
+      var(--surface-strong);
+    padding: 0.75rem;
+    box-shadow: 0 24px 70px rgba(16, 20, 31, 0.22);
+  }
+
+  .public-shell .site-nav-menu,
+  .app-shell .app-site-nav.site-nav .site-nav-menu {
+    border-color: rgba(255, 244, 223, 0.14);
+    background:
+      linear-gradient(145deg, rgba(255, 244, 223, 0.08), transparent),
+      #080706;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
+  }
+
+  .site-nav-menu.is-open {
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .site-nav-menu .site-nav-links,
+  .app-shell .app-site-nav.site-nav .site-nav-menu .site-nav-links {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    justify-self: stretch;
+    border-radius: 12px;
+    overflow-x: visible;
+  }
+
+  .site-nav-menu .site-nav-actions,
+  .app-shell .app-site-nav.site-nav .site-nav-menu .site-nav-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-self: stretch;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .site-nav-menu .site-nav-link,
+  .site-nav-menu .site-nav-cta,
+  .app-shell .app-site-nav.site-nav .site-nav-menu .site-nav-link {
+    width: 100%;
+    justify-content: center;
+    white-space: normal;
+  }
+
+  .app-shell .app-site-nav.site-nav .site-nav-brand {
+    font-size: 0.95rem;
+  }
+
+  .app-shell-main {
+    padding-top: var(--app-nav-height, 72px);
+  }
+
+  .auth-container,
+  .upload-card,
+  .premium-status-card,
+  .premium-bottom-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-row {
+    grid-template-columns: minmax(2.75rem, auto) minmax(0, 1fr);
+  }
+
+  .workflow-row .workflow-arrow {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .premium-status-card,
+  .premium-horizontal-card {
+    align-items: start;
+  }
+}
+
+@media (max-width: 640px) {
+  .auth-page,
+  .dashboard-page,
+  .audio-upload-container,
+  .processing-status-container,
+  .transcription-viewer-container,
+  .transcription-premium-page {
+    padding: 0.75rem;
+  }
+
+  .landing-hero,
+  .landing-services,
+  .landing-workflow {
+    padding-inline: 0.9rem;
+  }
+
+  .service-grid,
+  .dashboard-stats,
+  .quick-actions-grid,
+  .projects-grid,
+  .premium-feature-grid,
+  .stem-option-grid,
+  .premium-hero-chips,
+  .premium-stem-summary,
+  .premium-playback-metadata {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-page .project-card:not(.featured-project-card),
+  .dashboard-page .project-list-item,
+  .dashboard-library-section .project-card:not(.featured-project-card) {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: clamp(0.8rem, 3vw, 1rem);
+    padding: clamp(0.8rem, 3.6vw, 1rem);
+  }
+
+  .dashboard-page .project-card:not(.featured-project-card) .project-cover,
+  .dashboard-page .project-list-item .project-cover,
+  .featured-project-card .project-cover,
+  .dashboard-library-section
+    .project-card:not(.featured-project-card)
+    .project-cover {
+    width: 100%;
+    min-height: 136px;
+    max-height: 176px;
+    aspect-ratio: 16 / 9;
+  }
+
+  .featured-project-card {
+    gap: clamp(0.8rem, 3vw, 1rem);
+    min-height: 0;
+  }
+
+  .featured-project-card::after {
+    inset: auto 4% 0;
+    height: 48%;
+  }
+
+  .dashboard-page .project-body,
+  .dashboard-page .project-list-content,
+  .dashboard-page .project-list-body {
+    gap: clamp(0.72rem, 2.8vw, 0.95rem);
+    min-width: 0;
+  }
+
+  .dashboard-page .project-card:not(.featured-project-card) .project-card-header,
+  .featured-project-card .project-card-header,
+  .project-card-header,
+  .project-list-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.58rem 0.72rem;
+    min-height: 0;
+  }
+
+  .dashboard-page .project-card-header .project-title,
+  .dashboard-page .project-list-header .project-list-title {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .dashboard-page .project-card:not(.featured-project-card) .project-title,
+  .dashboard-page .project-list-title {
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .dashboard-page .project-status-badge,
+  .dashboard-page .project-list-status {
+    justify-self: start;
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .dashboard-page .project-menu-shell {
+    justify-self: end;
+    min-width: 0;
+  }
+
+  .dashboard-page .project-action-menu {
+    right: 0;
+    max-width: min(calc(100vw - 2rem), 18rem);
+  }
+
+  .dashboard-page .project-meta,
+  .dashboard-page .project-list-info,
+  .dashboard-page .project-instrument-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.52rem;
+  }
+
+  .dashboard-page .project-meta .meta-item:first-child,
+  .dashboard-page .project-list-info .info-row:first-child,
+  .dashboard-page .meta-item,
+  .dashboard-page .info-row {
+    flex: initial;
+    min-width: 0;
+  }
+
+  .dashboard-page .project-badge-row,
+  .dashboard-page .project-capability-preview,
+  .dashboard-page .project-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.42rem;
+  }
+
+  .dashboard-page .project-stem-badge,
+  .dashboard-page .project-output-badge,
+  .dashboard-page .project-capability-preview span,
+  .dashboard-page .difficulty-tag,
+  .dashboard-page .quality-badge {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .dashboard-page .project-actions,
+  .dashboard-page .project-list-actions,
+  .featured-project-card .project-actions {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+    width: 100%;
+    margin-top: 0;
+  }
+
+  .dashboard-page .project-actions .action-button,
+  .dashboard-page .project-list-actions .action-button {
+    width: 100%;
+    height: auto;
+    min-height: 44px;
+    white-space: normal;
+  }
+
+  .project-status-badge,
+  .project-list-status {
+    max-width: 100%;
+  }
+
+  .audio-upload-tabs,
+  .youtube-input-group,
+  .selected-file,
+  .processing-slot-busy-main,
+  .processing-slot-busy-footer,
+  .audio-player-main-controls,
+  .audio-player-volume-controls,
+  .premium-audio-transport,
+  .premium-source-line,
+  .premium-hero-audio-controls,
+  .premium-stem-review-panel,
+  .studio-dialog-actions,
+  .processing-actions,
+  .transcription-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .audio-upload-tabs,
+  .audio-upload-tabs .tab-button,
+  .youtube-input-group input,
+  .youtube-input-group button,
+  .selected-file button,
+  .processing-slot-check-button,
+  .audio-player-speed-controls,
+  .premium-hero-audio-controls label,
+  .premium-speed-control,
+  .premium-bottom-bar .button-secondary,
+  .premium-bottom-bar .premium-download-button,
+  .studio-dialog-actions button,
+  .processing-actions button,
+  .transcription-actions button {
+    width: 100%;
+  }
+
+  .premium-score-viewer {
+    height: min(62svh, 540px);
+    max-height: min(62svh, 540px);
+  }
+
+  .premium-bottom-bar .transcription-actions,
+  .premium-bottom-bar .transcription-meta {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 425px) {
+  h1 {
+    font-size: clamp(2.6rem, 15vw, 4rem);
+  }
+
+  h2 {
+    font-size: clamp(2rem, 12vw, 3.2rem);
+  }
+
+  .site-nav-brand {
+    gap: 0.5rem;
+  }
+
+  .brand-mark,
+  .app-shell .app-site-nav.site-nav .brand-mark {
+    width: 36px;
+    height: 36px;
+  }
+
+  .site-nav-menu-toggle,
+  .app-shell .app-site-nav.site-nav .site-nav-menu-toggle {
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
+  }
+
+  .app-shell .app-site-nav.site-nav .site-nav-brand {
+    font-size: 0.84rem;
+  }
+
+  .public-site-nav .brand-copy span:last-child {
+    display: none;
+  }
+
+  .project-card,
+  .project-list-item,
+  .stat-card,
+  .quick-action-button,
+  .file-upload-area,
+  .youtube-upload-section,
+  .audio-player-container,
+  .processing-status-content,
+  .premium-transcription-card,
+  .premium-hero-audio,
+  .premium-transcription-body,
+  .premium-score-sidebar,
+  .premium-score-stage,
+  .premium-lyrics-panel,
+  .premium-bottom-bar,
+  .studio-confirm-dialog {
+    min-width: 0;
+  }
 }

@@ -2,48 +2,47 @@
 
 ## Current Direction
 
-Railway is the API/controller. Modal/serverless GPU is the preferred production-like AI processing layer. Local Celery remains a development fallback and should not be described as the main Demucs worker for production.
+Railway or Render is the API/controller. Modal GPU is the production AI/audio processing layer. Local Celery remains a development fallback and should not be described as the main Demucs, Basic Pitch, lyrics, or audio-analysis worker for production.
 
 The MVP queue is for audio/YouTube selected-stem jobs only. MIDI import, Guitar Pro import, PowerTab import/export, imported project playback architecture, and imported multi-track workflows are future roadmap items only.
 
-## Processing Modes
+## Processing Mode
 
-`PROCESSING_MODE=local`
+`AUDIO_PROCESSING_MODE=modal`
 
-- Development fallback.
+- Hosted MVP mode.
+- Backend dispatches selected-stem jobs to Modal.
+- Modal downloads from Cloudinary, runs selected-stem Demucs on GPU, normalizes the selected stem, performs Basic Pitch-style note detection only for `other`/`bass`, performs onset/rhythm analysis for `drums`, performs faster-whisper lyrics generation for `vocals`, uploads outputs, and calls back.
+- Modal dispatch should keep retry/rate-limit handling, and one active global processing job is preferred for MVP stability.
+
+`AUDIO_PROCESSING_MODE=local`
+
+- Development fallback only.
 - Uses Redis/Celery when configured.
-- Railway/Celery can process very short files only.
+- Local processing should be limited to very short files.
 - Keep worker concurrency at `1`.
 
 ```sh
 celery -A app.celery worker --loglevel=info --concurrency=1
 ```
 
-`PROCESSING_MODE=external_worker`
+`AUDIO_PROCESSING_MODE=disabled`
 
-- Backend queues jobs.
-- External/manual worker pulls jobs from the backend.
-- Useful for Kaggle/manual GPU testing.
-- Worker processes one selected stem, normalizes the separated stem, runs Basic Pitch only for melodic stems, and runs onset/rhythm analysis for drums.
-
-`PROCESSING_MODE=modal`
-
-- Preferred MVP production-like mode.
-- Backend triggers Modal/serverless GPU worker.
-- Modal downloads from Cloudinary, runs selected-stem Demucs on GPU, normalizes the selected stem, performs Basic Pitch transcription only for `other`/`bass`/future melodic `vocals`, performs onset/rhythm analysis for `drums`, uploads outputs, and calls back.
+- Disables audio processing.
 
 ## Statuses
 
 - `pending`
 - `queued`
 - `processing`
+- `stem_ready`
 - `completed`
 - `completed_with_warning`
 - `failed`
 
 `processing_error` should contain a user-safe failure message when status is `failed`.
 
-Use `completed_with_warning` when separation succeeds but generated output is limited, such as a vocal playback-only result or a stem with no detected notes.
+Use `completed_with_warning` when separation succeeds but generated output is limited, such as a stem with no detected notes. Vocal lyrics use `lyrics_generation_status`, separate from `processing_status`.
 
 For melodic stems, zero-note results after Basic Pitch retry should preserve selected-stem playback, expose `can_play_stem=true`, set `can_generate_score=false`, and disable only score/TAB/MIDI/MusicXML exports that require generated notes.
 
@@ -56,6 +55,10 @@ Planned worker endpoints:
 - `POST /api/v1/worker/jobs/{transcription_id}/failed`
 
 They should require `WORKER_API_TOKEN`, keep full diagnostic logs in Modal/backend, and sanitize frontend-facing errors.
+
+## Status-First Result Loading
+
+The frontend should poll `/status` first and call `/result` only after status is ready, such as `stem_ready`, `completed`, or `completed_with_warning`. Generate Lyrics should update `lyrics_generation_status` in-place and keep the viewer open. Generate Tabs for non-vocal melodic stems should keep its current behavior.
 
 ## Delete and Cancel Behavior
 
@@ -73,4 +76,4 @@ Before adding work to the queue, check for a completed or completed_with_warning
 
 ## Future Scaling
 
-Later phases can add multiple selected stems, better retry/recovery, MIDI import, Guitar Pro import, PowerTab import/export, imported project editing, specialist separation models, and full Songsterr-like multi-track tabs.
+Later phases can add multiple selected stems, better quantization, chord grouping, fingering optimization, MusicXML/GP-like export, a manual correction editor, better lyrics model settings, MIDI import, Guitar Pro import, PowerTab import/export, imported project editing, specialist separation models, and advanced Songsterr-like multi-track tabs.

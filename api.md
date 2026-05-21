@@ -43,7 +43,7 @@ Expected MVP endpoints:
 - `POST /api/v1/worker/jobs/{transcription_id}/failed` for workers to report failure and mark the job failed
 - Download/playback endpoints may redirect to, proxy, or return Cloudinary-hosted URLs
 
-Worker endpoints should require `WORKER_API_TOKEN`. They support `PROCESSING_MODE=external_worker` and may also be used by Modal callback flows.
+Worker endpoints should require `WORKER_API_TOKEN`. Current hosted MVP deployments should use `AUDIO_PROCESSING_MODE=modal`; Modal may call callback endpoints directly, while pull-style worker endpoints remain available for worker coordination.
 
 ## Duplicate Handling
 
@@ -74,6 +74,7 @@ Duplicate responses include `duplicate_reused: true` and `duplicate_message`. Du
 - `pending`: record created but not yet queued
 - `queued`: waiting because another job is active or ahead in the queue
 - `processing`: local Celery, external worker, or Modal worker is actively processing the selected stem
+- `stem_ready`: selected separated stem is playable and the viewer can open; tab/lyrics generation may still be separate or pending
 - `completed`: selected-stem outputs are available where supported
 - `completed_with_warning`: transcription succeeded but has limited generated output, such as a no-note stem
 - `failed`: processing ended with `processing_error`
@@ -94,6 +95,7 @@ Result/status payloads should include:
 - `tab_file_url`
 - `tab_file_public_id`
 - `processing_status`
+- `lyrics_generation_status`
 - `processing_error`
 - `warning_message`
 - `can_play_stem`
@@ -110,7 +112,7 @@ Result/status payloads should include:
 - `is_deleted`
 - `deleted_at`
 
-Cloudinary URL fields may be `null` when an output is unsupported for the selected stem. For example, `vocals` is playback-only in the MVP. `queue_position` is `0` for active processing, positive for pending/queued jobs, and `null` after terminal states.
+Cloudinary URL fields may be `null` when an output is unsupported for the selected stem. For example, `vocals` can have selected-stem playback and lyrics while tab/score exports remain unavailable. `queue_position` is `0` for active processing, positive for pending/queued jobs, and `null` after terminal states.
 
 No-note melodic results should preserve `separated_audio_url`, return `can_play_stem=true`, set `can_generate_score=false`, and include a warning such as `"No note events detected for this stem."`. The database should prefer `completed_with_warning`; API responses may expose `status="completed"` plus warning/capability fields when existing clients require that shape.
 
@@ -122,14 +124,14 @@ Valid MVP `source_type` values are:
 
 ## Stem Output Semantics
 
-- `vocals`: preserve separated stem playback and metadata; generated notation is future roadmap.
+- `vocals`: preserve separated stem playback and metadata; Generate Lyrics runs faster-whisper and updates `lyrics_generation_status` separately from main `processing_status`.
 - `drums`: return onset/rhythm hit data for rhythm lane/percussion tab rendering and drum MIDI export when possible. Do not use Basic Pitch for drums.
 - `bass`: run Spotify Basic Pitch on the normalized selected bass stem, return bass notes, 4-string E A D G tablature, score notation, and timing data where detected.
 - `other`: run Spotify Basic Pitch on the normalized selected `other` stem, return guitar-oriented notes, 6-string tablature, score notation, and timing data where detected. Explain that `other` may include guitar, piano, synths, melody, or accompaniment.
 
 ## Basic Pitch and Warning Semantics
 
-Spotify Basic Pitch is the primary note detection engine for selected melodic stems: `other`, `bass`, and future melodic `vocals`. Workers normalize the separated stem before transcription and retry Basic Pitch with lower-threshold/high-sensitivity settings when the first pass detects zero notes.
+Spotify Basic Pitch-style note detection is the primary note detection path for selected melodic non-vocal stems: `other` and `bass`. Workers normalize the separated stem before transcription and retry with lower-threshold/high-sensitivity settings when the first pass detects zero notes. Vocal stems use faster-whisper lyrics generation instead of tab generation in the current MVP.
 
 If retry still detects zero notes, the job is not a failure when the separated stem is playable. Preserve stem playback and waveform/rhythm metadata, set `warning_message`, expose `can_play_stem=true` and `can_generate_score=false`, and make score/TAB/MIDI/MusicXML exports unavailable for that result.
 
@@ -142,6 +144,8 @@ If retry still detects zero notes, the job is not a failure when the separated s
 The frontend must require one stem before submitting an audio/YouTube processing request, display queue status, and show downloadable Cloudinary-hosted outputs only when the corresponding URL fields are present.
 
 The frontend must also show the selected stem, stem confidence, low-confidence warnings, and the `other` stem explanation. Playback should remain available for playable separated stems even when score/tab generation is unavailable.
+
+The frontend must poll `GET /api/v1/audio/{id}/status` before requesting result data. `GET /api/v1/audio/{id}/result` should only be called after the status is ready, such as `stem_ready`, `completed`, or `completed_with_warning`. Generate Lyrics must update lyrics state in-place using `lyrics_generation_status` and must not send the viewer back to the processing screen. Generate Tabs behavior for non-vocal melodic stems must remain unchanged.
 
 Highest frontend priorities:
 
@@ -156,11 +160,11 @@ Highest frontend priorities:
 
 The viewer should use one shared `currentTime` for waveform, playhead, tabs, score, active notes/hits, and selected-stem playback. Do not use separate timers for waveform, tabs, and score.
 
-## Processing Modes
+## Processing Mode
 
-- `PROCESSING_MODE=local`: development fallback. Railway/Celery can process very short files only and should not be used as production Demucs infrastructure.
-- `PROCESSING_MODE=external_worker`: backend queues jobs for a manually running worker. Kaggle can be used here for manual/free GPU testing, but queued jobs wait until the notebook is running.
-- `PROCESSING_MODE=modal`: preferred production-like MVP mode. Backend triggers Modal/serverless GPU processing.
+- `AUDIO_PROCESSING_MODE=modal`: hosted MVP mode. Backend API handles auth, DB, polling, Cloudinary references, and Modal dispatch/callbacks while Modal performs heavy AI/audio work.
+- `AUDIO_PROCESSING_MODE=local`: development fallback only for very short local files.
+- `AUDIO_PROCESSING_MODE=disabled`: disables audio processing.
 
 ## Delete Semantics
 

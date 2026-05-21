@@ -2,16 +2,16 @@
 
 ## Recommended MVP Deployment
 
-Railway should run the lightweight backend/controller only, never Demucs, Basic Pitch, librosa analysis, MIDI generation, or TAB/score generation.
+Railway or Render should run the lightweight backend/controller only, never Demucs, Basic Pitch-style note detection, faster-whisper, librosa analysis, MIDI generation, or TAB/score generation.
 
 - Frontend: Vercel or the current frontend host
-- Backend/API: Railway FastAPI
+- Backend/API: Railway or Render FastAPI
 - Database: PostgreSQL
 - Durable storage: Cloudinary
 - AI processing: Modal/serverless GPU worker
 - Redis: optional for non-audio infrastructure; not required for production audio processing
 
-Railway trial/free resources are not reliable for Demucs production processing. Railway local storage must not be used as durable file storage. It is temporary scratch space only.
+Railway/Render resources are for API, auth, DB access, status polling, Cloudinary metadata, and Modal dispatch/callback handling. Railway/Render local storage must not be used as durable file storage. It is temporary scratch space only.
 
 The MVP is audio/YouTube selected-stem processing. MIDI import, Guitar Pro import, PowerTab import/export, imported project playback architecture, and imported multi-track workflows are future roadmap items only. MIDI export, MusicXML export, and TAB export remain in scope when generated from separated-stem transcription results.
 
@@ -22,7 +22,7 @@ The backend runtime is Python 3.11. Both Dockerfiles use Python 3.11 images, and
 Backend/API:
 
 - `DATABASE_URL`
-- `PROCESSING_MODE=modal`
+- `AUDIO_PROCESSING_MODE=modal`
 - `WORKER_API_TOKEN`
 - `CLOUDINARY_CLOUD_NAME`
 - `CLOUDINARY_API_KEY`
@@ -35,6 +35,14 @@ Backend/API:
 - `MODAL_RATE_LIMIT_BASE_BACKOFF_SECONDS`
 - `MODAL_RATE_LIMIT_MAX_BACKOFF_SECONDS`
 - `MODAL_MAX_DISPATCH_RETRIES`
+- `YOUTUBE_COOKIES` or `YOUTUBE_COOKIES_FILE`
+- `WHISPER_MODEL_SIZE`
+- `WHISPER_LANGUAGE`
+- `WHISPER_BEAM_SIZE`
+- `WHISPER_BEST_OF`
+- `WHISPER_VAD_FILTER`
+- `WHISPER_CONDITION_ON_PREVIOUS_TEXT`
+- `WHISPER_INITIAL_PROMPT`
 
 Modal worker:
 
@@ -49,21 +57,13 @@ Frontend:
 
 - `VITE_API_URL`
 
-## Processing Modes
+## Processing Mode
 
-### `PROCESSING_MODE=local`
+`AUDIO_PROCESSING_MODE=modal` is the production MVP mode. The backend triggers Modal GPU processing. Modal downloads the original audio from Cloudinary, runs selected-stem separation, runs stem-specific generation, uploads outputs to Cloudinary, and reports completion/failure back to the backend.
 
-Legacy/dev only. Heavy audio Celery tasks now fail closed and tell the caller to dispatch Modal. Do not use local mode for production audio processing.
+Worker transcription should normalize the selected separated stem, run Basic Pitch-style note detection only for melodic non-vocal selected stems (`other`, `bass`), run onset/rhythm analysis for `drums`, and run faster-whisper lyrics generation for `vocals`. Zero-note melodic results after retry should report `completed_with_warning` with playable stem metadata instead of failing the job.
 
-### `PROCESSING_MODE=external_worker`
-
-The backend queues jobs and exposes worker endpoints for a manually running external worker. This is useful for Kaggle/manual GPU tests. Jobs wait until the worker is running.
-
-### `PROCESSING_MODE=modal`
-
-Preferred production-like MVP mode. The backend triggers Modal/serverless GPU processing. Modal downloads the original audio from Cloudinary, runs Demucs selected-stem separation on GPU, runs selected-stem transcription/analysis, uploads outputs to Cloudinary, and reports completion/failure back to Railway.
-
-Worker transcription should normalize the selected separated stem, run Spotify Basic Pitch only for melodic selected stems (`other`, `bass`, and future melodic `vocals`), and run onset/rhythm analysis for `drums`. Zero-note melodic results after retry should report `completed_with_warning` with playable stem metadata instead of failing the job.
+`AUDIO_PROCESSING_MODE=local` is development fallback only. `AUDIO_PROCESSING_MODE=disabled` disables audio processing.
 
 ## Worker Endpoints
 
@@ -73,7 +73,11 @@ Documented worker coordination endpoints:
 - `POST /api/v1/worker/jobs/{transcription_id}/complete`
 - `POST /api/v1/worker/jobs/{transcription_id}/failed`
 
-These endpoints should require `WORKER_API_TOKEN`. Store detailed logs in Modal/backend and return sanitized errors to the frontend.
+These endpoints should require `WORKER_API_TOKEN`. Store detailed logs in Modal/backend and return sanitized errors to the frontend. Modal dispatch includes retry/rate-limit handling, and the backend should prefer one active global processing job at a time for MVP stability.
+
+## Status and Result Flow
+
+Clients should poll `GET /api/v1/audio/{id}/status` first. Call `GET /api/v1/audio/{id}/result` only after the status is ready, such as `stem_ready`, `completed`, or `completed_with_warning`. Vocal lyrics use `lyrics_generation_status`, which is separate from the main `processing_status`, so Generate Lyrics should not send users back to the processing screen.
 
 ## Kaggle Clarification
 

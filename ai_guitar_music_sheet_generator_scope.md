@@ -2,7 +2,7 @@
 
 ## 2026 MVP Scope Update: Selected-Stem Audio/YouTube Transcription
 
-This project is scoped as an MVP/portfolio-friendly selected-stem transcription and synchronized practice app. Railway is the lightweight API/controller layer. Modal/serverless GPU is the preferred production-like AI processing layer for Demucs jobs. Railway/Celery Demucs remains fallback/dev only.
+This project is scoped as an MVP/portfolio-friendly selected-stem transcription and synchronized practice app. Railway/Render is the lightweight API/controller layer for auth, DB records, status polling, Cloudinary references, and Modal dispatch/callbacks. Modal GPU is the production processing target for heavy audio/AI work. Railway/Celery Demucs remains fallback/dev only.
 
 Supported MVP input types:
 
@@ -19,8 +19,9 @@ Audio Upload / YouTube URL
 -> Queue one selected-stem job
 -> Demucs separates selected stem
 -> Normalize selected separated stem volume
--> Spotify Basic Pitch runs only for melodic stems (`other`, `bass`, future melodic `vocals`)
+-> Basic Pitch-style note detection runs only for melodic non-vocal stems (`other`, `bass`)
 -> Onset/rhythm detection runs for `drums`
+-> faster-whisper lyrics generation runs for `vocals`
 -> Generate instrument-aware tabs/notation/rhythm data where supported
 -> Render synchronized playback with playhead/waveform
 -> Export generated outputs
@@ -49,8 +50,9 @@ Audio Upload / YouTube URL + selected stem
 -> Worker runs Demucs selected-stem separation on GPU when available
 -> Worker uploads selected separated stem to Cloudinary
 -> Worker normalizes selected separated stem volume
--> Worker runs Spotify Basic Pitch only for melodic stems (`other`, `bass`, future melodic `vocals`)
+-> Worker runs Basic Pitch-style note detection only for melodic non-vocal stems (`other`, `bass`)
 -> Worker runs onset/rhythm analysis for `drums`
+-> Worker runs faster-whisper lyrics generation for `vocals`
 -> Worker generates tabs/notation/rhythm data based on selected stem where supported
 -> Worker uploads supported MIDI/MusicXML/TAB exports to Cloudinary
 -> Worker calls backend complete/failed endpoint
@@ -62,7 +64,7 @@ Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For MVP guitar/
 
 The backend should accept `selected_stem` or `selected_instrument` in audio/YouTube upload/process requests, upload the original source audio to Cloudinary, run Demucs only for the selected output needed, transcribe only that selected stem when applicable, upload durable outputs to Cloudinary, and save only the selected stem output unless explicit caching is needed.
 
-Jobs should be queued and status responses should explain when work is waiting. In `PROCESSING_MODE=local`, Celery worker concurrency should be `1` and local processing should be limited to very short development files. Production-like MVP processing should use `PROCESSING_MODE=modal`.
+Jobs should be queued and status responses should explain when work is waiting. Production-like MVP processing should use `AUDIO_PROCESSING_MODE=modal`. In `AUDIO_PROCESSING_MODE=local`, Celery worker concurrency should be `1` and local processing should be limited to very short development files.
 
 Recommended MVP limits:
 
@@ -109,7 +111,7 @@ Existing tools tend to solve only part of the workflow. Stem splitters can isola
 
 Develop an AI-powered web application that combines selective Demucs stem separation, Spotify Basic Pitch for melodic selected stems, drum onset/rhythm analysis, and synchronized notation/playback for one selected target stem.
 
-The system will analyze audio from MP3/WAV uploads or YouTube links, let the user choose a target stem, separate only the selected output needed, run Basic Pitch only for melodic supported stems, run onset/rhythm analysis for drums, detect chords/tempo/key where supported, record confidence levels, then generate selected-stem musical outputs.
+The system will analyze audio from MP3/WAV uploads or YouTube links, let the user choose a target stem, separate only the selected output needed, run Basic Pitch-style note detection for supported melodic non-vocal stems, run onset/rhythm analysis for drums, run faster-whisper lyrics for vocals, detect chords/tempo/key where supported, record confidence levels, then generate selected-stem musical outputs.
 
 The application will provide:
 
@@ -117,11 +119,13 @@ The application will provide:
 - Guitar-oriented tablature from the `other` stem for the MVP
 - Bass tablature when `bass` is selected
 - Drum rhythm lanes and percussion/drum tab when `drums` is selected
-- Vocal playback-only results for the MVP
+- Vocal playback plus faster-whisper lyric generation for the MVP
 - Chord progressions and chord charts where supported
 - Synchronized playback, looping, speed control, waveform sync, playhead sync, note/hit highlighting, and export options
 
 The goal is a practical selected-stem transcription and practice studio first, with imports and full multi-track project workflows as later expansion.
+
+Frontend result loading should be status-first: poll `GET /api/v1/audio/{id}/status`, then call `GET /api/v1/audio/{id}/result` only after the audio status is ready, such as `stem_ready`, `completed`, or `completed_with_warning`. Lyrics generation must update `lyrics_generation_status` independently and must not send the viewer back to the processing screen.
 
 ## Stem Support Matrix
 
@@ -129,7 +133,8 @@ The goal is a practical selected-stem transcription and practice studio first, w
 
 - Playback only for MVP.
 - Preserve separated stem playback and metadata.
-- Future roadmap: Basic Pitch or specialist melody extraction.
+- Generate Lyrics uses faster-whisper and tracks progress with `lyrics_generation_status`, separate from main audio `processing_status`.
+- Future roadmap: specialist melody extraction.
 
 ### Drums
 
@@ -165,7 +170,7 @@ Viewer behavior:
 - Guitar/`other` -> 6-string tablature
 - `bass` -> 4-string bass tablature
 - `drums` -> rhythm lane/percussion tab
-- `vocals` -> playback-only
+- `vocals` -> selected-stem playback plus lyrics
 
 All views use shared playback synchronization:
 
@@ -200,7 +205,7 @@ Do not use separate timers for waveform, tabs, and score. One shared playback cl
 ### AI Audio Analysis
 
 - Selected-stem source separation into one Demucs stem.
-- Spotify Basic Pitch as the primary note detection engine for melodic selected stems.
+- Spotify Basic Pitch-style note detection as the primary note detection path for melodic non-vocal selected stems.
 - Onset and hit detection for drum stems.
 - Chord recognition where supported.
 - BPM/tempo detection.
@@ -221,11 +226,11 @@ Do not use separate timers for waveform, tabs, and score. One shared playback cl
 ### Selected-Track Transcription
 
 - Store transcription data for the selected instrument/stem.
-- Run Basic Pitch only for `other`, `bass`, and future melodic `vocals`.
+- Run Basic Pitch-style note detection only for `other` and `bass`.
 - Generate guitar-oriented tablature from the `other` stem in the MVP.
 - Generate bass tablature from the `bass` stem.
 - Generate drum rhythm data from the `drums` stem using onset/rhythm analysis, not Basic Pitch.
-- Generate vocal notation only when future melody extraction is added.
+- Generate vocal lyrics with faster-whisper; vocal notation waits for future melody extraction.
 - Keep full-mix or imported project playback architecture out of the MVP.
 
 ### Notation and Track Viewer
@@ -283,9 +288,9 @@ The platform may use the following AI and audio processing technologies:
 
 #### Pitch Detection
 
-- Spotify Basic Pitch as the primary melodic note detection engine.
+- Spotify Basic Pitch-style note detection as the primary melodic note detection path.
 - CREPE and librosa pYIN as fallback implementation details when needed.
-- Basic Pitch is used for `other`, `bass`, and future melodic `vocals`, not for `drums`.
+- Basic Pitch-style note detection is used for `other` and `bass`, not for `vocals` or `drums`.
 
 #### Rhythm and Drum Detection
 
@@ -340,6 +345,14 @@ Performance depends heavily on:
 - Instrument overlap.
 - Recording clarity.
 - Distortion, reverb, and live-room bleed.
+
+## Current Limitations
+
+- Automatic tabs are experimental.
+- Lyrics accuracy depends on vocal stem quality and faster-whisper settings.
+- Advanced Guitar Pro/Songsterr-style notation is future work.
+- Bends, slides, harmonics, let-ring markings, and exact rhythm notation are not guaranteed.
+- Multi-track Songsterr-level output is future scope, not the current MVP.
 
 ## Audio Quality Requirements
 
@@ -432,7 +445,7 @@ Benefits include:
 
 MVP support:
 
-- User-selected `vocals` stem playback.
+- User-selected `vocals` stem playback plus faster-whisper lyrics.
 - User-selected `drums` stem playback, onset/rhythm hit detection, rhythm lane, and percussion/drum tab.
 - User-selected `bass` stem playback, Basic Pitch transcription, 4-string bass tab, and bass score.
 - User-selected `other` stem playback, Basic Pitch transcription, 6-string guitar-oriented tab, and score notation.
@@ -491,8 +504,9 @@ User corrections may help improve future transcription models.
 To manage AI processing costs, the platform may use:
 
 - Modal/serverless GPU for preferred production-like selected-stem processing.
-- `PROCESSING_MODE=local` with one active Celery worker only as a development fallback.
-- `PROCESSING_MODE=external_worker` for manual external workers such as Kaggle notebooks.
+- `AUDIO_PROCESSING_MODE=modal` for hosted MVP processing.
+- `AUDIO_PROCESSING_MODE=local` with one active Celery worker only as a development fallback.
+- `AUDIO_PROCESSING_MODE=disabled` when processing should be unavailable.
 - Duplicate detection before queueing work.
 - Usage limits.
 - Prioritized processing.
@@ -501,7 +515,7 @@ To manage AI processing costs, the platform may use:
 
 Selective processing reduces CPU/RAM usage, storage requirements, and processing time because the app does not create and transcribe every stem for every song. Full multi-instrument processing should be treated as a future premium capability, especially if GPU workers or external AI processing services are added.
 
-Railway is the MVP backend/API target, not the heavy AI processing platform. Railway trial/free resources are not reliable for Demucs production processing. Kaggle is optional/manual testing only, not 24/7 production infrastructure and not reliably auto-started per user upload.
+Railway/Render is the MVP backend/API target, not the heavy AI processing platform. Hosted API resources are not reliable for Demucs, Basic Pitch-style note detection, faster-whisper, or audio-analysis production processing. Kaggle is optional/manual testing only, not 24/7 production infrastructure and not reliably auto-started per user upload.
 
 Duplicate detection reduces repeated Demucs processing, repeated Cloudinary storage usage, unnecessary queue jobs, and Railway CPU/RAM cost.
 
@@ -593,6 +607,7 @@ Recommended persisted fields:
 - `tab_file_url`
 - `tab_file_public_id`
 - `processing_status`
+- `lyrics_generation_status`
 - `processing_error`
 - `queue_position`
 
@@ -607,11 +622,11 @@ Supported processing statuses:
 - `completed_with_warning`
 - `failed`
 
-Recommended processing modes:
+Recommended processing mode:
 
-- `PROCESSING_MODE=local`: development fallback; Railway/Celery can process very short files only.
-- `PROCESSING_MODE=external_worker`: backend queues jobs for a manual/external worker. Kaggle jobs wait until the notebook is running.
-- `PROCESSING_MODE=modal`: preferred MVP production-like architecture with Modal/serverless GPU processing.
+- `AUDIO_PROCESSING_MODE=modal`: preferred hosted MVP architecture with Modal GPU processing.
+- `AUDIO_PROCESSING_MODE=local`: development fallback; local Celery can process very short files only.
+- `AUDIO_PROCESSING_MODE=disabled`: disables audio processing.
 
 Worker endpoints:
 
@@ -670,6 +685,13 @@ The selected stem should always be visible in the viewer. Stem confidence, low-c
 - MIDI import.
 - Guitar Pro import.
 - PowerTab import/export.
+- AlphaTab or VexFlow renderer.
+- Better quantization.
+- Chord grouping.
+- Fingering optimizer.
+- MusicXML/GP-like export.
+- Manual correction editor.
+- Better lyrics model settings.
 - Imported project editing.
 - Imported multi-track workflows.
 - Lead/rhythm guitar separation.

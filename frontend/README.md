@@ -24,8 +24,10 @@ Primary flow:
 Audio Upload / YouTube URL
 -> User selects target stem
 -> Demucs separates selected stem
--> Pitch/rhythm detection runs on separated stem
--> Generate instrument-aware tabs/notation/rhythm data
+-> Basic Pitch-style note detection runs for `other`/`bass`
+-> Rhythm/onset detection runs for `drums`
+-> faster-whisper lyrics generation runs for `vocals`
+-> Generate instrument-aware tabs/notation/rhythm/lyrics data
 -> Render synchronized playback with playhead/waveform
 -> Export generated outputs
 ```
@@ -35,11 +37,12 @@ The frontend should show queue-aware processing states:
 - `pending`
 - `queued`
 - `processing`
+- `stem_ready`
 - `completed`
 - `completed_with_warning`
 - `failed`
 
-If another job is active, show that the new job is queued or waiting. In production-like MVP mode, Railway coordinates the job while Modal/serverless GPU performs the selected-stem processing.
+If another job is active, show that the new job is queued or waiting. In production-like MVP mode, Railway/Render coordinates the job while Modal GPU performs selected-stem separation, stem-specific generation, retry/rate-limit handling, and callbacks. One global processing job at a time is preferred for MVP stability.
 
 Completed outputs should use the Cloudinary-hosted URLs returned by the backend:
 
@@ -63,7 +66,11 @@ If the backend finds an existing completed result for the same song and selected
 - Render guitar/`other` as 6-string tablature.
 - Render `bass` as 4-string E A D G bass tablature.
 - Render `drums` as a rhythm lane/percussion tab.
-- Render `vocals` as playback-only.
+- Render `vocals` as selected-stem playback plus lyrics when generated.
+- Poll `/status` before calling `/result`; call `/result` only after a ready status such as `stem_ready`, `completed`, or `completed_with_warning`.
+- Keep `lyrics_generation_status` separate from `processing_status`; Generate Lyrics should keep the viewer open.
+- Preserve non-vocal Generate Tabs behavior for `other` and `bass`.
+- Do not add duplicate audio players or rewrite existing viewer/playback interactions without a specific product reason.
 - Display queue status clearly when `processing_status` is `queued`.
 - Display downloadable Cloudinary-hosted outputs only when their URL fields are present.
 - Add a delete button for completed, completed_with_warning, failed, queued, and processing items.
@@ -97,11 +104,20 @@ Highest frontend priorities:
 
 ## Future Roadmap Only
 
+- AlphaTab or VexFlow renderer
+- Better quantization
+- Chord grouping
+- Fingering optimizer
+- MusicXML/GP-like export
+- Manual correction editor
+- Better lyrics model settings
 - MIDI import
 - Guitar Pro import
 - PowerTab import/export
 - Imported project editing
 - Imported multi-track workflows
+
+Automatic tabs are experimental. Lyrics accuracy depends on vocal stem quality. Advanced Guitar Pro/Songsterr-style notation, bends, slides, harmonics, let-ring, exact rhythm notation, and multi-track Songsterr-level output are future work.
 
 MIDI export, MusicXML export, and TAB export remain in scope when generated from separated-stem transcription results.
 

@@ -31,14 +31,14 @@ Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For guitar tran
 
 Stem behavior:
 
-- `vocals`: playback only for MVP; future roadmap: melody extraction.
+- `vocals`: selected-stem playback plus Generate Lyrics with faster-whisper; future roadmap: melody extraction.
 - `drums`: hit/onset analysis, rhythm lane, percussion/drum tab, synchronized highlighting, and drum MIDI export where possible.
 - `bass`: 4-string E A D G bass tablature, bass score data, and synchronized playback.
 - `other`: primary guitar transcription target with 6-string guitar tab, score notation, and synchronized playback.
 
 Durable files should live in Cloudinary, with both `secure_url` and `public_id` stored for original audio, selected separated stem audio, MIDI exports, MusicXML exports, and TAB files. Railway local storage is temporary worker scratch space only.
 
-Railway should be documented as the FastAPI/PostgreSQL controller, not the main AI worker. `PROCESSING_MODE=local` keeps Celery as a development fallback for very short files, `PROCESSING_MODE=external_worker` supports manual/Kaggle testing, and `PROCESSING_MODE=modal` is the preferred production-like MVP path.
+Railway/Render should be documented as the FastAPI/PostgreSQL controller, not the main AI worker. `AUDIO_PROCESSING_MODE=modal` is the hosted MVP path, with Modal handling selected-stem separation, stem-specific generation, Cloudinary output upload, retry/rate-limit handling, and callbacks. `AUDIO_PROCESSING_MODE=local` is a development fallback for very short files only.
 
 Duplicate detection and deletion are also Phase 1 concerns:
 
@@ -54,3 +54,5 @@ Future roadmap only:
 - PowerTab import/export.
 - Imported project editing.
 - Imported multi-track workflows.
+
+Current vocal workflow: Generate Lyrics runs faster-whisper on the vocal stem and updates `lyrics_generation_status` separately from main `processing_status`. Frontend result loading should poll `/status` first and call `/result` only when ready; Generate Lyrics should keep the viewer open, and Generate Tabs for non-vocal melodic stems should remain unchanged.

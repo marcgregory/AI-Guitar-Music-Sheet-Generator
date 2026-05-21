@@ -2,7 +2,7 @@
 
 ## Selected-Stem Audio/YouTube MVP
 
-MusicStudio is scoped as a selected-stem transcription MVP for uploaded audio and YouTube sources. Railway is the lightweight API/controller layer; it should not be treated as the primary Demucs processing environment for production-like use. The recommended AI processing layer is a Modal/serverless GPU worker. Local Railway/Celery Demucs remains a development fallback for very short files only.
+MusicStudio is scoped as a selected-stem transcription MVP for uploaded audio and YouTube sources. Railway or Render is the lightweight FastAPI API/controller layer for auth, database records, status polling, Cloudinary references, and Modal dispatch/callback handling. It should not be treated as the primary Demucs, Basic Pitch, lyrics, or audio-analysis environment for production-like use. The production processing target is a Modal GPU worker, with the backend configured as `AUDIO_PROCESSING_MODE=modal`.
 
 Supported MVP input types:
 
@@ -24,8 +24,9 @@ Audio Upload / YouTube URL
 -> Modal worker runs Demucs selected-stem separation on GPU
 -> Modal worker uploads selected separated stem to Cloudinary
 -> Modal worker normalizes selected separated stem volume
--> Spotify Basic Pitch runs only for melodic stems (`other`, `bass`, future melodic `vocals`)
+-> Spotify Basic Pitch-style note detection runs only for melodic non-vocal stems (`other`, `bass`)
 -> Onset/rhythm analysis runs for `drums`; Basic Pitch does not run on drums
+-> faster-whisper lyrics generation runs for `vocals`
 -> Generate instrument-aware tabs/notation/rhythm data where supported
 -> Modal worker uploads supported MIDI/MusicXML/TAB exports to Cloudinary
 -> Modal worker calls backend complete/failed endpoint
@@ -49,7 +50,7 @@ Only hard blockers such as missing source audio, failed separation, deleted reco
 
 For the MVP:
 
-- `vocals`: playback only. Future roadmap: Basic Pitch or specialist melody extraction.
+- `vocals`: selected-stem playback plus lyrics generation with `faster-whisper`. Lyrics use `lyrics_generation_status`, separate from the main `processing_status`, so lyric generation must not reopen the processing screen.
 - `drums`: analyze drum stem with onset/rhythm detection only; do not use Basic Pitch; generate a drum rhythm lane and percussion/drum tab where possible, support synchronized playback highlighting, and support drum MIDI export when possible.
 - `bass`: analyze bass stem with Basic Pitch, generate 4-string bass tablature using standard E A D G tuning, generate bass score data, and support synchronized playback/playhead highlighting.
 - `other`: primary guitar/accompaniment transcription target; analyze with Basic Pitch, generate guitar-oriented tablature, score notation, and synchronized playback/playhead highlighting.
@@ -63,7 +64,7 @@ Viewer behavior:
 - `other`/guitar: 6-string tablature plus score notation where generated.
 - `bass`: 4-string bass tablature plus bass score notation where generated.
 - `drums`: rhythm lane/percussion tab with hit highlighting.
-- `vocals`: playback-only stem view.
+- `vocals`: selected-stem playback plus lyrics view.
 
 All rendered views must share playback synchronization:
 
@@ -78,9 +79,9 @@ The frontend should use one shared `currentTime` source for waveform, tabs, scor
 
 ## Basic Pitch, Fallback Transcription, and Retry Flow
 
-Spotify Basic Pitch is the primary note detection engine for selected melodic stems. The note-detection pipeline normalizes separated stem volume before transcription, logs RMS loudness, peak amplitude, onset count, confidence statistics, selected stem, and model output metadata, then retries with lower threshold/high-sensitivity settings if the first pass detects zero notes.
+Spotify Basic Pitch-style note detection is the primary note detection path for selected melodic non-vocal stems. The note-detection pipeline normalizes separated stem volume before transcription, logs RMS loudness, peak amplitude, onset count, confidence statistics, selected stem, and model output metadata, then retries with lower threshold/high-sensitivity settings if the first pass detects zero notes.
 
-Basic Pitch runs only for `other`, `bass`, and future melodic `vocals`. Drum processing uses onset/rhythm analysis and must not route through Basic Pitch.
+Basic Pitch-style note detection runs only for `other` and `bass`. Drum processing uses onset/rhythm analysis and must not route through Basic Pitch. Vocal processing generates lyrics with `faster-whisper` instead of tabs in the current MVP.
 
 If Basic Pitch still detects zero notes after retry, preserve selected-stem playback and mark the record as `completed_with_warning` with `can_play_stem=true` and `can_generate_score=false`. Score, TAB, MIDI, and MusicXML exports should be disabled or unavailable for that no-note result while the separated stem remains playable.
 
@@ -120,39 +121,24 @@ Persist both `secure_url` and `public_id` for every Cloudinary asset. Use `resou
 
 ## Backend/API
 
-Railway remains useful for:
+Railway/Render remains useful for:
 
 - FastAPI
 - PostgreSQL
 - authentication
 - project and transcription records
 - duplicate detection
-- queue/status orchestration
+- queue/status orchestration and status-first result gating
 - Cloudinary upload references
-- worker job coordination
+- Modal worker dispatch and callback coordination
 
 Redis is required for local Celery mode and may still be useful for status or queue coordination, but the production-like MVP should not rely on Railway free/trial CPU/RAM for Demucs.
 
-## Processing Modes
+## Processing Mode
 
-`PROCESSING_MODE=local`
+`AUDIO_PROCESSING_MODE=modal` is the hosted MVP setting. The backend triggers Modal GPU processing, and Modal handles selected-stem separation, stem-specific generation, Cloudinary output uploads, retry/rate-limit handling, and worker callbacks.
 
-- Development fallback.
-- Railway/Celery can process very short files only.
-- Not recommended for production Demucs processing.
-- If used, Celery worker concurrency should remain `1`.
-
-`PROCESSING_MODE=external_worker`
-
-- Backend queues jobs and exposes worker endpoints.
-- A manual worker, including a Kaggle notebook, pulls jobs and reports results.
-- Useful for free GPU experiments and manual testing.
-
-`PROCESSING_MODE=modal`
-
-- Preferred MVP production-like architecture.
-- Backend triggers Modal/serverless GPU processing.
-- Modal handles the selected-stem Demucs workload.
+`AUDIO_PROCESSING_MODE=local` is a development fallback only for very short local files. `AUDIO_PROCESSING_MODE=disabled` disables processing.
 
 ## Worker Endpoints
 
@@ -174,11 +160,17 @@ The Modal worker should:
 - download `original_audio_url` from Cloudinary
 - upload the selected separated stem to Cloudinary
 - normalize selected separated stem volume before transcription
-- run Spotify Basic Pitch only for selected melodic stems
+- run Basic Pitch-style note detection only for selected melodic non-vocal stems (`other`, `bass`)
 - run onset/rhythm analysis for `drums`
+- run faster-whisper lyrics generation for `vocals`
 - generate MIDI, MusicXML, and TAB outputs when supported by the selected stem transcription result
 - report completion or failure to the backend
+- retry/rate-limit Modal dispatch and callback work safely
 - keep full logs in Modal/backend while returning user-safe errors to the UI
+
+## Status-First Result Flow
+
+The frontend should poll `GET /api/v1/audio/{id}/status` and call `GET /api/v1/audio/{id}/result` only when status is ready, such as `stem_ready`, `completed`, or `completed_with_warning`. `/result` should not be called for `pending`, `queued`, or `processing` jobs. Lyrics use `lyrics_generation_status` and are updated independently from the main audio `processing_status`.
 
 ## Kaggle
 

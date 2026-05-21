@@ -1,6 +1,6 @@
 # Selected-Stem API Plan
 
-This backend plan documents the MusicStudio MVP API contract for selective Demucs processing. Railway is the API/controller. Modal/serverless GPU is the preferred production-like AI processing layer. Railway/Celery Demucs remains local/dev fallback only.
+This backend plan documents the MusicStudio MVP API contract for selective Demucs processing. Railway/Render is the API/controller for auth, DB, status polling, Cloudinary references, and Modal dispatch/callbacks. Modal GPU is the production AI/audio processing layer. Railway/Celery Demucs remains local/dev fallback only.
 
 ## Request Contract
 
@@ -34,6 +34,7 @@ Audio Upload / YouTube URL + selected stem
 -> worker downloads original audio from Cloudinary
 -> run Demucs for selected output needed
 -> upload selected separated stem to Cloudinary
+-> run stem-specific generation: faster-whisper lyrics for vocals, Basic Pitch-style tabs/score for other/bass, rhythm/onset lanes for drums
 -> convert selected stem to MIDI/TAB/MusicXML where supported
 -> upload generated outputs to Cloudinary
 -> worker calls backend complete/failed endpoint
@@ -53,15 +54,16 @@ Cloudinary is the durable store for:
 - original audio
 - selected separated stem audio
 - MIDI files
+- MusicXML files
 - TAB files
 
 Persist both `secure_url` and `public_id` for each Cloudinary asset so the API can serve downloads/playback and later delete or replace files.
 
-## Processing Modes
+## Processing Mode
 
-- `PROCESSING_MODE=local`: development fallback. Uses Redis/Celery and should process very short files only. Keep Celery concurrency at `1`.
-- `PROCESSING_MODE=external_worker`: backend queues jobs and a manual/external worker pulls them. Useful for Kaggle/manual GPU testing.
-- `PROCESSING_MODE=modal`: preferred production-like MVP mode. Backend triggers Modal/serverless GPU processing.
+- `AUDIO_PROCESSING_MODE=modal`: hosted MVP mode. Backend triggers Modal GPU processing.
+- `AUDIO_PROCESSING_MODE=local`: development fallback only. Uses Redis/Celery and should process very short files only. Keep Celery concurrency at `1`.
+- `AUDIO_PROCESSING_MODE=disabled`: disables audio processing.
 
 ## Queue Contract
 
@@ -89,8 +91,12 @@ Supported statuses:
 - `pending`
 - `queued`
 - `processing`
+- `stem_ready`
 - `completed`
+- `completed_with_warning`
 - `failed`
+
+Lyrics status is tracked separately in `lyrics_generation_status`, so Generate Lyrics should not change the main audio `processing_status` or navigate the viewer back to the processing screen.
 
 ## Data Fields
 
@@ -110,9 +116,12 @@ Recommended transcription/job fields:
 - `separated_audio_public_id`
 - `midi_file_url`
 - `midi_file_public_id`
+- `musicxml_file_url`
+- `musicxml_file_public_id`
 - `tab_file_url`
 - `tab_file_public_id`
 - `processing_status`
+- `lyrics_generation_status`
 - `queue_position`
 - `processing_error`
 
@@ -130,6 +139,7 @@ Documented endpoints:
 Users should be allowed to delete records in these statuses:
 
 - `completed`
+- `completed_with_warning`
 - `failed`
 - `queued`
 - `processing`
@@ -147,5 +157,5 @@ Behavior:
 
 - Phase 1: selected-stem MVP, Cloudinary persistence, duplicate detection, delete/cancel, queue/status UX.
 - Phase 2: Modal/serverless GPU worker integration, worker endpoints, external worker authentication, status callback flow, selected-stem preview/export from Cloudinary outputs.
-- Phase 3: multiple selected stems, improved transcription quality, better retry/recovery.
-- Phase 4: full Songsterr-like multi-track tabs, lead/rhythm guitar separation, piano/guitar specialist models.
+- Phase 3: improved transcription quality, better retry/recovery, lyrics settings, quantization, chord grouping, and playback reliability.
+- Phase 4: multiple selected stems, AlphaTab or VexFlow renderer, fingering optimizer, MusicXML/GP-like export, manual correction editor, advanced Songsterr-like multi-track tabs, lead/rhythm guitar separation, and piano/guitar specialist models.

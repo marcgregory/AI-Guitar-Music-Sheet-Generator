@@ -2,7 +2,7 @@
 
 ## 2026 Architecture Update: Selected-Stem MVP + Modal Worker
 
-The implementation target is a selected-stem MVP where Railway is the lightweight API/controller and Modal/serverless GPU is the preferred production-like AI processing layer. Do not run full multi-stem transcription by default, and do not treat Railway free/trial resources as reliable Demucs production infrastructure.
+The implementation target is a selected-stem MVP where Railway/Render is the lightweight API/controller for auth, DB records, status polling, Cloudinary references, and Modal dispatch/callbacks. Modal GPU is the production processing target for heavy audio/AI work. Do not run full multi-stem transcription by default, and do not treat Railway/Render resources as reliable Demucs, Basic Pitch, faster-whisper, or audio-analysis production infrastructure.
 
 Current target pipeline:
 
@@ -13,13 +13,14 @@ Audio Upload / YouTube URL + selected stem
 -> If duplicate exists, return existing result
 -> Upload original audio to Cloudinary
 -> Queue processing job
--> Trigger Modal/serverless GPU worker OR expose worker pull endpoint
--> Modal/external worker downloads original audio from Cloudinary
+-> Trigger Modal GPU worker
+-> Modal worker downloads original audio from Cloudinary
 -> Worker runs Demucs selected-stem separation on GPU when available
 -> Worker uploads selected separated stem to Cloudinary
 -> Worker normalizes selected separated stem volume
--> Worker runs Spotify Basic Pitch only for melodic stems (`other`, `bass`, future melodic `vocals`)
+-> Worker runs Basic Pitch-style note detection only for melodic non-vocal stems (`other`, `bass`)
 -> Worker runs onset/rhythm analysis only for `drums`
+-> Worker runs faster-whisper lyrics generation for `vocals`
 -> Worker generates instrument-aware tabs/notation/rhythm data where supported
 -> Worker optionally generates MIDI/MusicXML/TAB exports if supported
 -> Worker calls backend complete/failed endpoint
@@ -31,11 +32,11 @@ Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For guitar/acco
 
 Queue policy:
 - New jobs should be queued instead of running heavy AI work in request handlers.
-- Status responses should distinguish `pending`, `queued`, `processing`, `completed`, `completed_with_warning`, and `failed`.
+- Status responses should distinguish `pending`, `queued`, `processing`, `stem_ready`, `completed`, `completed_with_warning`, and `failed`.
 - A no-note result after successful stem separation is `completed_with_warning`/API `completed`, not `failed`.
-- In `PROCESSING_MODE=local`, Celery worker concurrency must be `1` and should process very short files only.
-- In `PROCESSING_MODE=modal`, Modal/serverless GPU handles the Demucs workload.
-- In `PROCESSING_MODE=external_worker`, a manual worker pulls jobs and reports results.
+- In `AUDIO_PROCESSING_MODE=modal`, Modal GPU handles heavy audio/AI work.
+- In `AUDIO_PROCESSING_MODE=local`, Celery worker concurrency must be `1` and should process very short files only.
+- Result fetching is status-first: poll `/status`, then call `/result` only after a ready status such as `stem_ready`, `completed`, or `completed_with_warning`.
 
 Cost policy:
 - Process one selected stem per job.
@@ -48,21 +49,30 @@ Cost policy:
 - Selective stem processing reduces CPU usage, RAM usage, storage costs, and processing time.
 - Duplicate detection reduces repeated Demucs processing, repeated Cloudinary storage usage, unnecessary queue jobs, and Railway CPU/RAM cost.
 
-Processing modes:
+Processing mode:
 
-- `PROCESSING_MODE=local`: development fallback. Railway/Celery can process very short files only and is not recommended for production.
-- `PROCESSING_MODE=external_worker`: backend queues jobs and exposes worker endpoints for manual/Kaggle workers.
-- `PROCESSING_MODE=modal`: preferred MVP production-like architecture; backend triggers Modal/serverless GPU processing.
+- `AUDIO_PROCESSING_MODE=modal`: hosted MVP mode; backend triggers Modal GPU processing.
+- `AUDIO_PROCESSING_MODE=local`: development fallback. Local Celery can process very short files only and is not recommended for production.
+- `AUDIO_PROCESSING_MODE=disabled`: disables audio processing.
 
 Required worker/environment variables:
 
-- `PROCESSING_MODE=local|external_worker|modal`
+- `AUDIO_PROCESSING_MODE=modal`
+- `MODAL_TRIGGER_URL`
 - `WORKER_API_TOKEN`
 - `MODAL_TOKEN_ID`
 - `MODAL_TOKEN_SECRET`
 - `CLOUDINARY_CLOUD_NAME`
 - `CLOUDINARY_API_KEY`
 - `CLOUDINARY_API_SECRET`
+- `YOUTUBE_COOKIES` or `YOUTUBE_COOKIES_FILE`
+- `WHISPER_MODEL_SIZE`
+- `WHISPER_LANGUAGE`
+- `WHISPER_BEAM_SIZE`
+- `WHISPER_BEST_OF`
+- `WHISPER_VAD_FILTER`
+- `WHISPER_CONDITION_ON_PREVIOUS_TEXT`
+- `WHISPER_INITIAL_PROMPT`
 
 Worker endpoints to add/document:
 
@@ -81,8 +91,8 @@ Warning/capability rules:
 
 Basic Pitch and fallback transcription behavior:
 
-- Use Spotify Basic Pitch as the primary note detection engine for selected melodic stems.
-- Run Basic Pitch only for `other`, `bass`, and future melodic `vocals`; do not run Basic Pitch on `drums`.
+- Use Basic Pitch-style note detection as the primary note detection path for selected melodic non-vocal stems.
+- Run note detection only for `other` and `bass`; do not run Basic Pitch-style note detection on `vocals` or `drums`.
 - Lower the default Basic Pitch note confidence threshold and expose sensitivity through configuration.
 - Normalize separated stem volume before Basic Pitch transcription.
 - Retry Basic Pitch with lower-threshold/high-sensitivity settings when the first pass detects zero notes.
@@ -90,7 +100,7 @@ Basic Pitch and fallback transcription behavior:
 
 Stem support matrix:
 
-- `vocals`: playback only for MVP. Future roadmap: Basic Pitch or specialist melody extraction.
+- `vocals`: selected-stem playback plus Generate Lyrics using faster-whisper. Lyrics use `lyrics_generation_status`, separate from main audio `processing_status`.
 - `drums`: analyze drum stem with onset/rhythm detection only; do not use Basic Pitch; generate a drum rhythm lane and percussion/drum tab where possible, support synchronized playback highlighting, and support drum MIDI export when possible.
 - `bass`: analyze bass stem with Basic Pitch, generate 4-string bass tablature using standard tuning E A D G, generate bass score data, and support synchronized playback/playhead highlighting.
 - `other`: primary guitar/accompaniment transcription target; analyze with Basic Pitch, generate guitar-oriented tablature, score notation, and synchronized playback/playhead highlighting.
@@ -105,14 +115,14 @@ Audio/YouTube
 -> tab/score/rhythm rendering
 ```
 
-The app focus is generating practical tabs/rhythm views from one selected output stem, synchronized practice playback, instrument-aware rendering, and fast selected-stem turnaround. MIDI import, Guitar Pro import, PowerTab import/export, imported project playback architecture, imported project editing, full Songsterr-like multi-track workflows, and isolated lead/rhythm guitar workflows are future roadmap only. Do not treat them as MVP work. MIDI export, MusicXML export, and TAB export remain in scope when generated from separated-stem transcription results.
+The app focus is generating practical tabs/rhythm/lyrics views from one selected output stem, synchronized practice playback, instrument-aware rendering, and fast selected-stem turnaround. MIDI import, Guitar Pro import, PowerTab import/export, imported project playback architecture, imported project editing, advanced Songsterr-like multi-track workflows, and isolated lead/rhythm guitar workflows are future roadmap only. Do not treat them as MVP work. MIDI export, MusicXML export, and TAB export remain in scope when generated from separated-stem transcription results.
 
 Instrument-aware rendering architecture:
 
 - Guitar/`other` renders as 6-string tablature.
 - Bass renders as 4-string bass tablature.
 - Drums render as a rhythm lane/percussion tab.
-- Vocals render as playback-only.
+- Vocals render selected-stem playback and lyrics when generated.
 - All views share synchronized playback using waveform, playhead, tabs, score, active notes/hits, and selected-stem playback.
 
 Synchronized playback requirements:
@@ -156,8 +166,9 @@ Modal worker rules:
 - Download `original_audio_url` from Cloudinary.
 - Run Demucs with `vocals`, `drums`, `bass`, or `other`.
 - Normalize the selected separated stem before transcription.
-- Run Spotify Basic Pitch only for melodic selected stems: `other`, `bass`, and future melodic `vocals`.
-- Run drum onset/rhythm analysis for `drums`; do not run Basic Pitch on drum stems.
+- Run Basic Pitch-style note detection only for melodic non-vocal selected stems: `other` and `bass`.
+- Run drum onset/rhythm analysis for `drums`; do not run Basic Pitch-style note detection on drum stems.
+- Run faster-whisper lyrics generation for `vocals`.
 - Upload separated stem and supported outputs to Cloudinary.
 - Report completion/failure to the backend.
 - Keep full logs in Modal/backend and sanitize frontend errors.
@@ -232,7 +243,7 @@ User Upload / YouTube URL + selected stem
 - [x] Add fallback behavior when the selected stem is unavailable or low quality
 - [x] Add per-stem confidence scoring so users know which instrument tracks are reliable
 - [x] Add selected-stem preview endpoint so users can listen to the processed target
-- [x] Run Basic Pitch only for the selected melodic stem when needed
+- [x] Run Basic Pitch-style note detection only for selected non-vocal melodic stems when needed
 - [x] Generate drum onset/rhythm data only when `drums` is selected, without Basic Pitch
 - [ ] Allow users to reprocess the selected stem without rerunning unrelated stems
 
@@ -251,14 +262,14 @@ User Upload / YouTube URL + selected stem
 - [x] Implement automatic cleanup of temporary audio files after processing - uploaded, preprocessed, and separated audio files are deleted at terminal task state while persisted analysis and export data remain available
 - [x] Ensure Railway local files are treated as temporary only after Cloudinary upload
 - [x] Delete Cloudinary assets when a record is deleted and log cleanup failures safely
-- [x] Add `PROCESSING_MODE=local|external_worker|modal`
+- [x] Add `AUDIO_PROCESSING_MODE=local|modal|disabled`
 - [x] Add authenticated worker endpoint: `GET /api/v1/worker/jobs/next`
 - [x] Add authenticated worker endpoint: `POST /api/v1/worker/jobs/{transcription_id}/complete`
 - [x] Add authenticated worker endpoint: `POST /api/v1/worker/jobs/{transcription_id}/failed`
 - [x] Add `WORKER_API_TOKEN` validation for external worker endpoints
-- [x] Add Modal/serverless GPU worker trigger path for `PROCESSING_MODE=modal`
+- [x] Add Modal GPU worker trigger path for `AUDIO_PROCESSING_MODE=modal`
 - [x] Add Modal worker selected-stem Demucs implementation
-- [x] Add status callback flow from Modal/external worker to backend
+- [x] Add status callback flow from Modal worker to backend
 - [x] Ensure worker failures store full logs internally and sanitized `processing_error` for users
 - [x] Document Kaggle as manual testing only, not production infrastructure
 
@@ -272,6 +283,7 @@ User Upload / YouTube URL + selected stem
 - [x] Generate guitar-oriented tablature from Demucs `other` for the MVP
 - [x] Generate bass tablature when `bass` is selected
 - [x] Generate drum rhythm data when `drums` is selected, using onset/rhythm analysis instead of Basic Pitch
+- [x] Generate vocal lyrics with faster-whisper and track `lyrics_generation_status` separately from `processing_status`
 - [x] Store transcription results for the selected stem instead of creating all track outputs by default
 - [x] Create API endpoint to list available instrument tracks for a transcription
 - [x] Create API endpoint to retrieve one instrument track result
@@ -359,6 +371,7 @@ Transcription
 - [x] Add zoom controls for notation viewer
 - [x] Implement dark/light mode toggle
 - [x] Add download buttons for each export format (MIDI, MusicXML, TXT, PDF later) - MIDI, MusicXML, and TAB buttons are wired; PDF remains Phase 6
+- [ ] Responsive stabilization must follow the "Critical Responsive Layout Rules" from `skill.md`; layout fixes should prioritize minimum width constraints, earlier stacking/wrapping, and preserving desktop composition integrity instead of overflow masking.
 
 ### Selected-Stem Track Interface
 
@@ -476,9 +489,11 @@ MVP scope recommendation:
 The selected-stem architecture grows in four steps:
 
 - **Phase 1**: selected-stem MVP, Cloudinary persistence, duplicate detection, delete/cancel, queue/status UX
-- **Phase 2**: Modal/serverless GPU worker integration, worker endpoints, external worker authentication, status callback flow, selected-stem preview/export from Cloudinary outputs
-- **Phase 3**: improved transcription quality, playback timing accuracy, better retry/recovery, drum/bass rendering polish
-- **Phase 4**: MIDI import, Guitar Pro import, PowerTab import/export, imported project editing, full Songsterr-like multi-track tabs, lead/rhythm guitar separation, piano/guitar specialist models, real-time transcription, collaborative editing
+- **Phase 2**: Modal GPU worker integration, worker endpoints, worker authentication, status callback flow, selected-stem preview/export from Cloudinary outputs
+- **Phase 3**: improved transcription quality, playback timing accuracy, better retry/recovery, drum/bass rendering polish, and better lyrics model settings
+- **Phase 4**: AlphaTab or VexFlow renderer, better quantization, chord grouping, fingering optimizer, MusicXML/GP-like export, manual correction editor, MIDI import, Guitar Pro import, PowerTab import/export, imported project editing, advanced Songsterr-like multi-track tabs, lead/rhythm guitar separation, piano/guitar specialist models, real-time transcription, collaborative editing
+
+Current limitations: automatic tabs are experimental, lyrics accuracy depends on vocal stem quality, and advanced Guitar Pro/Songsterr-style notation including bends, slides, harmonics, let-ring, exact rhythm notation, and multi-track Songsterr-level output is future work.
 
 For MVP, prioritize Demucs default stems first: vocals, drums, bass, and other. Lead guitar versus rhythm guitar, true isolated guitar, and true isolated piano should be treated as advanced features because they are harder than default broad stem separation.
 

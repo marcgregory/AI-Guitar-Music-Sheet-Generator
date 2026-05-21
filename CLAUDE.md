@@ -9,11 +9,11 @@
   - Guitar transcription uses `other`; guitar/piano/melody may be grouped there depending on model and mix
   - Bass transcription uses the `bass` stem and renders standard 4-string E A D G bass tab
   - Drum transcription uses the `drums` stem for hit/onset analysis, rhythm lane rendering, percussion tab, and drum MIDI export where possible
-  - Vocals are playback-only in the MVP; melody extraction is future roadmap
+  - Vocals support selected-stem playback and Generate Lyrics via faster-whisper; lyric work uses `lyrics_generation_status`, separate from `processing_status`
   - Playback must share one `currentTime` across waveform, playhead, tabs, score, active notes, and selected-stem audio
-  - `PROCESSING_MODE=modal` is the preferred production-like path; Modal downloads from Cloudinary, separates only the selected stem on GPU, uploads outputs to Cloudinary, and calls back
-  - `PROCESSING_MODE=local` keeps Redis/Celery as fallback/dev mode for very short files only
-  - `PROCESSING_MODE=external_worker` supports manual workers such as Kaggle notebooks for testing
+  - `AUDIO_PROCESSING_MODE=modal` is the hosted MVP path; Modal downloads from Cloudinary, separates only the selected stem on GPU, performs stem-specific generation, uploads outputs to Cloudinary, and calls back
+  - `AUDIO_PROCESSING_MODE=local` is fallback/dev mode for very short files only; `AUDIO_PROCESSING_MODE=disabled` disables processing
+  - Result fetching is status-first: poll `/status`, then call `/result` only after a ready status such as `stem_ready`, `completed`, or `completed_with_warning`
   - Users can delete completed, completed_with_warning, failed, queued, and processing records; active cancellation is best-effort in the MVP
 - **Phase 0: Project Setup & Infrastructure** - COMPLETED
   - Git repository initialized

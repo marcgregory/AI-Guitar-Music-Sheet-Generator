@@ -27,7 +27,7 @@ Railway local storage is temporary only. The backend/worker may use local paths 
 
 Temporary files should be cleaned after each job reaches `completed`, `completed_with_warning`, or `failed`. A failed job should still attempt cleanup and record `processing_error`.
 
-Modal/serverless GPU and external workers should treat Cloudinary as the source of truth: download `original_audio_url`, upload the selected separated stem and supported exports, and report the resulting `secure_url`/`public_id` values back to the backend. No worker local filesystem should be treated as durable storage.
+Modal GPU workers should treat Cloudinary as the source of truth: download `original_audio_url`, upload the selected separated stem and supported exports, and report the resulting `secure_url`/`public_id` values back to the backend. No worker local filesystem should be treated as durable storage.
 
 For preview playback, prefer `separated_audio_url` and redirect to Cloudinary. Local stem paths are development/legacy fallback only and may be removed after durable upload.
 
@@ -68,8 +68,8 @@ Selective stem processing reduces:
 - processing time
 - repeated Cloudinary storage from duplicate jobs
 
-Phase 1 should recommend 3-5 minute songs and avoid full multi-stem processing. Production-like selected-stem AI work should move to Modal/serverless GPU; Kaggle remains optional/manual testing only.
+Phase 1 should recommend 3-5 minute songs and avoid full multi-stem processing. Production-like selected-stem AI work should run on Modal GPU with `AUDIO_PROCESSING_MODE=modal`; Kaggle remains optional/manual testing only.
 
-Selected-stem processing also reduces Basic Pitch work because note detection runs only for the selected melodic stem; drum jobs use onset/rhythm analysis instead of melodic transcription.
+Selected-stem processing also reduces note-detection work because Basic Pitch-style detection runs only for selected melodic non-vocal stems. Drum jobs use onset/rhythm analysis instead of melodic transcription, and vocal jobs use faster-whisper lyrics generation.
 
 MIDI import, Guitar Pro import, PowerTab import/export, imported project editing, and imported multi-track workflows are future roadmap only.
