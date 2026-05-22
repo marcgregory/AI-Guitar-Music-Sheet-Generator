@@ -555,7 +555,7 @@ h3 {
 .alert-error {
   border-color: rgba(170, 63, 52, 0.28);
   background: rgba(170, 63, 52, 0.1);
-  color: var(--studio-text);
+  color: var(--studio-muted);
 }
 
 .alert-success {
