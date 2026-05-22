@@ -6402,6 +6402,27 @@ body {
   color: #7b2219;
 }
 
+@media (min-width: 1081px) {
+  .cinematic-auth-shell {
+    height: min(92dvh, 820px);
+    min-height: 0;
+    max-height: 820px;
+  }
+
+  .cinematic-auth-hero,
+  .auth-form-panel {
+    min-height: 0;
+  }
+
+  .auth-form-panel {
+    overflow-y: auto;
+  }
+
+  .auth-form-panel:has(.auth-form-register) {
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 1080px) {
   .cinematic-auth-page {
     overflow: auto;
@@ -6424,7 +6445,6 @@ body {
 @media (min-width: 1081px) and (max-height: 820px) {
   .cinematic-auth-shell {
     width: min(1450px, calc(100vw - 1.4rem));
-    min-height: calc(100dvh - 1.4rem);
   }
 
   .cinematic-auth-hero {

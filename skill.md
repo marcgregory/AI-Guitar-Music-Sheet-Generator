@@ -535,3 +535,11 @@ Likely CSS direction:
   max-height: 820px;
 }
 ```
+
+Important:
+
+- Inspect existing auth CSS first.
+- Do not change JSX/components.
+- Do not change colors, typography, gradients, card styling, or copy.
+- Apply desktop height cap only above the existing split-layout breakpoint.
+- Mobile/tablet stacked layout must keep existing behavior.
