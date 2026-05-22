@@ -1109,6 +1109,135 @@ def test_worker_complete_saves_cloudinary_outputs_and_track_metadata():
         session.close()
 
 
+def test_worker_generate_tab_complete_derives_missing_structured_tablature_for_status_and_result():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "derive-tab-owner", "derive-tab@example.com")
+        transcription = models.Transcription(
+            title="Derive tab payload",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            is_processed=True,
+            processing_status="stem_ready",
+            tab_generation_status="processing",
+            modal_job_type="generate_tab",
+            can_play_stem=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    notes_payload = {
+        "notes": [
+            {"pitch": 43, "onset": 0.0, "offset": 0.5, "velocity": 84, "confidence": 0.91}
+        ]
+    }
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "midi_file_url": "https://res.cloudinary.com/demo/raw/upload/out.mid",
+                "tab_file_url": "https://res.cloudinary.com/demo/raw/upload/out.tab",
+                "notes_data": notes_payload,
+                "tablature_data": None,
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tab_generation_status"] == "completed"
+    assert payload["notes_data"] == json.dumps(notes_payload)
+    assert payload["tablature_data"] is not None
+    parsed_tab = json.loads(payload["tablature_data"])
+    assert parsed_tab["instrument"] == "bass"
+    assert parsed_tab["tablature"]
+
+    headers = auth_headers("derive-tab-owner")
+    status_payload = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=headers,
+    ).json()
+    result_payload = client.get(
+        f"/api/v1/audio/{transcription_id}/result",
+        headers=headers,
+    ).json()
+    assert status_payload["tablature_data"] == payload["tablature_data"]
+    assert result_payload["tablature_data"] == payload["tablature_data"]
+    assert status_payload["notes_data"] == payload["notes_data"]
+    assert result_payload["notes_data"] == payload["notes_data"]
+
+
+def test_worker_generate_tab_complete_does_not_mark_completed_when_structured_tab_fails():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "failed-structured-tab-owner", "failed-structured-tab@example.com")
+        transcription = models.Transcription(
+            title="Failed structured tab",
+            user_id=owner.id,
+            selected_stem="other",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/guitar.wav",
+            is_processed=True,
+            processing_status="stem_ready",
+            tab_generation_status="processing",
+            modal_job_type="generate_tab",
+            can_play_stem=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        with patch(
+            "app.api.v1.endpoints.worker.tablature.notes_to_tablature",
+            side_effect=RuntimeError("tab conversion failed"),
+        ):
+            response = client.post(
+                f"/api/v1/worker/jobs/{transcription_id}/complete",
+                headers={"X-Worker-Token": "test-worker-token"},
+                json={
+                    "midi_file_url": "https://res.cloudinary.com/demo/raw/upload/out.mid",
+                    "tab_file_url": "https://res.cloudinary.com/demo/raw/upload/out.tab",
+                    "notes_data": {
+                        "notes": [
+                            {
+                                "pitch": 64,
+                                "onset": 0.0,
+                                "offset": 0.5,
+                                "velocity": 90,
+                            }
+                        ]
+                    },
+                    "tablature_data": None,
+                },
+            )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tab_generation_status"] == "failed"
+    assert payload["processing_status"] == "stem_ready"
+    assert payload["tablature_data"] is None
+    assert payload["notes_data"] is not None
+    assert payload["midi_file_url"].endswith("out.mid")
+    assert payload["tab_file_url"].endswith("out.tab")
+
+
 def test_worker_complete_does_not_keep_stale_separated_audio_url_without_secure_url():
     reset_database()
     original_token = config.settings.WORKER_API_TOKEN

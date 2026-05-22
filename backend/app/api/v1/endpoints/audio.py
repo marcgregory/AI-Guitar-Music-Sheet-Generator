@@ -1802,6 +1802,10 @@ def _status_payload(
         "estimated_wait_time": transcription.estimated_wait_time,
         "modal_dispatch_status": transcription.modal_dispatch_status,
         "modal_retry_at": transcription.modal_retry_at,
+        "notes_data": transcription.notes_data,
+        "tablature_data": transcription.tablature_data,
+        "midi_file_url": transcription.midi_file_url,
+        "tab_file_url": transcription.tab_file_url,
     }
     if message:
         payload["message"] = message

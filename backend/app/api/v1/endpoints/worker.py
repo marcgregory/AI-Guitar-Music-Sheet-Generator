@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from .... import core, db, models
+from ....services import tablature
 from .. import schemas
 from .audio import _promote_oldest_queued_transcription, _trigger_next_queued_transcription
 
@@ -101,6 +102,35 @@ def _payload_has_note_events(value: Any) -> bool:
             isinstance(pitch_info, list) and len(pitch_info) > 0
         )
     return False
+
+
+def _payload_has_tablature_data(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return False
+    if isinstance(value, dict):
+        return bool(value.get("tablature") is not None or value.get("tracks") is not None)
+    if isinstance(value, list):
+        return bool(value)
+    return False
+
+
+def _structured_tablature_payload(
+    selected_stem: str,
+    notes_data: Any,
+    tablature_data: Any,
+) -> Any:
+    if _payload_has_tablature_data(tablature_data):
+        return tablature_data
+    if selected_stem not in {"bass", "other"} or not _payload_has_note_events(notes_data):
+        return tablature_data
+
+    instrument_type = "bass" if selected_stem == "bass" else "guitar"
+    return tablature.notes_to_tablature(notes_data, instrument_type=instrument_type)
 
 
 def _payload_has_drum_hits(value: Any) -> bool:
@@ -218,13 +248,33 @@ async def complete_worker_job(
     transcription.tempo_confidence = payload.tempo_confidence
     transcription.detected_key = payload.detected_key
     transcription.key_confidence = payload.key_confidence
+    selected_stem = transcription.selected_stem or "other"
+    is_generate_tab_job = transcription.modal_job_type == "generate_tab"
     transcription.notes_data = _json_or_text(payload.notes_data)
     transcription.chords_data = _json_or_text(payload.chords_data)
     transcription.chord_chart_data = _json_or_text(payload.chord_chart_data)
-    transcription.tablature_data = _json_or_text(payload.tablature_data)
-    selected_stem = transcription.selected_stem or "other"
     has_notes = _payload_has_note_events(payload.notes_data)
     has_drum_hits = _payload_has_drum_hits(payload.notes_data)
+    missing_required_tablature = False
+    try:
+        structured_tablature_data = (
+            _structured_tablature_payload(
+                selected_stem,
+                payload.notes_data,
+                payload.tablature_data,
+            )
+            if is_generate_tab_job
+            else payload.tablature_data
+        )
+        transcription.tablature_data = _json_or_text(structured_tablature_data)
+    except Exception:
+        logger.exception(
+            "worker_structured_tablature_failed transcription_id=%s selected_stem=%s",
+            transcription.id,
+            selected_stem,
+        )
+        transcription.tablature_data = _json_or_text(payload.tablature_data)
+        missing_required_tablature = True
     warning_message = None
     if selected_stem in {"vocals"}:
         warning_message = "Stem separated successfully, but notation generation is not supported for this stem in the MVP."
@@ -244,22 +294,43 @@ async def complete_worker_job(
         transcription.notes_data = json.dumps(
             {"notes": [], "message": warning_message}
         )
-    is_generate_tab_job = transcription.modal_job_type == "generate_tab"
     if is_generate_tab_job:
         transcription.can_generate_score = bool(selected_stem in {"bass", "other"} and has_notes)
-        _set_manual_generation_status(transcription, "completed")
-        transcription.processing_status = (
-            "completed"
-            if transcription.can_generate_score or (selected_stem == "drums" and has_drum_hits)
-            else "completed_with_warning"
-            if warning_message
-            else "stem_ready"
-        )
+        if (
+            selected_stem in {"bass", "other"}
+            and has_notes
+            and (missing_required_tablature or not transcription.tablature_data)
+        ):
+            _set_manual_generation_status(transcription, "failed")
+            warning_message = (
+                "Tab generation finished without structured tablature data. "
+                "Please try generating tabs again."
+            )
+            transcription.warning_message = warning_message
+            transcription.processing_status = "stem_ready"
+            transcription.processing_error = warning_message
+            transcription.can_generate_score = False
+        else:
+            _set_manual_generation_status(transcription, "completed")
+            transcription.processing_status = (
+                "completed"
+                if transcription.can_generate_score or (selected_stem == "drums" and has_drum_hits)
+                else "completed_with_warning"
+                if warning_message
+                else "stem_ready"
+            )
+            transcription.processing_error = None
     else:
         transcription.can_generate_score = False
         transcription.processing_status = "stem_ready"
     transcription.is_processed = True
-    transcription.processing_error = None
+    if not (
+        is_generate_tab_job
+        and selected_stem in {"bass", "other"}
+        and has_notes
+        and (missing_required_tablature or not transcription.tablature_data)
+    ):
+        transcription.processing_error = None
     transcription.queue_position = None
     transcription.estimated_wait_time = None
     transcription.celery_task_id = None
