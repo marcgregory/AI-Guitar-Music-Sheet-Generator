@@ -222,7 +222,7 @@ class WorkerJob(BaseModel):
     transcription_id: int
     selected_stem: str
     demucs_stem: str
-    original_audio_url: str
+    original_audio_url: Optional[str] = None
     job_type: Optional[str] = "process"
     modal_request_id: Optional[str] = None
     separated_audio_url: Optional[str] = None

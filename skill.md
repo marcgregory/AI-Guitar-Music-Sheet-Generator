@@ -543,3 +543,151 @@ Important:
 - Do not change colors, typography, gradients, card styling, or copy.
 - Apply desktop height cap only above the existing split-layout breakpoint.
 - Mobile/tablet stacked layout must keep existing behavior.
+
+#==================tabs issue
+
+Use this updated prompt instead:
+
+```txt
+Fix prod tab generation using original audio instead of selected stem, and prevent collapsed/single-line TAB fallback.
+
+Root causes:
+1. Prod Generate Tabs may be analyzing original_audio_url/audio_file_path instead of the selected separated stem.
+2. Frontend only renders real multi-string TAB when `tablature_data.tablature` exists.
+3. Some prod completed bass/other rows have notes_data but missing/empty/malformed `tablature_data`, so viewer falls back to note-only/one-line layout.
+
+Tasks:
+
+1. Enforce Generate Tabs stem-only input
+- Audit local task and Modal worker generate_tab path.
+- For selected_stem `bass` or `other`, Generate Tabs must load audio from:
+  1. `separated_audio_url`
+  2. `separated_audio_file_path`
+- Do not fall back to `original_audio_url` or `audio_file_path`.
+- If no separated stem exists, fail tab generation with a clear error:
+  `Separated stem audio is required before generating tabs.`
+- Log the exact source used:
+  `tab_generation_audio_source=separated_audio_url|separated_audio_file_path|missing`
+
+2. Repair/persist structured tablature
+- Add backend helper for selected_stem `bass`/`other` only.
+- If notes_data has note events and tablature_data is missing, invalid, or has empty `tablature`, call:
+  `tablature.notes_to_tablature(notes_data, instrument_type="bass"|"guitar")`
+- Persist result to `Transcription.tablature_data`.
+- Call this helper in worker completion and before returning `/audio/{id}/result` and `/audio/{id}/status`.
+
+3. Prevent false completed status
+- If selected_stem is `bass`/`other`
+- and notes_data exists
+- but structured tablature cannot be generated
+- do not mark `tab_generation_status` as `completed`.
+- Use `failed` or `completed_with_warning`.
+
+4. Cleanup original Cloudinary audio after full flow completes
+- After selected-stem processing and manual generation complete successfully:
+  - delete only `original_audio_public_id` from Cloudinary
+  - set `original_audio_url = null`
+  - set `original_audio_public_id = null`
+- Do not delete:
+  - `separated_audio_url`
+  - `separated_audio_public_id`
+  - `midi_file_url`
+  - `tab_file_url`
+  - `notes_data`
+  - `tablature_data`
+- Local temp cleanup and Cloudinary cleanup must be separate.
+
+5. Do not change frontend layout
+- No redesign.
+- No CSS changes.
+- Keep drums/vocals behavior unchanged.
+
+Regression tests:
+1. Generate Tabs source selection:
+- completed/stem_ready bass or other transcription
+- has separated_audio_url
+- has original_audio_url
+- generate-tabs uses separated stem, not original audio
+
+2. Missing stem:
+- bass/other generate-tabs with no separated_audio_url/file
+- returns clear failure and does not silently analyze original audio
+
+3. Structured tablature repair:
+- completed bass/other transcription
+- notes_data exists
+- tablature_data is null
+- result endpoint returns and persists non-empty `tablature_data.tablature`
+
+4. Cloudinary cleanup:
+- after full successful flow
+- original_audio_public_id is deleted/null
+- separated stem and exports remain
+
+Expected:
+- Prod Generate Tabs analyzes the selected separated stem only.
+- Prod always returns non-empty structured `tablature_data.tablature` when tab generation succeeds.
+- Frontend renders proper multi-string TAB lines instead of one-line fallback.
+- Original uploaded audio is removed from Cloudinary only after the full flow is safely completed.
+```
+
+#== wrong audio source from generationg tab
+
+# Strict Selected-Stem TAB Source Fix
+
+## Summary
+
+Implement a shared strict resolver so manual `bass`/`other` TAB generation can only analyze the isolated selected stem. This directly fixes stale `audio_file_path` / `original.mp3` reuse and forces Generate Tabs to use the selected stem, such as `selected-stem/other_nqdpu9.wav`.
+
+## Key Changes
+
+- Add `resolve_generate_tab_audio_source(transcription)` in `backend/app/services/audio_source_resolver.py`.
+- For `bass`/`other`, allow only `separated_audio_url` or `separated_audio_file_path`.
+- Priority is exactly: `separated_audio_url` -> `separated_audio_file_path` -> fail.
+- If `separated_audio_url` exists, `separated_audio_file_path` must not be preferred.
+- Never use `audio_file_path`, `original_audio_url`, `preprocessed_audio_file_path`, `source_url`, or generic audio fields for manual TAB generation.
+- Add verification logs:
+  - `tab_generation_audio_source=...`
+  - `generate_tab_source transcription_id=%s stem=%s source=%s`
+
+## Backend And Modal Flow
+
+- Import the resolver from `tasks.py`, `audio.py`, and `worker.py`.
+- Update local generate-tab flow, Modal dispatch, retry dispatch, and worker job construction to use the resolver.
+- Modal payload rules:
+  - `process` jobs require/send `original_audio_url`.
+  - `generate_tab` jobs require/send `separated_audio_url`.
+  - `generate_tab` jobs must not send or use original audio as fallback.
+- Clear stale `audio_file_path` and `preprocessed_audio_file_path` only after `separated_audio_url` or `separated_audio_file_path` is confirmed present.
+
+## Frontend Playback
+
+- Update selected-stem playback in `TranscriptionViewer.tsx` to use only `transcription.separated_audio_url` or a dedicated selected-stem/track endpoint.
+- Remove selected-stem playback fallback to original/source fields.
+- Add temporary log:
+  - `viewer_audio_source transcription_id=%s separated=%s`
+
+## Acceptance Proof
+
+- For a non-demo `other`/`bass` transcription with `separated_audio_url` present and `audio_file_path` still pointing to `original.mp3`, a new Generate Tabs run must log:
+  - `tab_generation_audio_source=separated_audio_url`
+- It must use:
+  - `selected-stem/other_nqdpu9.wav`
+- It must never read, download, open, or dispatch:
+  - `original.mp3`
+  - `audio_file_path`
+  - `original_audio_url`
+  - `preprocessed_audio_file_path`
+- Verify with a new Generate Tabs run, not an old completed job.
+- When retesting the same record, clear old generated `notes_data` and `tablature_data` first, or use a fresh upload, so stale outputs from the previous wrong source do not mask the fix.
+
+## Test Plan
+
+- Add resolver unit tests for URL priority, file-path fallback, and strict failure when only original audio exists.
+- Extend generate-tabs backend tests to prove Basic Pitch never receives original audio.
+- Add Modal/API tests proving `generate_tab` payload uses `separated_audio_url` only and rejects missing separated stem.
+- Add frontend tests proving stem playback ignores original/source fields and resolves only separated stem audio.
+- Run:
+  - `python -m pytest backend/tests/test_music_output_services.py`
+  - `python -m pytest backend/tests/test_audio_list_endpoint.py`
+  - focused Vitest for `TranscriptionViewer.test.tsx`

@@ -555,7 +555,7 @@ h3 {
 .alert-error {
   border-color: rgba(170, 63, 52, 0.28);
   background: rgba(170, 63, 52, 0.1);
-  color: var(--studio-text);
+  color: var(--studio-muted);
 }
 
 .alert-success {
@@ -12823,7 +12823,9 @@ body,
     minmax(30rem, min(47rem, 48%));
   column-gap: clamp(2rem, 5vw, 5.5rem);
   justify-content: center;
-  padding-block-start: calc(var(--public-nav-height) + var(--hero-nav-clearance));
+  padding-block-start: calc(
+    var(--public-nav-height) + var(--hero-nav-clearance)
+  );
   padding-inline: max(
     var(--app-page-padding),
     calc((100vw - var(--app-container-width)) / 2)
@@ -12861,7 +12863,7 @@ body,
 .cinematic-auth-page {
   display: grid;
   place-items: center;
-  padding: var(--app-page-padding);
+  /* padding: var(--app-page-padding); */
 }
 
 .cinematic-auth-shell,
@@ -13060,7 +13062,9 @@ body,
   .landing-hero.cinematic-hero {
     width: 100%;
     margin-inline: 0;
-    padding-block-start: calc(var(--public-nav-height) + var(--hero-nav-clearance));
+    padding-block-start: calc(
+      var(--public-nav-height) + var(--hero-nav-clearance)
+    );
     padding-inline: var(--app-page-padding);
   }
 
@@ -13122,4 +13126,44 @@ body,
     grid-template-columns: 1fr;
     width: 100%;
   }
+}
+
+/* Auth page scrollbar */
+.cinematic-auth-page {
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 98, 72, 0.75) transparent;
+}
+
+/* Chrome / Edge / Brave */
+.cinematic-auth-page::-webkit-scrollbar {
+  width: 10px;
+}
+
+.cinematic-auth-page::-webkit-scrollbar-track {
+  background: transparent;
+  margin-block: 8px;
+}
+
+.cinematic-auth-page::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(140, 108, 76, 0.78),
+    rgba(110, 84, 58, 0.92)
+  );
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s ease;
+}
+
+.cinematic-auth-page::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(165, 125, 86, 0.95),
+    rgba(125, 92, 62, 1)
+  );
 }

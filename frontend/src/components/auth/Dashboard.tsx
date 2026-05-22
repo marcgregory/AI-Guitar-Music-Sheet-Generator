@@ -27,6 +27,7 @@ interface Project {
   processingError?: string | null;
   isDemo?: boolean;
   metadata: TranscriptionMetadata;
+  playbackAudioUrl?: string | null;
 }
 
 const filenameFromPath = (path?: string | null): string =>
@@ -120,6 +121,9 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
     processingError: transcription.processing_error,
     isDemo: Boolean(transcription.is_demo),
     metadata,
+    playbackAudioUrl: audioService.resolvePlayableAudioUrl(
+      transcription.separated_audio_url,
+    ),
   };
 };
 
@@ -188,7 +192,11 @@ const getProjectActionMenuItems = (
     project.status === "warning" ||
     project.status === "stem_ready"
   ) {
-    items.push({ action: "source", label: "Open source audio", icon: "music" });
+    items.push({
+      action: "source",
+      label: project.playbackAudioUrl ? "Open stem audio" : "Open source audio",
+      icon: "music",
+    });
   }
 
   if (project.status === "processing") {
@@ -364,6 +372,10 @@ const Dashboard: React.FC = () => {
     if (action === "source") {
       if (!token) return;
       try {
+        if (project.playbackAudioUrl) {
+          window.open(project.playbackAudioUrl, "_blank", "noopener,noreferrer");
+          return;
+        }
         const blob = await audioService.getSourceAudio(project.id, token);
         const sourceUrl = URL.createObjectURL(blob);
         window.open(sourceUrl, "_blank", "noopener,noreferrer");

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 from fastapi import BackgroundTasks
 from sqlalchemy import create_engine
@@ -11,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import db, models, tasks
+from app.api.v1.endpoints import audio as audio_endpoint
 from app.core import config
 from app.core.security import create_access_token, get_password_hash
 from app.services import storage
@@ -1177,6 +1179,127 @@ def test_worker_generate_tab_complete_derives_missing_structured_tablature_for_s
     assert result_payload["notes_data"] == payload["notes_data"]
 
 
+def test_result_endpoint_repairs_and_persists_missing_structured_tablature():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "repair-result-owner", "repair-result@example.com")
+        notes_payload = {
+            "notes": [
+                {"pitch": 43, "onset": 0.0, "offset": 0.5, "velocity": 84}
+            ]
+        }
+        transcription = models.Transcription(
+            title="Repair existing result",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            notes_data=json.dumps(notes_payload),
+            tablature_data=None,
+            is_processed=True,
+            processing_status="completed",
+            tab_generation_status="completed",
+            can_play_stem=True,
+            can_generate_score=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/result",
+        headers=auth_headers("repair-result-owner"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    parsed_tab = json.loads(payload["tablature_data"])
+    assert parsed_tab["instrument"] == "bass"
+    assert parsed_tab["tablature"]
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.tablature_data == payload["tablature_data"]
+    finally:
+        session.close()
+
+
+def test_status_repair_never_overwrites_valid_structured_tablature():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "valid-tab-owner", "valid-tab@example.com")
+        existing_tab = sample_tab_json("bass")
+        transcription = models.Transcription(
+            title="Already valid tab",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            notes_data=sample_notes_json(),
+            tablature_data=existing_tab,
+            is_processed=True,
+            processing_status="completed",
+            tab_generation_status="completed",
+            can_play_stem=True,
+            can_generate_score=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio.tablature.notes_to_tablature") as tab_mock:
+        response = client.get(
+            f"/api/v1/audio/{transcription_id}/status",
+            headers=auth_headers("valid-tab-owner"),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["tablature_data"] == existing_tab
+    tab_mock.assert_not_called()
+
+
+def test_status_repair_skips_while_tab_generation_is_processing():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "processing-tab-owner", "processing-tab@example.com")
+        transcription = models.Transcription(
+            title="Processing tab",
+            user_id=owner.id,
+            selected_stem="other",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/guitar.wav",
+            notes_data=sample_notes_json(),
+            tablature_data=None,
+            is_processed=True,
+            processing_status="stem_ready",
+            tab_generation_status="processing",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio.tablature.notes_to_tablature") as tab_mock:
+        response = client.get(
+            f"/api/v1/audio/{transcription_id}/status",
+            headers=auth_headers("processing-tab-owner"),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["tablature_data"] is None
+    tab_mock.assert_not_called()
+
+
 def test_worker_generate_tab_complete_does_not_mark_completed_when_structured_tab_fails():
     reset_database()
     original_token = config.settings.WORKER_API_TOKEN
@@ -1230,12 +1353,84 @@ def test_worker_generate_tab_complete_does_not_mark_completed_when_structured_ta
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tab_generation_status"] == "failed"
+    assert payload["tab_generation_status"] == "completed_with_warning"
     assert payload["processing_status"] == "stem_ready"
     assert payload["tablature_data"] is None
+    assert "structured tablature" in payload["processing_error"]
     assert payload["notes_data"] is not None
     assert payload["midi_file_url"].endswith("out.mid")
     assert payload["tab_file_url"].endswith("out.tab")
+
+
+def test_worker_generate_tab_complete_deletes_only_original_cloudinary_audio():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "cleanup-original-owner", "cleanup-original@example.com")
+        transcription = models.Transcription(
+            title="Cleanup original after tab",
+            user_id=owner.id,
+            selected_stem="bass",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            original_audio_public_id="musicstudio/original",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            separated_audio_public_id="musicstudio/stem",
+            is_processed=True,
+            processing_status="stem_ready",
+            tab_generation_status="processing",
+            modal_job_type="generate_tab",
+            can_play_stem=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        with patch(
+            "app.api.v1.endpoints.worker.storage.delete_cloudinary_asset",
+            return_value=True,
+        ) as delete_mock:
+            response = client.post(
+                f"/api/v1/worker/jobs/{transcription_id}/complete",
+                headers={"X-Worker-Token": "test-worker-token"},
+                json={
+                    "separated_audio_url": "https://res.cloudinary.com/demo/video/upload/bass.wav",
+                    "separated_audio_public_id": "musicstudio/stem",
+                    "midi_file_url": "https://res.cloudinary.com/demo/raw/upload/out.mid",
+                    "midi_file_public_id": "musicstudio/out-midi",
+                    "tab_file_url": "https://res.cloudinary.com/demo/raw/upload/out.tab",
+                    "tab_file_public_id": "musicstudio/out-tab",
+                    "notes_data": {
+                        "notes": [
+                            {"pitch": 43, "onset": 0.0, "offset": 0.5, "velocity": 84}
+                        ]
+                    },
+                    "tablature_data": {
+                        "instrument": "bass",
+                        "tablature": [
+                            {"string": 1, "fret": 0, "onset": 0.0, "offset": 0.5}
+                        ],
+                    },
+                },
+            )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    delete_mock.assert_called_once_with("musicstudio/original", resource_type="video")
+    payload = response.json()
+    assert payload["original_audio_url"] is None
+    assert payload["original_audio_public_id"] is None
+    assert payload["separated_audio_url"].endswith("bass.wav")
+    assert payload["separated_audio_public_id"] == "musicstudio/stem"
+    assert payload["midi_file_url"].endswith("out.mid")
+    assert payload["tab_file_url"].endswith("out.tab")
+    assert payload["notes_data"] is not None
+    assert payload["tablature_data"] is not None
 
 
 def test_worker_complete_does_not_keep_stale_separated_audio_url_without_secure_url():
@@ -1677,6 +1872,81 @@ def test_generate_tab_endpoint_accepts_high_sensitivity_option():
         assert refreshed.celery_task_id == "tab-task"
     finally:
         session.close()
+
+
+def test_generate_tab_endpoint_requires_separated_stem_for_bass_other():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "missing-tab-stem-owner", "missing-tab-stem@example.com")
+        transcription = models.Transcription(
+            title="No stem tab",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/original.wav",
+            audio_file_path="/tmp/original.wav",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_tab_generation") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/generate-tabs",
+            headers=auth_headers("missing-tab-stem-owner"),
+            json={},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Separated stem audio is required before generating tabs."
+    start_mock.assert_not_called()
+
+
+def test_modal_generate_tab_payload_uses_only_separated_url():
+    transcription = models.Transcription(
+        id=204,
+        title="Modal tab strict source",
+        selected_stem="other",
+        audio_file_path="/tmp/transcriptions/204/original.mp3",
+        preprocessed_audio_file_path="/tmp/transcriptions/204/preprocessed.wav",
+        original_audio_url="https://res.cloudinary.com/demo/video/upload/original.mp3",
+        separated_audio_url="https://res.cloudinary.com/demo/video/upload/selected-stem/other_nqdpu9.wav",
+        separated_audio_file_path="/tmp/transcriptions/204/other.wav",
+        source_url="https://example.test/original",
+        modal_request_id="request-204",
+    )
+
+    payload = audio_endpoint._build_worker_payload_for_modal(
+        transcription,
+        job_type="generate_tab",
+        detection_sensitivity="high",
+    )
+
+    assert payload["separated_audio_url"] == transcription.separated_audio_url
+    assert payload["original_audio_url"] is None
+    assert payload["source_url"] is None
+    assert payload["detection_sensitivity"] == "high"
+
+
+def test_modal_generate_tab_payload_requires_separated_url_not_local_path():
+    transcription = models.Transcription(
+        id=205,
+        title="Modal local-only tab source",
+        selected_stem="bass",
+        separated_audio_file_path="/tmp/transcriptions/205/bass.wav",
+        original_audio_url="https://res.cloudinary.com/demo/video/upload/original.mp3",
+    )
+
+    with pytest.raises(ValueError, match="separated_audio_url is required for Modal tab generation."):
+        audio_endpoint._build_worker_payload_for_modal(
+            transcription,
+            job_type="generate_tab",
+        )
 
 
 def test_generate_tab_endpoint_queues_drum_rhythm_generation():
