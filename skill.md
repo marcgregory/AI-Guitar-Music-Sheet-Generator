@@ -450,3 +450,9 @@ Main rule: fix width with max-width containers, not by scaling the whole UI or l
 - MusicXML/GP-like export.
 - Manual correction editor.
 - Better lyrics model settings.
+
+Implement this after the drum rhythm-only fix.
+Do not change upload/stem separation flow.
+Do not set main `processing_status = "processing"` during manual tab/rhythm generation if the separated stem is already playable.
+Use `tab_generation_status` / `rhythm_generation_status` as the UI progress source.
+Only call Celery `update_state` when a real `task.request.id` exists.

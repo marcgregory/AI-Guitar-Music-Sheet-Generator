@@ -3664,6 +3664,7 @@ body {
   --luxury-amber: #f08a45;
   --luxury-amber-hot: #ffbd78;
   --luxury-bronze: #8e4a23;
+  --public-nav-height: 96px;
 }
 
 body {
@@ -3690,7 +3691,7 @@ body {
   position: fixed;
   inset: 0 0 auto;
   grid-template-columns: minmax(16rem, 1fr) auto auto auto;
-  min-height: 96px;
+  min-height: var(--public-nav-height);
   border-bottom: 0;
   background: linear-gradient(
     180deg,
@@ -3954,14 +3955,25 @@ body {
 }
 
 .cinematic-hero .landing-kicker {
+  width: fit-content;
+  max-width: min(100%, 42rem);
+  flex-wrap: wrap;
   border-color: rgba(240, 138, 69, 0.58);
   background: rgba(5, 5, 5, 0.44);
   color: var(--luxury-amber-hot);
-  padding: 0.54rem 0.95rem;
+  padding: clamp(0.52rem, 1vw, 0.62rem) clamp(0.85rem, 2vw, 1.1rem);
+  font-weight: 800;
+  line-height: 1.18;
+  letter-spacing: clamp(0.07em, 0.55vw, 0.11em);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow: 0 0 34px rgba(240, 138, 69, 0.13);
 }
 
 .kicker-dot {
+  flex: 0 0 auto;
   width: 0.44rem;
   height: 0.44rem;
   border-radius: 999px;
@@ -12712,6 +12724,8 @@ pre code {
   --app-container-width: 1440px;
   --app-wide-container-width: 1680px;
   --app-page-padding: clamp(0.9rem, 3vw, 3rem);
+  --public-nav-height: 96px;
+  --hero-nav-clearance: clamp(1.4rem, 4.5svh, 3rem);
   --app-container-inline-size: min(
     var(--app-container-width),
     calc(100% - (2 * var(--app-page-padding)))
@@ -12789,6 +12803,7 @@ body,
     minmax(30rem, min(47rem, 48%));
   column-gap: clamp(2rem, 5vw, 5.5rem);
   justify-content: center;
+  padding-block-start: calc(var(--public-nav-height) + var(--hero-nav-clearance));
   padding-inline: max(
     var(--app-page-padding),
     calc((100vw - var(--app-container-width)) / 2)
@@ -12975,6 +12990,11 @@ body,
 }
 
 @media (max-width: 860px) {
+  :root {
+    --public-nav-height: 78px;
+    --hero-nav-clearance: clamp(1.1rem, 4svh, 2rem);
+  }
+
   .public-site-nav,
   .app-shell .app-site-nav.site-nav {
     padding-inline: var(--app-page-padding);
@@ -12995,6 +13015,8 @@ body,
   .app-shell:has(.transcription-premium-page),
   .app-shell:has(.transcription-viewer-container) {
     --app-page-padding: clamp(0.75rem, 4vw, 1rem);
+    --public-nav-height: 74px;
+    --hero-nav-clearance: clamp(0.95rem, 3.5svh, 1.5rem);
   }
 
   .auth-page,
@@ -13018,6 +13040,7 @@ body,
   .landing-hero.cinematic-hero {
     width: 100%;
     margin-inline: 0;
+    padding-block-start: calc(var(--public-nav-height) + var(--hero-nav-clearance));
     padding-inline: var(--app-page-padding);
   }
 

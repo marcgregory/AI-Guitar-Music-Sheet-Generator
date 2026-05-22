@@ -698,7 +698,7 @@ const LandingPage = () => {
         <div className="landing-hero-copy">
           <p className="landing-kicker">
             <span className="kicker-dot" />
-            AI powered. Musician approved.
+            AI powered • Musician approved.
           </p>
           <h1 aria-label="Hear it. See it. Play it.">
             {["Hear it.", "See it.", "Play it."].map((line) => (
