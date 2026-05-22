@@ -193,7 +193,7 @@ def _start_tab_generation(
             transcription_id,
             detection_sensitivity,
         )
-        return "local-background"
+        return None
 
     if mode == "modal":
         background_tasks.add_task(
@@ -529,11 +529,15 @@ def _trigger_modal_worker(
             return
 
         is_lyrics_job = job_type == "generate_lyrics"
+        is_manual_generation_job = job_type == "generate_tab"
 
         # Skip if in a terminal state. Lyrics jobs are allowed to run from
         # playback-ready terminal states because they have their own status.
+        # Manual tab/rhythm jobs are also allowed from stem_ready because their
+        # progress is tracked by tab_generation_status/rhythm_generation_status.
         if (
             not is_lyrics_job
+            and not is_manual_generation_job
             and transcription.processing_status in {"completed", "completed_with_warning", "failed", "stem_ready"}
         ):
             logger.info(
@@ -543,11 +547,30 @@ def _trigger_modal_worker(
             )
             return
 
-        if not is_lyrics_job and transcription.processing_status != "processing":
+        manual_generation_status = (
+            (
+                transcription.rhythm_generation_status
+                if (transcription.selected_stem or "other").strip().lower() == "drums"
+                else transcription.tab_generation_status
+            )
+            or "idle"
+        )
+        if (
+            not is_lyrics_job
+            and not is_manual_generation_job
+            and transcription.processing_status != "processing"
+        ):
             logger.info(
                 "Skipping Modal dispatch for transcription %s with status %s.",
                 transcription_id,
                 transcription.processing_status,
+            )
+            return
+        if is_manual_generation_job and manual_generation_status != "processing":
+            logger.info(
+                "Skipping Modal tab dispatch for transcription %s with generation status %s.",
+                transcription_id,
+                manual_generation_status,
             )
             return
 
@@ -576,13 +599,20 @@ def _trigger_modal_worker(
             if is_lyrics_job:
                 transcription.lyrics_generation_status = "failed"
                 transcription.processing_error = "Lyrics generation is not configured."
+            elif is_manual_generation_job:
+                _set_manual_generation_status(transcription, "failed")
+                transcription.processing_status = "stem_ready"
+                transcription.is_processed = True
+                transcription.processing_error = (
+                    "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
+                )
+                transcription.queue_position = None
+                transcription.estimated_wait_time = None
             else:
                 transcription.processing_status = "failed"
                 transcription.processing_error = (
                     "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
                 )
-                if job_type == "generate_tab":
-                    _set_manual_generation_status(transcription, "failed")
                 transcription.queue_position = None
                 transcription.estimated_wait_time = None
             transcription.modal_dispatch_status = "failed"
@@ -3155,9 +3185,15 @@ async def generate_tab(
         if selected_stem == "drums"
         else transcription.tab_generation_status
     ) or "idle"
+    if relevant_generation_status == "processing":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Tab generation is already processing.",
+        )
     existing_score_ready = _can_generate_score(transcription)
-    transcription.processing_status = "processing"
-    transcription.is_processed = False
+    if transcription.processing_status in {"pending", "queued"}:
+        transcription.processing_status = "stem_ready"
+    transcription.is_processed = True
     transcription.can_generate_score = existing_score_ready
     if relevant_generation_status == "failed":
         transcription.processing_error = None

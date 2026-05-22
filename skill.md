@@ -456,3 +456,34 @@ Do not change upload/stem separation flow.
 Do not set main `processing_status = "processing"` during manual tab/rhythm generation if the separated stem is already playable.
 Use `tab_generation_status` / `rhythm_generation_status` as the UI progress source.
 Only call Celery `update_state` when a real `task.request.id` exists.
+
+Ready. Use this as the implementation instruction:
+
+> Implement exactly this plan. Audit first. Do not redesign UI. Do not create duplicate capability fields/helpers. Backend `_metadata_payload` is the viewer contract. Frontend renders only from normalized response fields. Drums must never be treated as tablature-capable even when `notes_data` exists. After changes, run targeted backend tests, frontend tests if available, and `npm run build`.
+
+Test order:
+
+1. Local drum stem-ready
+2. Local drum Generate Rhythm
+3. Bass/other Generate Tabs
+4. Vocals Generate Lyrics
+5. Prod/staging same behavior
+
+Compare LOCAL vs PROD API JSON for the same transcription:
+
+- notes_data
+- tablature_data
+- notes_json
+- detected_note_count
+- average_note_confidence
+- processing_version/config if available
+
+Then force-regenerate tabs in prod after clearing old generated tab artifacts.
+
+GET {LOCAL_API_URL}/audio/{LOCAL_TRANSCRIPTION_ID}/status
+GET {PROD_API_URL}/audio/{PROD_TRANSCRIPTION_ID}/status
+
+First compare local and prod API JSON using separate local/prod transcription IDs.
+Only if prod has stale generated tab artifacts and the stem is tab-capable, clear generated DB artifact fields and trigger prod regeneration.
+
+Before DB mutation, print the exact fields and values that will be cleared, then require execution to continue only if the script is running in explicit `--apply` mode. Default mode must be dry-run.

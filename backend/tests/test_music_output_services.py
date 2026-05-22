@@ -969,10 +969,13 @@ def test_process_audio_transcription_no_notes_completes_with_warning_and_keeps_s
 def test_generate_tab_from_separated_stem_runs_pitch_after_user_confirmation(tmp_path):
     session = create_test_session()
     try:
+        upload_path = tmp_path / "upload.wav"
         stem_path = tmp_path / "other.wav"
+        upload_path.write_bytes(b"upload")
         stem_path.write_bytes(b"other")
         transcription = models.Transcription(
             title="Confirmed tab generation",
+            audio_file_path=str(upload_path),
             separated_audio_file_path=str(stem_path),
             selected_stem="other",
             user_id=1,
@@ -984,8 +987,9 @@ def test_generate_tab_from_separated_stem_runs_pitch_after_user_confirmation(tmp
         session.add(transcription)
         session.commit()
         session.refresh(transcription)
+        transcription_id = transcription.id
         track = models.InstrumentTrack(
-            transcription_id=transcription.id,
+            transcription_id=transcription_id,
             instrument_type="guitar",
             display_name="Guitar / Other",
             stem_audio_path=str(stem_path),
@@ -1001,31 +1005,82 @@ def test_generate_tab_from_separated_stem_runs_pitch_after_user_confirmation(tmp
         })
 
         with patch("app.tasks.get_db_session", return_value=session):
-            with patch("app.tasks.settings") as settings_mock:
-                settings_mock.UPLOAD_DIR = str(tmp_path / "uploads")
-                settings_mock.NOTE_DETECTION_SENSITIVITY = "normal"
-                with patch("app.tasks.audio.normalize_audio_volume", return_value=str(stem_path)):
-                    with patch("app.tasks.audio.detect_pitch", pitch_mock):
-                        with patch("app.tasks.midi.save_midi_from_transcription", return_value=str(tmp_path / "out.mid")):
-                            with patch("app.tasks.midi.midi_to_musicxml", return_value="<score />"):
-                                with patch("app.tasks.tablature.save_tablature_from_transcription", return_value=str(tmp_path / "tab.json")):
-                                    with patch("app.tasks.tablature.notes_to_tablature", return_value={"tablature": []}):
-                                        with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
-                                            with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
-                                                with patch("app.tasks.audio.detect_rhythm", return_value={"total_duration": 1.0}):
-                                                    with patch("app.tasks.audio.detect_chords", return_value={"chords": []}):
-                                                        with patch("app.tasks.chord_chart.chord_data_to_chord_chart_json", return_value="[]"):
-                                                            result = generate_tab_from_separated_stem.run(transcription.id)
+            with patch("app.tasks.audio_processing_mode", return_value="local"):
+                with patch("app.tasks.update_task_state") as update_state_mock:
+                    with patch("app.tasks.settings") as settings_mock:
+                        settings_mock.UPLOAD_DIR = str(tmp_path / "uploads")
+                        settings_mock.NOTE_DETECTION_SENSITIVITY = "normal"
+                        with patch("app.tasks.audio.normalize_audio_volume", return_value=str(stem_path)):
+                            with patch("app.tasks.audio.audio_debug_stats", return_value={"rms_loudness": 0.1}):
+                                with patch("app.tasks.audio.detect_pitch", pitch_mock):
+                                    with patch("app.tasks.midi.save_midi_from_transcription", return_value=str(tmp_path / "out.mid")):
+                                        with patch("app.tasks.midi.midi_to_musicxml", return_value="<score />"):
+                                            with patch("app.tasks.tablature.save_tablature_from_transcription", return_value=str(tmp_path / "tab.json")):
+                                                with patch("app.tasks.tablature.notes_to_tablature", return_value={"tablature": []}):
+                                                    with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
+                                                        with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
+                                                            with patch("app.tasks.audio.detect_rhythm", return_value={"total_duration": 1.0}):
+                                                                with patch("app.tasks.audio.detect_chords", return_value={"chords": []}):
+                                                                    with patch("app.tasks.chord_chart.chord_data_to_chord_chart_json", return_value="[]"):
+                                                                        result = generate_tab_from_separated_stem.run(transcription_id)
 
         refreshed = session.query(models.Transcription).filter(
-            models.Transcription.id == transcription.id
+            models.Transcription.id == transcription_id
         ).first()
         assert result["status"] == "completed"
+        update_state_mock.assert_not_called()
         assert pitch_mock.call_count == 1
         assert refreshed.processing_status == "completed"
+        assert refreshed.tab_generation_status == "completed"
         assert refreshed.can_play_stem is True
         assert refreshed.can_generate_score is True
         assert refreshed.tablature_data
+        assert refreshed.audio_file_path is None
+    finally:
+        session.close()
+
+
+def test_generate_tab_from_separated_stem_failure_restores_stem_ready_status(tmp_path):
+    session = create_test_session()
+    try:
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"other")
+        transcription = models.Transcription(
+            title="Failed tab generation",
+            separated_audio_file_path=str(stem_path),
+            selected_stem="other",
+            user_id=1,
+            is_processed=True,
+            processing_status="stem_ready",
+            tab_generation_status="idle",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        transcription_id = transcription.id
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.audio_processing_mode", return_value="local"):
+                with patch("app.tasks.update_task_state") as update_state_mock:
+                    with patch(
+                        "app.tasks.generate_tab_outputs_for_transcription",
+                        side_effect=RuntimeError("pitch failed"),
+                    ):
+                        with pytest.raises(RuntimeError, match="pitch failed"):
+                            generate_tab_from_separated_stem.run(transcription_id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        update_state_mock.assert_not_called()
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.tab_generation_status == "failed"
+        assert refreshed.processing_error == "pitch failed"
+        assert refreshed.queue_position is None
+        assert refreshed.estimated_wait_time is None
+        assert refreshed.celery_task_id is None
     finally:
         session.close()
 

@@ -614,6 +614,20 @@ def update_task_state(task, state: str, meta: Dict[str, Any]) -> None:
         print(f"Skipping task state update ({state}/{meta.get('step')}): {str(e)}")
 
 
+def update_task_state_if_celery_task(task, state: str, meta: Dict[str, Any]) -> None:
+    """Update Celery progress only when this invocation has a real task id."""
+    request = getattr(task, "request", None)
+    task_id = getattr(request, "id", None)
+    if not task_id:
+        logger.debug(
+            "Skipping Celery task state update for local invocation (%s/%s).",
+            state,
+            meta.get("step"),
+        )
+        return
+    update_task_state(task, state=state, meta=meta)
+
+
 def fail_heavy_celery_task(transcription_id: int | None, message: str) -> dict:
     """Refuse heavy Celery execution; production processing belongs on Modal."""
     if transcription_id is not None:
@@ -1678,7 +1692,7 @@ def generate_tab_from_separated_stem(
         )
     db_session = None
     try:
-        update_task_state(self, state="PROGRESS", meta={"step": "loading_stem"})
+        update_task_state_if_celery_task(self, state="PROGRESS", meta={"step": "loading_stem"})
         db_session = get_db_session()
         transcription = db_session.query(models.Transcription).filter(
             models.Transcription.id == transcription_id
@@ -1703,7 +1717,8 @@ def generate_tab_from_separated_stem(
             if selected_stem == "drums"
             else transcription.tab_generation_status
         ) or "idle"
-        transcription.processing_status = "processing"
+        if transcription.processing_status in {"pending", "queued", "processing"}:
+            transcription.processing_status = "stem_ready"
         if current_generation_status == "failed":
             transcription.processing_error = None
             transcription.warning_message = None
@@ -1712,10 +1727,11 @@ def generate_tab_from_separated_stem(
         transcription.can_play_stem = True
         transcription.queue_position = 0
         transcription.estimated_wait_time = 0
+        transcription.celery_task_id = getattr(getattr(self, "request", None), "id", None)
         db_session.add(transcription)
         db_session.commit()
 
-        update_task_state(self, state="PROGRESS", meta={"step": "tab_generation"})
+        update_task_state_if_celery_task(self, state="PROGRESS", meta={"step": "tab_generation"})
         generate_tab_outputs_for_transcription(
             transcription,
             db_session,
@@ -1727,6 +1743,7 @@ def generate_tab_from_separated_stem(
         )
         db_session.refresh(transcription)
         set_manual_generation_status(transcription, "completed")
+        transcription.celery_task_id = None
         db_session.add(transcription)
         db_session.commit()
         cleanup_transient_audio_files(transcription, db_session)
@@ -1760,12 +1777,13 @@ def generate_tab_from_separated_stem(
                         transcription.is_processed = True
                     transcription.queue_position = None
                     transcription.estimated_wait_time = None
+                    transcription.celery_task_id = None
                     db_session.add(transcription)
                     db_session.commit()
             except Exception:
                 pass
 
-        update_task_state(
+        update_task_state_if_celery_task(
             self,
             state="FAILURE",
             meta={"exc_type": type(e).__name__, "exc_message": str(e)},

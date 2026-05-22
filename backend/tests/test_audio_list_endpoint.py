@@ -375,6 +375,63 @@ def test_status_returns_processing_for_unfinished_warning_only_job():
     assert response.json().get("error") is None
 
 
+def test_generate_tabs_local_background_keeps_stem_ready_status(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    try:
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        owner = create_user(session, "tab-owner", "tab-owner@example.com")
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"other")
+        transcription = models.Transcription(
+            title="Stem ready song",
+            separated_audio_file_path=str(stem_path),
+            selected_stem="other",
+            user_id=owner.id,
+            is_processed=True,
+            processing_status="stem_ready",
+            tab_generation_status="idle",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=False):
+            with patch("app.api.v1.endpoints.audio._run_tab_generation_locally") as local_run_mock:
+                response = client.post(
+                    f"/api/v1/audio/{transcription_id}/generate-tabs",
+                    headers=auth_headers("tab-owner"),
+                    json={"sensitivity": "normal"},
+                )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stem_ready"
+    assert payload["tab_generation_status"] == "processing"
+    local_run_mock.assert_called_once()
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.tab_generation_status == "processing"
+        assert refreshed.celery_task_id is None
+        assert refreshed.is_processed is True
+    finally:
+        session.close()
+
+
 def test_upload_audio_requires_selected_stem():
     reset_database()
     session = TestingSessionLocal()
@@ -1469,7 +1526,7 @@ def test_generate_tab_endpoint_accepts_high_sensitivity_option():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "processing"
+    assert payload["status"] == "stem_ready"
     assert payload["selected_stem"] == "bass"
     assert payload["can_play_stem"] is True
     assert payload["can_generate_score"] is False
@@ -1485,7 +1542,7 @@ def test_generate_tab_endpoint_accepts_high_sensitivity_option():
         refreshed = session.query(models.Transcription).filter(
             models.Transcription.id == transcription_id
         ).one()
-        assert refreshed.processing_status == "processing"
+        assert refreshed.processing_status == "stem_ready"
         assert refreshed.tab_generation_status == "processing"
         assert refreshed.rhythm_generation_status == "idle"
         assert refreshed.celery_task_id == "tab-task"
@@ -1521,7 +1578,7 @@ def test_generate_tab_endpoint_queues_drum_rhythm_generation():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "processing"
+    assert payload["status"] == "stem_ready"
     assert payload["selected_stem"] == "drums"
     assert payload["can_generate_score"] is False
     assert payload["can_generate_tab"] is False
@@ -1536,7 +1593,7 @@ def test_generate_tab_endpoint_queues_drum_rhythm_generation():
         refreshed = session.query(models.Transcription).filter(
             models.Transcription.id == transcription_id
         ).one()
-        assert refreshed.processing_status == "processing"
+        assert refreshed.processing_status == "stem_ready"
         assert refreshed.tab_generation_status == "idle"
         assert refreshed.rhythm_generation_status == "processing"
         assert refreshed.celery_task_id == "rhythm-task"
