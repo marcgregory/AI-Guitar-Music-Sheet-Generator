@@ -2,7 +2,7 @@
 
 ## Overview
 
-This implementation adds MIDI file generation capabilities to the AI Multi-Instrument Sheet and Stem Studio by converting pitch detection output to MIDI notes using the mido library.
+This historical implementation note records MIDI file generation work. The current MVP architecture is selected-stem-first: generate MIDI only for the selected stem when supported, upload durable MIDI output to Cloudinary, and persist Cloudinary references instead of relying on Railway local file paths.
 
 ## Changes Made
 
@@ -14,17 +14,17 @@ This implementation adds MIDI file generation capabilities to the AI Multi-Instr
 
 - Created `backend/app/services/midi.py` with:
   - `notes_to_midi()` function: Converts pitch detection data to MIDI file
-  - `save_midi_from_transcription()` function: Saves MIDI file to uploads/midi/ directory
+  - `save_midi_from_transcription()` function: Historical helper that saves MIDI locally before Cloudinary upload in the current MVP architecture
 
 ### 3. Database Model
 
 - Added `midi_file_path` column to `Transcription` model in `backend/app/models.py`
-  - Stores the file path to the generated MIDI file
+  - Historical local path field. New MVP storage should prefer `midi_file_url` and `midi_file_public_id` after Cloudinary upload.
 
 ### 4. API Schemas
 
 - Added `midi_file_path` field to Transcription schemas in `backend/app/schemas.py`
-  - Included in both `TranscriptionBase` and `TranscriptionInDBBase`
+  - Historical local path field. New schemas should expose `midi_file_url` and `midi_file_public_id` for durable output.
 
 ### 5. Background Processing
 
@@ -32,7 +32,7 @@ This implementation adds MIDI file generation capabilities to the AI Multi-Instr
   - Imported the midi service
   - In the pitch detection success block, after storing notes_data:
     - Generates MIDI file using `save_midi_from_transcription()`
-    - Stores the file path in `transcription.midi_file_path`
+    - Historically stored the file path in `transcription.midi_file_path`; the current MVP should upload to Cloudinary and store URL/public ID fields
     - Handles MIDI generation errors gracefully (doesn't fail transcription)
 
 ### 6. API Endpoint
@@ -48,9 +48,10 @@ This implementation adds MIDI file generation capabilities to the AI Multi-Instr
 1. When audio is processed, pitch detection runs (Basic Pitch or CREPE fallback)
 2. Pitch detection results are stored as JSON in `notes_data`
 3. Immediately after, the system generates a MIDI file from this data
-4. The MIDI file is saved to `uploads/midi/transcription_{id}.mid`
-5. The file path is stored in the transcription's `midi_file_path` field
-6. Users can retrieve the MIDI file via the `/midi` endpoint
+4. The MIDI file is created in temporary worker storage
+5. The MIDI file is uploaded to Cloudinary
+6. `midi_file_url` and `midi_file_public_id` are stored on the transcription/job record
+7. Users can download the Cloudinary-hosted MIDI file through the API or frontend link
 
 ## Usage
 
@@ -64,8 +65,8 @@ This implementation adds MIDI file generation capabilities to the AI Multi-Instr
 To verify the implementation:
 
 1. Upload an audio file and wait for processing to complete
-2. Check that the transcription record has a non-null `midi_file_path`
-3. Verify that the file exists at the specified path
+2. Check that the transcription record has a non-null `midi_file_url` and `midi_file_public_id`
+3. Verify that temporary local MIDI files are cleaned up after terminal job status
 4. Call the MIDI endpoint and confirm it returns a valid MIDI file
 5. Test edge cases (empty notes data, processing errors, etc.)
 
@@ -73,11 +74,15 @@ To verify the implementation:
 
 The current implementation uses a fixed tempo (120 BPM) for MIDI timing when the detected tempo is not available in the pitch detection data. For improved accuracy, future versions could use the detected_tempo from the transcription record.
 
-## Resume Point - Next Task
+## Current MVP Direction
 
-Completed: piano stem note/staff notation support.
+Completed historical note/staff work should be interpreted through the current selected-stem MVP architecture. Vocal stems now use Generate Lyrics with faster-whisper and separate `lyrics_generation_status`; vocal melody/staff notation is future work.
 
-Next: implement vocal melody note data and staff notation from vocal stems.
+Next priorities:
+
+- Keep result fetching gated behind `/status`; call `/result` only after a ready status such as `stem_ready`, `completed`, or `completed_with_warning`.
+- Preserve non-vocal Generate Tabs behavior for `other` and `bass`.
+- Keep Modal as the heavy AI/audio worker with `AUDIO_PROCESSING_MODE=modal`.
 
 Relevant files:
 

@@ -200,7 +200,7 @@ def save_tablature_from_transcription(notes_data: str, transcription_id: int,
     # Return relative path for storage in database (if we wanted to store the path)
     # But we are storing the actual data in the tablature_data field, so we don't need this.
     # We'll return the path anyway in case we change our mind.
-    return str(tab_file_path)
+    return tab_file_path.as_posix()
 
 
 def tablature_to_ascii_tab(tablature_data: Union[str, dict]) -> str:

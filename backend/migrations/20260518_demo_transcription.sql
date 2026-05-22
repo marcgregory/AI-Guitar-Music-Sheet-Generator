@@ -1,0 +1,1 @@
+ALTER TABLE transcriptions ADD COLUMN is_demo BOOLEAN DEFAULT FALSE;

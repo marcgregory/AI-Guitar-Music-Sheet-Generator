@@ -1,0 +1,32 @@
+# Place your YouTube browser cookies in Netscape cookies.txt format here.
+# Example: export cookies from your browser using an extension or yt-dlp's --cookies-from-browser.
+# Do not include PHPSESSID or other session secrets unless necessary for the target video.
+#
+# When ready, restart Docker Compose and rerun the upload.
+
+# Netscape HTTP Cookie File
+# https://curl.haxx.se/rfc/cookie_spec.html
+# This is a generated file! Do not edit.
+
+.youtube.com	TRUE	/	TRUE	1813857275	PREF	f4=4000000&tz=Asia.Shanghai&f7=100
+.youtube.com	TRUE	/	TRUE	1791213405	__Secure-BUCKET	CC4
+.youtube.com	TRUE	/	TRUE	1813832815	__Secure-3PAPISID	Y-HAdKcc9So6H3Gm/ASsS4X0xlTfQFoAFL
+.youtube.com	TRUE	/	FALSE	1813832815	HSID	At0FjDc8t4qcd13q-
+.youtube.com	TRUE	/	TRUE	1813832815	SSID	AIIlA7sNAe_YIFiMw
+.youtube.com	TRUE	/	FALSE	1813832815	APISID	sDh0QzdSNURa-P_X/AKxbGeuB2SzzLTqG1
+.youtube.com	TRUE	/	TRUE	1813832815	SAPISID	Y-HAdKcc9So6H3Gm/ASsS4X0xlTfQFoAFL
+.youtube.com	TRUE	/	TRUE	1813832815	__Secure-1PAPISID	Y-HAdKcc9So6H3Gm/ASsS4X0xlTfQFoAFL
+.youtube.com	TRUE	/	TRUE	1813639612	LOGIN_INFO	AFmmF2swRgIhAJyZdgkeHnG_kvBWzj7_dezYm7oQLjjNo0Nu579_yuz5AiEArGKtbJecNSASyqFiZKkrycJV_UTyndqRKDDYA219JAU:QUQ3MjNmeEx0ZjFFby1QVnFnbjI0U3pSUUdNY3pZbmFEOURtNVZkZl9hTVNnV2RLZzFWVXNHd1Z4ZUNDWG9RY2hWXy1oNm9hU1VwbG5Nc1hmZjZKWHkyTkliVXVCM3B2dkg4SnEtWlpma3dlOHVCcWVuYjN6OVVvUE82Y1Z0UUFXRFROR29KUURUa1NtNVBqUWFwYWdnZmg1aVZKODFPR3Fn
+.youtube.com	TRUE	/	FALSE	1813832815	SID	g.a000-AjklgHgJFXPYbv4_wuy-0DDf3350CchW7JBo8rTUbyGCEeNY5n1Hmt_wC_3x3T4ALKlUAACgYKAcISARQSFQHGX2Mip54aKn5lAv0kHeTgvmRmThoVAUF8yKq0IEMiwMOgHkA3JClzlFDf0076
+.youtube.com	TRUE	/	TRUE	1813832815	__Secure-1PSID	g.a000-AjklgHgJFXPYbv4_wuy-0DDf3350CchW7JBo8rTUbyGCEeNJ_sW7_B4qoPTefVBQe22vwACgYKASwSARQSFQHGX2MiVeUKQG74KMPKqw7lo9WjsRoVAUF8yKoevpZv03uODjrlYxgDRG2l0076
+.youtube.com	TRUE	/	TRUE	1813832815	__Secure-3PSID	g.a000-AjklgHgJFXPYbv4_wuy-0DDf3350CchW7JBo8rTUbyGCEeNxd6C18WsSJENPzZ3s8Qq1AACgYKAbMSARQSFQHGX2MiPfo9Nqvi-X9A7yQneBgUcBoVAUF8yKohf2Mpih2wCFR6-wZg00p00076
+.youtube.com	TRUE	/	TRUE	1810835082	__Secure-1PSIDTS	sidts-CjUBhkeRd_sI67O0zNMx9nCDs_XBcqIYjoVHd1w1rvKYD9uLRnNpalHf7frwO3iiLW6L-CMZJhAA
+.youtube.com	TRUE	/	TRUE	1810835082	__Secure-3PSIDTS	sidts-CjUBhkeRd_sI67O0zNMx9nCDs_XBcqIYjoVHd1w1rvKYD9uLRnNpalHf7frwO3iiLW6L-CMZJhAA
+.youtube.com	TRUE	/	FALSE	1810835082	SIDCC	AKEyXzV7yCk51xA3MmrQrtK_PtwYVx-7l_Wurk8mt3bFObi02IGr5_Jq_H2DlgRethLg4z8C5Q
+.youtube.com	TRUE	/	TRUE	1810835082	__Secure-1PSIDCC	AKEyXzWjn30-PCYTGhhu6Lgg8HrECGV1R3RPrCpn50hiNQVUNflKU-N-mKL171fUfQJM1R1cpPA
+.youtube.com	TRUE	/	TRUE	1810835082	__Secure-3PSIDCC	AKEyXzVKm23tj_uRVaIdtk_wb-AeBeZPsWSssUT0xCcFy7qLLJSyhgrzXCM1SYieh8guEJORdA
+.youtube.com	TRUE	/	TRUE	1794849277	VISITOR_INFO1_LIVE	U2egyz5M-oc
+.youtube.com	TRUE	/	TRUE	1794849277	VISITOR_PRIVACY_METADATA	CgJQSBIEGgAgFg%3D%3D
+.youtube.com	TRUE	/	TRUE	1794824815	__Secure-YNID	18.YT=gwTqAezbs5_lOUuPHr8avDAhACkNv7po0T5mCBXj7WfVFLJosL13ILA4uP4D3VUQ2_chHKDfrrNNgrtd7oxEmCQ9_Zebf_6kbjFyLzYBEtEqmac1dxLrCLWT3BU9-8QLUYAxd1-QzI4wjqRcKhE1zZJsqfpMfIG0kWWMYtQ3QFhzOswKBI8ks23HEFnnbee0vCR2MoYuaDvLxgDl884szLRkbo1wfUD8su1KXR4t25vGybImgJqBjMs94fL8pGunyapRA6_5h0LMgovwmy-SJbjAiZIg2_uod9wVc2I1tsEUTC9wFDy09tkZagY3RfNvpTyFBfVpnpl6zb91M3BZ_g
+.youtube.com	TRUE	/	TRUE	0	YSC	7RpSJM-67VE
+.youtube.com	TRUE	/	TRUE	1794824815	__Secure-ROLLOUT_TOKEN	CMaB0Jf1062PFhC09PbgnOaMAxj22M3g08eUAw%3D%3D

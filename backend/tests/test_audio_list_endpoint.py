@@ -1,13 +1,19 @@
+import hashlib
+import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from fastapi import BackgroundTasks
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import db, models
+from app import db, models, tasks
+from app.core import config
 from app.core.security import create_access_token, get_password_hash
+from app.services import storage
 from main import app
 
 
@@ -34,6 +40,10 @@ client = TestClient(app)
 def reset_database():
     models.Base.metadata.drop_all(bind=engine)
     models.Base.metadata.create_all(bind=engine)
+    config.settings.CLOUDINARY_URL = None
+    config.settings.CLOUDINARY_CLOUD_NAME = None
+    config.settings.CLOUDINARY_API_KEY = None
+    config.settings.CLOUDINARY_API_SECRET = None
 
 
 def create_user(session, username: str, email: str):
@@ -80,6 +90,200 @@ def test_list_transcriptions_requires_authentication():
     response = client.get("/api/v1/audio/")
 
     assert response.status_code == 401
+    assert response.json()["detail"] == {
+        "status": "unauthorized",
+        "error": "Missing Authorization header",
+        "requires_login": True,
+    }
+
+
+def test_list_transcriptions_rejects_missing_bearer_prefix():
+    reset_database()
+
+    response = client.get(
+        "/api/v1/audio/",
+        headers={"Authorization": "Token not-a-bearer-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "Missing Bearer token prefix"
+
+
+def test_list_transcriptions_rejects_malformed_token():
+    reset_database()
+
+    response = client.get(
+        "/api/v1/audio/",
+        headers={"Authorization": "Bearer undefined"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["status"] == "unauthorized"
+    assert response.json()["detail"]["error"] == "Access token is malformed or invalid"
+    assert response.json()["detail"]["requires_login"] is True
+
+
+def test_list_transcriptions_rejects_expired_token():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "expired-owner", "expired-owner@example.com")
+    finally:
+        session.close()
+    token = create_access_token(
+        data={"sub": "expired-owner"},
+        expires_delta=timedelta(seconds=-1),
+    )
+
+    response = client.get(
+        "/api/v1/audio/",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "Access token expired"
+
+
+def test_list_transcriptions_accepts_valid_token_after_invalid_token_cycle():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "cycle-owner", "cycle-owner@example.com")
+        session.add(models.Transcription(
+            title="Recovered session song",
+            audio_file_path="uploads/recovered.wav",
+            user_id=owner.id,
+            is_processed=True,
+            created_at=datetime.utcnow(),
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+    stale_response = client.get(
+        "/api/v1/audio/",
+        headers={"Authorization": "Bearer undefined"},
+    )
+    valid_response = client.get(
+        "/api/v1/audio/",
+        headers=auth_headers("cycle-owner"),
+    )
+
+    assert stale_response.status_code == 401
+    assert valid_response.status_code == 200
+    assert valid_response.json()[0]["title"] == "Recovered session song"
+
+
+def test_get_transcription_source_audio_normalizes_windows_style_uploaded_path(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "winpath-user", "winpath@example.com")
+        local_audio = tmp_path / "uploaded.wav"
+        local_audio.write_bytes(b"wave data")
+        windows_path = str(local_audio).replace("/", "\\")
+
+        transcription = models.Transcription(
+            title="Windows path upload",
+            audio_file_path=windows_path,
+            user_id=owner.id,
+            is_processed=True,
+            created_at=datetime.utcnow(),
+            duration=10,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription.id}/source",
+        headers=auth_headers("winpath-user"),
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"wave data"
+    assert response.headers["content-type"].startswith("audio/wav")
+
+
+def test_windows_app_uploads_path_normalizes_to_local_backend(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage.os, "name", "nt")
+    monkeypatch.setattr(storage, "_windows_local_upload_dir", lambda: tmp_path / "uploads")
+
+    normalized_path = storage.normalize_local_path("/app/uploads/youtube-download.wav")
+
+    assert Path(normalized_path) == (tmp_path / "uploads" / "youtube-download.wav").resolve()
+    assert str(normalized_path).endswith(str(Path("uploads") / "youtube-download.wav"))
+
+
+def test_demo_static_audio_route_serves_public_wav_without_cors_error():
+    response = client.get(
+        "/demo/example-guitar-riff.wav",
+        headers={"Origin": "http://localhost:5173"},
+    )
+
+    assert response.status_code == 200
+    assert response.content
+    assert response.headers["content-type"].startswith("audio/wav")
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_demo_transcription_response_uses_public_audio_url_for_playback_fields():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "demo-owner", "demo-owner@example.com")
+        local_path = "/app/app/static/demo_guitar_riff.wav"
+        demo = models.Transcription(
+            title="Example guitar riff",
+            audio_file_path=local_path,
+            separated_audio_file_path=local_path,
+            original_audio_url="/demo/example-guitar-riff.wav",
+            separated_audio_url="/demo/example-guitar-riff.wav",
+            source_url="/demo/example-guitar-riff.wav",
+            normalized_source_id="demo:example-guitar-riff",
+            source_type="demo",
+            user_id=owner.id,
+            is_demo=True,
+            is_processed=True,
+            processing_status="completed",
+            can_play_stem=True,
+        )
+        session.add(demo)
+        session.commit()
+        session.refresh(demo)
+        session.add(models.InstrumentTrack(
+            transcription_id=demo.id,
+            instrument_type="guitar",
+            display_name="Demo guitar stem",
+            stem_audio_path=local_path,
+            processing_status="completed",
+        ))
+        session.commit()
+        demo_id = demo.id
+    finally:
+        session.close()
+
+    demo_response = client.get(
+        "/api/v1/audio/demo",
+        headers=auth_headers("demo-owner"),
+    )
+    tracks_response = client.get(
+        f"/api/v1/audio/{demo_id}/tracks",
+        headers=auth_headers("demo-owner"),
+    )
+
+    assert demo_response.status_code == 200
+    demo_payload = demo_response.json()
+    assert demo_payload["audio_file_path"] == "/demo/example-guitar-riff.wav"
+    assert demo_payload["separated_audio_file_path"] == "/demo/example-guitar-riff.wav"
+    assert "/app/app/static" not in json.dumps(demo_payload)
+
+    assert tracks_response.status_code == 200
+    tracks_payload = tracks_response.json()
+    assert tracks_payload[0]["stem_audio_path"] == "/demo/example-guitar-riff.wav"
+    assert "/app/app/static" not in json.dumps(tracks_payload)
 
 
 def test_list_transcriptions_returns_only_current_users_items_newest_first():
@@ -138,6 +342,2193 @@ def test_list_transcriptions_returns_only_current_users_items_newest_first():
         "Older song",
     ]
     assert all(item["user_id"] != other_user_id for item in payload)
+
+
+def test_status_returns_processing_for_unfinished_warning_only_job():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "warning-owner", "warning-owner@example.com")
+        transcription = models.Transcription(
+            title="Warning stuck song",
+            audio_file_path="uploads/warning-stuck.wav",
+            user_id=owner.id,
+            is_processed=False,
+            processing_error=(
+                "Source separation unavailable; processed the full mix instead. "
+                "Details: worker stopped before finishing"
+            ),
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("warning-owner"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert response.json().get("error") is None
+
+
+def test_generate_tabs_local_background_keeps_stem_ready_status(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    try:
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        owner = create_user(session, "tab-owner", "tab-owner@example.com")
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"other")
+        transcription = models.Transcription(
+            title="Stem ready song",
+            separated_audio_file_path=str(stem_path),
+            selected_stem="other",
+            user_id=owner.id,
+            is_processed=True,
+            processing_status="stem_ready",
+            tab_generation_status="idle",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=False):
+            with patch("app.api.v1.endpoints.audio._run_tab_generation_locally") as local_run_mock:
+                response = client.post(
+                    f"/api/v1/audio/{transcription_id}/generate-tabs",
+                    headers=auth_headers("tab-owner"),
+                    json={"sensitivity": "normal"},
+                )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stem_ready"
+    assert payload["tab_generation_status"] == "processing"
+    local_run_mock.assert_called_once()
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.tab_generation_status == "processing"
+        assert refreshed.celery_task_id is None
+        assert refreshed.is_processed is True
+    finally:
+        session.close()
+
+
+def test_upload_audio_requires_selected_stem():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "missing-stem-owner", "missing-stem-owner@example.com")
+    finally:
+        session.close()
+
+    response = client.post(
+        "/api/v1/audio/upload",
+        headers=auth_headers("missing-stem-owner"),
+        files={"file": ("sample.wav", b"RIFF....", "audio/wav")},
+    )
+
+    assert response.status_code == 422
+
+
+def test_upload_audio_rejects_when_active_transcription_exists():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    try:
+        owner = create_user(session, "active-owner", "active-owner@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
+        config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+        transcription = models.Transcription(
+            title="Processing track",
+            audio_file_path="uploads/processing.wav",
+            user_id=owner.id,
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+    finally:
+        session.close()
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock,
+            patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
+        ):
+            response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("active-owner"),
+                data={"selected_stem": "other"},
+                files={"file": ("sample.wav", b"RIFF....", "audio/wav")},
+            )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Another transcription is currently processing. Please wait until it finishes before starting a new one."
+    )
+    modal_trigger_mock.assert_not_called()
+    send_task_mock.assert_not_called()
+
+
+def test_upload_audio_reuses_completed_duplicate_same_hash_and_stem():
+    reset_database()
+    contents = b"RIFF duplicate upload"
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "duplicate-owner", "duplicate-owner@example.com")
+        existing = models.Transcription(
+            title="Already processed",
+            audio_file_path="uploads/existing.wav",
+            user_id=owner.id,
+            selected_stem="other",
+            audio_hash=hashlib.sha256(contents).hexdigest(),
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add(existing)
+        session.commit()
+        existing_id = existing.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+        response = client.post(
+            "/api/v1/audio/upload",
+            headers=auth_headers("duplicate-owner"),
+            data={"selected_stem": "other"},
+            files={"file": ("same.wav", contents, "audio/wav")},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == existing_id
+    assert payload["duplicate_reused"] is True
+    assert "already processed" in payload["duplicate_message"]
+    send_task_mock.assert_not_called()
+
+
+def test_legacy_processing_mode_is_ignored_for_local_default():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    try:
+        create_user(session, "external-mode-owner", "external-mode@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = None
+        config.settings.PROCESSING_MODE = "external_worker"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    finally:
+        session.close()
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=False),
+            patch("app.api.v1.endpoints.audio._run_transcription_locally") as local_runner_mock,
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock,
+        ):
+            response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("external-mode-owner"),
+                data={"selected_stem": "other"},
+                files={"file": ("external.wav", b"RIFF external", "audio/wav")},
+            )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "processing"
+    assert payload["selected_stem"] == "other"
+    assert payload["modal_dispatch_status"] != "modal_required"
+    local_runner_mock.assert_called_once()
+    modal_trigger_mock.assert_not_called()
+
+
+def test_upload_audio_local_mode_does_not_require_modal_and_runs_background_fallback():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_legacy_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    try:
+        create_user(session, "local-mode-owner", "local-mode@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        config.settings.PROCESSING_MODE = None
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    finally:
+        session.close()
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=False),
+            patch("app.api.v1.endpoints.audio._run_transcription_locally") as local_runner_mock,
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock,
+        ):
+            response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("local-mode-owner"),
+                data={"selected_stem": "other"},
+                files={"file": ("local.wav", b"RIFF local", "audio/wav")},
+            )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_legacy_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "processing"
+    assert payload["modal_dispatch_status"] != "modal_required"
+    local_runner_mock.assert_called_once()
+    modal_trigger_mock.assert_not_called()
+
+
+def test_upload_audio_modal_mode_requires_modal_trigger_url():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_legacy_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    try:
+        create_user(session, "modal-config-owner", "modal-config@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
+        config.settings.PROCESSING_MODE = None
+        config.settings.MODAL_TRIGGER_URL = None
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            "/api/v1/audio/upload",
+            headers=auth_headers("modal-config-owner"),
+            data={"selected_stem": "other"},
+            files={"file": ("modal-missing.wav", b"RIFF modal missing", "audio/wav")},
+        )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_legacy_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "Modal processing is enabled but MODAL_TRIGGER_URL is not configured."
+    )
+
+
+def test_upload_audio_disabled_mode_returns_clear_error_without_queueing():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_legacy_mode = config.settings.PROCESSING_MODE
+    try:
+        create_user(session, "disabled-mode-owner", "disabled-mode@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "disabled"
+        config.settings.PROCESSING_MODE = None
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            "/api/v1/audio/upload",
+            headers=auth_headers("disabled-mode-owner"),
+            data={"selected_stem": "other"},
+            files={"file": ("disabled.wav", b"RIFF disabled", "audio/wav")},
+        )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_legacy_mode
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Audio processing is disabled by AUDIO_PROCESSING_MODE=disabled."
+    )
+    session = TestingSessionLocal()
+    try:
+        assert session.query(models.Transcription).count() == 0
+    finally:
+        session.close()
+
+
+def test_local_status_response_masks_stale_modal_required_without_mutating_row():
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    session = TestingSessionLocal()
+    retry_at = datetime.utcnow() + timedelta(minutes=10)
+    try:
+        owner = create_user(session, "local-stale-owner", "local-stale@example.com")
+        transcription = models.Transcription(
+            title="Stale modal row",
+            user_id=owner.id,
+            selected_stem="other",
+            is_processed=False,
+            processing_status="queued",
+            modal_dispatch_status="modal_required",
+            modal_retry_at=retry_at,
+            modal_request_id="modal-request-1",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        config.settings.PROCESSING_MODE = None
+    finally:
+        session.close()
+
+    try:
+        response = client.get(
+            f"/api/v1/audio/{transcription_id}/status",
+            headers=auth_headers("local-stale-owner"),
+        )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "queued"
+    assert payload["message"] == "Queued for local processing."
+    assert "Queued for Modal processing" not in json.dumps(payload)
+    assert payload["modal_dispatch_status"] is None
+    assert payload["modal_retry_at"] is None
+
+    session = TestingSessionLocal()
+    try:
+        stored = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert stored.modal_dispatch_status == "modal_required"
+        assert stored.modal_request_id == "modal-request-1"
+        assert stored.modal_retry_at is not None
+    finally:
+        session.close()
+
+
+def test_modal_status_response_preserves_modal_required_fields():
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    session = TestingSessionLocal()
+    retry_at = datetime.utcnow() + timedelta(minutes=10)
+    try:
+        owner = create_user(session, "modal-stale-owner", "modal-stale@example.com")
+        transcription = models.Transcription(
+            title="Modal queued row",
+            user_id=owner.id,
+            selected_stem="other",
+            is_processed=False,
+            processing_status="queued",
+            modal_dispatch_status="modal_required",
+            modal_retry_at=retry_at,
+            modal_request_id="modal-request-2",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
+        config.settings.PROCESSING_MODE = None
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    finally:
+        session.close()
+
+    try:
+        response = client.get(
+            f"/api/v1/audio/{transcription_id}/status",
+            headers=auth_headers("modal-stale-owner"),
+        )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "queued"
+    assert payload["message"] == (
+        "Queued for Modal processing. It will start when capacity is available."
+    )
+    assert payload["modal_dispatch_status"] == "modal_required"
+    assert payload["modal_retry_at"] is not None
+
+    session = TestingSessionLocal()
+    try:
+        stored = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert stored.modal_dispatch_status == "modal_required"
+        assert stored.modal_request_id == "modal-request-2"
+        assert stored.modal_retry_at is not None
+    finally:
+        session.close()
+
+
+def test_upload_audio_modal_mode_triggers_modal_path_without_celery():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    try:
+        create_user(session, "modal-mode-owner", "modal-mode@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
+        config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    finally:
+        session.close()
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock,
+            patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
+        ):
+            response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("modal-mode-owner"),
+                data={"selected_stem": "bass"},
+                files={"file": ("modal.wav", b"RIFF modal", "audio/wav")},
+            )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 200
+    assert response.json()["selected_stem"] == "bass"
+    assert response.json()["processing_status"] == "processing"
+    modal_trigger_mock.assert_called_once()
+    send_task_mock.assert_not_called()
+
+
+def test_upload_audio_modal_second_job_is_rejected_while_first_is_processing():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    try:
+        create_user(session, "modal-queue-owner", "modal-queue@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
+        config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock:
+            first = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("modal-queue-owner"),
+                data={"selected_stem": "bass"},
+                files={"file": ("first.wav", b"RIFF first", "audio/wav")},
+            )
+            second = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("modal-queue-owner"),
+                data={"selected_stem": "bass"},
+                files={"file": ("second.wav", b"RIFF second", "audio/wav")},
+            )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert first.json()["processing_status"] == "processing"
+    assert second.json()["detail"] == (
+        "Another transcription is currently processing. Please wait until it finishes before starting a new one."
+    )
+    modal_trigger_mock.assert_called_once()
+
+
+def test_worker_complete_triggers_oldest_queued_modal_job():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "handoff-owner", "handoff@example.com")
+        first = models.Transcription(
+            title="Complete first",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/first.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        second = models.Transcription(
+            title="Queued second",
+            user_id=owner.id,
+            selected_stem="bass",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/second.wav",
+            is_processed=False,
+            processing_status="queued",
+            created_at=datetime.utcnow() + timedelta(seconds=1),
+        )
+        session.add_all([first, second])
+        session.commit()
+        first_id = first.id
+        second_id = second.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
+        config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock:
+            response = client.post(
+                f"/api/v1/worker/jobs/{first_id}/complete",
+                headers={"X-Worker-Token": "test-worker-token"},
+                json={
+                    "notes_data": {"notes": [{"pitch": 64, "onset": 0.0, "offset": 0.5}]},
+                    "tablature_data": {"instrument": "guitar", "tablature": []},
+                },
+            )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert response.status_code == 200
+    modal_trigger_mock.assert_called_once_with(second_id, "process", None, None)
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == second_id
+        ).one()
+        assert refreshed.processing_status == "processing"
+        assert refreshed.queue_position == 0
+    finally:
+        session.close()
+
+
+def test_second_modal_upload_does_not_become_processing_while_first_is_active():
+    reset_database()
+    session = TestingSessionLocal()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    try:
+        create_user(session, "race-owner-a", "race-a@example.com")
+        create_user(session, "race-owner-b", "race-b@example.com")
+        config.settings.AUDIO_PROCESSING_MODE = "modal"
+        config.settings.PROCESSING_MODE = "modal"
+        config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    finally:
+        session.close()
+
+    def upload(username: str, filename: str, contents: bytes):
+        return client.post(
+            "/api/v1/audio/upload",
+            headers=auth_headers(username),
+            data={"selected_stem": "other"},
+            files={"file": (filename, contents, "audio/wav")},
+        )
+
+    try:
+        with patch("app.api.v1.endpoints.audio._trigger_modal_worker") as modal_trigger_mock:
+            responses = [
+                upload("race-owner-a", "race-a.wav", b"RIFF race a"),
+                upload("race-owner-b", "race-b.wav", b"RIFF race b"),
+            ]
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    session = TestingSessionLocal()
+    try:
+        statuses = [
+            row[0]
+            for row in session.query(models.Transcription.processing_status).all()
+        ]
+    finally:
+        session.close()
+
+    assert statuses.count("processing") == 1
+    assert statuses.count("queued") == 0
+    assert modal_trigger_mock.call_count == 1
+
+
+def test_worker_endpoints_require_worker_token():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    try:
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+        response = client.get("/api/v1/worker/jobs/next")
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 401
+
+
+def test_worker_next_marks_oldest_queued_job_processing():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "worker-owner", "worker-owner@example.com")
+        transcription = models.Transcription(
+            title="Worker job",
+            user_id=owner.id,
+            selected_stem="other",
+            source_type="upload",
+            source_url="worker.wav",
+            audio_hash="hash-worker",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="queued",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.get(
+            "/api/v1/worker/jobs/next",
+            headers={"Authorization": "Bearer test-worker-token"},
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["transcription_id"] == transcription_id
+    assert payload["selected_stem"] == "other"
+    assert payload["demucs_stem"] == "other"
+    assert payload["original_audio_url"].startswith("https://res.cloudinary.com")
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        assert refreshed.processing_status == "processing"
+        assert refreshed.queue_position == 0
+    finally:
+        session.close()
+
+
+def test_worker_complete_saves_cloudinary_outputs_and_track_metadata():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "complete-owner", "complete-owner@example.com")
+        transcription = models.Transcription(
+            title="Complete job",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "separated_audio_url": "https://res.cloudinary.com/demo/video/upload/stem.wav",
+                "separated_audio_public_id": "musicstudio/stem",
+                "midi_file_url": "https://res.cloudinary.com/demo/raw/upload/out.mid",
+                "midi_file_public_id": "musicstudio/out-midi",
+                "tab_file_url": "https://res.cloudinary.com/demo/raw/upload/out.txt",
+                "tab_file_public_id": "musicstudio/out-tab",
+                "confidence": 84,
+                "notes_data": {"notes": [{"pitch": 64, "onset": 0.0, "offset": 0.5}]},
+                "tablature_data": {"instrument": "guitar", "tablature": []},
+                "detected_tempo": 120,
+                "detected_key": "E minor",
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "stem_ready"
+    assert payload["is_processed"] is True
+    assert payload["separated_audio_public_id"] == "musicstudio/stem"
+    assert payload["processing_error"] is None
+
+    session = TestingSessionLocal()
+    try:
+        track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription_id
+        ).one()
+        assert track.instrument_type == "guitar"
+        assert track.confidence_score == 84
+        assert track.processing_status == "stem_ready"
+    finally:
+        session.close()
+
+
+def test_worker_generate_tab_complete_derives_missing_structured_tablature_for_status_and_result():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "derive-tab-owner", "derive-tab@example.com")
+        transcription = models.Transcription(
+            title="Derive tab payload",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            is_processed=True,
+            processing_status="stem_ready",
+            tab_generation_status="processing",
+            modal_job_type="generate_tab",
+            can_play_stem=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    notes_payload = {
+        "notes": [
+            {"pitch": 43, "onset": 0.0, "offset": 0.5, "velocity": 84, "confidence": 0.91}
+        ]
+    }
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "midi_file_url": "https://res.cloudinary.com/demo/raw/upload/out.mid",
+                "tab_file_url": "https://res.cloudinary.com/demo/raw/upload/out.tab",
+                "notes_data": notes_payload,
+                "tablature_data": None,
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tab_generation_status"] == "completed"
+    assert payload["notes_data"] == json.dumps(notes_payload)
+    assert payload["tablature_data"] is not None
+    parsed_tab = json.loads(payload["tablature_data"])
+    assert parsed_tab["instrument"] == "bass"
+    assert parsed_tab["tablature"]
+
+    headers = auth_headers("derive-tab-owner")
+    status_payload = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=headers,
+    ).json()
+    result_payload = client.get(
+        f"/api/v1/audio/{transcription_id}/result",
+        headers=headers,
+    ).json()
+    assert status_payload["tablature_data"] == payload["tablature_data"]
+    assert result_payload["tablature_data"] == payload["tablature_data"]
+    assert status_payload["notes_data"] == payload["notes_data"]
+    assert result_payload["notes_data"] == payload["notes_data"]
+
+
+def test_worker_generate_tab_complete_does_not_mark_completed_when_structured_tab_fails():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "failed-structured-tab-owner", "failed-structured-tab@example.com")
+        transcription = models.Transcription(
+            title="Failed structured tab",
+            user_id=owner.id,
+            selected_stem="other",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/guitar.wav",
+            is_processed=True,
+            processing_status="stem_ready",
+            tab_generation_status="processing",
+            modal_job_type="generate_tab",
+            can_play_stem=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        with patch(
+            "app.api.v1.endpoints.worker.tablature.notes_to_tablature",
+            side_effect=RuntimeError("tab conversion failed"),
+        ):
+            response = client.post(
+                f"/api/v1/worker/jobs/{transcription_id}/complete",
+                headers={"X-Worker-Token": "test-worker-token"},
+                json={
+                    "midi_file_url": "https://res.cloudinary.com/demo/raw/upload/out.mid",
+                    "tab_file_url": "https://res.cloudinary.com/demo/raw/upload/out.tab",
+                    "notes_data": {
+                        "notes": [
+                            {
+                                "pitch": 64,
+                                "onset": 0.0,
+                                "offset": 0.5,
+                                "velocity": 90,
+                            }
+                        ]
+                    },
+                    "tablature_data": None,
+                },
+            )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tab_generation_status"] == "failed"
+    assert payload["processing_status"] == "stem_ready"
+    assert payload["tablature_data"] is None
+    assert payload["notes_data"] is not None
+    assert payload["midi_file_url"].endswith("out.mid")
+    assert payload["tab_file_url"].endswith("out.tab")
+
+
+def test_worker_complete_does_not_keep_stale_separated_audio_url_without_secure_url():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "missing-secure-owner", "missing-secure@example.com")
+        transcription = models.Transcription(
+            title="Missing secure URL job",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/stale.wav",
+            separated_audio_public_id="musicstudio/stale",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "separated_audio_url": None,
+                "separated_audio_public_id": "musicstudio/new-without-url",
+                "confidence": 84,
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["separated_audio_url"] is None
+    assert payload["separated_audio_public_id"] is None
+    assert payload["can_play_stem"] is False
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.separated_audio_url is None
+        assert refreshed.separated_audio_public_id is None
+    finally:
+        session.close()
+
+
+def test_worker_complete_persists_empty_notes_warning_for_modal_stem():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "modal-warning-owner", "modal-warning-owner@example.com")
+        transcription = models.Transcription(
+            title="Modal warning job",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "separated_audio_url": "https://res.cloudinary.com/demo/video/upload/stem.wav",
+                "separated_audio_public_id": "musicstudio/stem",
+                "confidence": 90,
+                "track_metadata": {
+                    "confidence_notes": "Selected stem separated by Modal/Demucs.",
+                },
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "stem_ready"
+    assert payload["warning_message"] == "No note events detected for this stem."
+    assert json.loads(payload["notes_data"]) == {
+        "notes": [],
+        "message": "No note events detected for this stem.",
+    }
+
+    session = TestingSessionLocal()
+    try:
+        track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription_id
+        ).one()
+        assert track.instrument_type == "guitar"
+        assert track.processing_status == "stem_ready"
+        assert json.loads(track.notes_json) == {
+            "notes": [],
+            "message": "No note events detected for this stem.",
+        }
+        assert track.confidence_notes == "Selected stem separated by Modal/Demucs."
+    finally:
+        session.close()
+
+
+def test_status_no_note_warning_is_completed_and_playable(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "warning-owner", "warning-owner@example.com")
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"stem")
+        transcription = models.Transcription(
+            title="No note warning",
+            user_id=owner.id,
+            selected_stem="other",
+            separated_audio_file_path=str(stem_path),
+            notes_data='{"notes": [], "message": "No note events detected for this stem."}',
+            is_processed=True,
+            processing_status="stem_ready",
+            warning_message="No note events detected for this stem.",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        session.add(models.InstrumentTrack(
+            transcription_id=transcription_id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            stem_audio_path=str(stem_path),
+            processing_status="completed_with_warning",
+            confidence_notes="No note events detected for this stem.",
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("warning-owner"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stem_ready"
+    assert payload["warning"] == "No note events detected for this stem."
+    assert payload["warning_message"] == "No note events detected for this stem."
+    assert payload["transcription_id"] == transcription_id
+    assert payload["selected_stem"] == "other"
+    assert payload["can_play_stem"] is True
+    assert payload["can_generate_score"] is False
+    assert payload["can_generate_tab"] is False
+    assert payload["can_generate_rhythm"] is False
+    assert payload["separated_audio_url"] is None
+    assert payload["available_exports"] == []
+    assert payload["is_demo"] is False
+    assert payload["queue_position"] is None
+    assert payload["estimated_wait_time"] is None
+    assert payload["modal_dispatch_status"] is None
+    assert payload["modal_retry_at"] is None
+    assert payload["message"] == "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+    assert payload["output_mode"] == "playback_only"
+
+
+def test_status_repairs_processing_playback_only_stem_to_stem_ready(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "stem-ready-owner", "stem-ready-owner@example.com")
+        stem_path = tmp_path / "bass.wav"
+        stem_path.write_bytes(b"stem")
+        transcription = models.Transcription(
+            title="Separated bass stem",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_file_path=str(stem_path),
+            is_processed=True,
+            processing_status="processing",
+            can_play_stem=True,
+            can_generate_score=False,
+            queue_position=0,
+            estimated_wait_time=0,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("stem-ready-owner"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stem_ready"
+    assert payload["output_mode"] == "playback_only"
+    assert payload["can_play_stem"] is True
+    assert payload["can_generate_score"] is False
+    assert payload["can_generate_tab"] is False
+    assert payload["can_generate_rhythm"] is False
+    assert payload["selected_stem"] == "bass"
+    assert payload["queue_position"] is None
+    assert payload["estimated_wait_time"] is None
+    assert payload["message"] == (
+        "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+    )
+
+    result_response = client.get(
+        f"/api/v1/audio/{transcription_id}/result",
+        headers=auth_headers("stem-ready-owner"),
+    )
+    assert result_response.status_code == 200
+    result_payload = result_response.json()
+    assert result_payload["processing_status"] == "stem_ready"
+    assert result_payload["output_mode"] == "playback_only"
+    assert result_payload["can_generate_tab"] is False
+    assert result_payload["can_generate_rhythm"] is False
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.can_play_stem is True
+        assert refreshed.can_generate_score is False
+        assert refreshed.queue_position is None
+        assert refreshed.estimated_wait_time is None
+    finally:
+        session.close()
+
+
+def test_drum_payloads_are_rhythm_only_across_result_and_status(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "drum-owner", "drum-owner@example.com")
+        stem_path = tmp_path / "drums.wav"
+        stem_path.write_bytes(b"stem")
+        notes_data = json.dumps({
+            "drum_hits": [{"onset": 0.0, "offset": 0.1, "confidence": 0.8}],
+            "rhythm_analysis": {"total_duration": 1.0},
+        })
+        transcription = models.Transcription(
+            title="Drum rhythm",
+            user_id=owner.id,
+            selected_stem="drums",
+            separated_audio_file_path=str(stem_path),
+            notes_data=notes_data,
+            tablature_data='{"tablature": [{"fret": 0}]}',
+            midi_file_path=str(tmp_path / "stale.mid"),
+            tab_file_path=str(tmp_path / "stale.tab"),
+            is_processed=True,
+            processing_status="completed",
+            can_play_stem=True,
+            can_generate_score=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    for suffix in ("result", "status"):
+        response = client.get(
+            f"/api/v1/audio/{transcription_id}/{suffix}",
+            headers=auth_headers("drum-owner"),
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["selected_stem"] == "drums"
+        assert payload["can_generate_score"] is False
+        assert payload["can_generate_tab"] is False
+        assert payload["can_generate_rhythm"] is True
+        assert payload["available_exports"] == []
+        assert payload["output_mode"] == "rhythm"
+
+
+def test_drum_stem_ready_payload_is_playback_with_rhythm_generation_available(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "drum-ready-owner", "drum-ready@example.com")
+        stem_path = tmp_path / "drums.wav"
+        stem_path.write_bytes(b"stem")
+        transcription = models.Transcription(
+            title="Drum stem ready",
+            user_id=owner.id,
+            selected_stem="drums",
+            separated_audio_file_path=str(stem_path),
+            is_processed=True,
+            processing_status="stem_ready",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("drum-ready-owner"),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_mode"] == "playback_only"
+    assert payload["can_generate_score"] is False
+    assert payload["can_generate_tab"] is False
+    assert payload["can_generate_rhythm"] is True
+    assert payload["available_exports"] == []
+
+
+def test_retry_transcription_endpoint_queues_lower_threshold_retry(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "retry-owner", "retry-owner@example.com")
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"stem")
+        transcription = models.Transcription(
+            title="Retry warning",
+            user_id=owner.id,
+            selected_stem="other",
+            separated_audio_file_path=str(stem_path),
+            notes_data='{"notes": []}',
+            is_processed=True,
+            processing_status="completed_with_warning",
+            warning_message="No note events detected for this stem.",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        session.add(models.InstrumentTrack(
+            transcription_id=transcription_id,
+            instrument_type="guitar",
+            display_name="Guitar",
+            stem_audio_path=str(stem_path),
+            processing_status="completed_with_warning",
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_transcription_processing", return_value="retry-task") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/retry",
+            headers=auth_headers("retry-owner"),
+            json={"lower_threshold": True},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "processing"
+    assert payload["selected_stem"] == "other"
+    assert payload["can_play_stem"] is True
+    assert payload["can_generate_score"] is True
+    assert start_mock.call_args.kwargs["detection_sensitivity"] == "high"
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "processing"
+        assert refreshed.warning_message is None
+        assert refreshed.celery_task_id == "retry-task"
+    finally:
+        session.close()
+
+
+def test_generate_tab_endpoint_accepts_high_sensitivity_option():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "tab-owner", "tab-owner@example.com")
+        transcription = models.Transcription(
+            title="Tab from stem",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_file_path=str(Path("/tmp/bass.wav")),
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_tab_generation", return_value="tab-task") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/generate-tabs",
+            headers=auth_headers("tab-owner"),
+            json={"sensitivity": "high"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stem_ready"
+    assert payload["selected_stem"] == "bass"
+    assert payload["can_play_stem"] is True
+    assert payload["can_generate_score"] is False
+    assert payload["tab_generation_status"] == "processing"
+    assert payload["rhythm_generation_status"] == "idle"
+    assert payload["message"] == "Tab generation started."
+    assert start_mock.call_args.args[0] == transcription_id
+    assert start_mock.call_args.kwargs["detection_sensitivity"] == "high"
+    assert isinstance(start_mock.call_args.args[1], BackgroundTasks)
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.tab_generation_status == "processing"
+        assert refreshed.rhythm_generation_status == "idle"
+        assert refreshed.celery_task_id == "tab-task"
+    finally:
+        session.close()
+
+
+def test_generate_tab_endpoint_queues_drum_rhythm_generation():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "rhythm-owner", "rhythm-owner@example.com")
+        transcription = models.Transcription(
+            title="Rhythm from stem",
+            user_id=owner.id,
+            selected_stem="drums",
+            separated_audio_file_path=str(Path("/tmp/drums.wav")),
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_tab_generation", return_value="rhythm-task") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/generate-tabs",
+            headers=auth_headers("rhythm-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stem_ready"
+    assert payload["selected_stem"] == "drums"
+    assert payload["can_generate_score"] is False
+    assert payload["can_generate_tab"] is False
+    assert payload["available_exports"] == []
+    assert payload["tab_generation_status"] == "idle"
+    assert payload["rhythm_generation_status"] == "processing"
+    assert payload["message"] == "Rhythm generation started."
+    assert start_mock.call_args.args[0] == transcription_id
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.tab_generation_status == "idle"
+        assert refreshed.rhythm_generation_status == "processing"
+        assert refreshed.celery_task_id == "rhythm-task"
+    finally:
+        session.close()
+
+
+def test_generate_lyrics_endpoint_uses_lyrics_status_without_processing_audio():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-owner", "lyrics-owner@example.com")
+        transcription = models.Transcription(
+            title="Vocal stem",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/vocals.wav",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_lyrics_generation", return_value="lyrics-task") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/generate-lyrics",
+            headers=auth_headers("lyrics-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stem_ready"
+    assert payload["lyrics_generation_status"] == "processing"
+    assert payload["tab_generation_status"] == "idle"
+    assert payload["rhythm_generation_status"] == "idle"
+    assert payload["message"] == "Lyrics generation started."
+    assert start_mock.call_args.args[0] == transcription_id
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.lyrics_generation_status == "processing"
+        assert refreshed.tab_generation_status == "idle"
+        assert refreshed.rhythm_generation_status == "idle"
+        assert refreshed.celery_task_id == "lyrics-task"
+        assert refreshed.separated_audio_url.endswith("vocals.wav")
+    finally:
+        session.close()
+
+
+def test_generate_lyrics_rejects_non_vocal_stem():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-bass-owner", "lyrics-bass-owner@example.com")
+        transcription = models.Transcription(
+            title="Bass stem",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.post(
+        f"/api/v1/audio/{transcription_id}/generate-lyrics",
+        headers=auth_headers("lyrics-bass-owner"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Lyrics generation is only available for vocal stems."
+
+
+def test_generate_lyrics_output_returns_after_saving_lyrics_result(tmp_path):
+    reset_database()
+    stem_path = tmp_path / "vocals.wav"
+    stem_path.write_bytes(b"fake wav")
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-direct-owner", "lyrics-direct@example.com")
+        transcription = models.Transcription(
+            title="Direct vocal lyrics",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_file_path=str(stem_path),
+            processing_status="stem_ready",
+            lyrics_generation_status="processing",
+            notes_data='{"notes": [{"pitch": 60}]}',
+            tablature_data='{"tablature": [{"fret": 3}]}',
+            midi_file_path="/tmp/original.mid",
+            tab_file_path="/tmp/original.tab",
+            can_play_stem=True,
+            can_generate_score=False,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+
+        lyrics_result = {
+            "text": "hello there",
+            "segments": [{"start": 0, "end": 1.2, "text": "hello there"}],
+            "language": "en",
+            "model": "faster-whisper",
+            "model_size": "base",
+            "device": "cpu",
+            "compute_type": "int8",
+            "message": None,
+        }
+        with (
+            patch("app.tasks.lyrics.resolve_whisper_runtime", return_value={
+                "model_size": "base",
+                "device": "cpu",
+                "compute_type": "int8",
+            }),
+            patch("app.tasks.lyrics.transcribe_vocal_stem", return_value=lyrics_result) as transcribe_mock,
+            patch("app.tasks.generate_single_track_transcription_output") as track_mock,
+            patch("app.tasks.audio.detect_beat_and_tempo") as tempo_mock,
+            patch("app.tasks.audio.detect_key") as key_mock,
+            patch("app.tasks.audio.detect_rhythm") as rhythm_mock,
+            patch("app.tasks.audio.detect_chords") as chords_mock,
+        ):
+            result = tasks.generate_lyrics_output_for_transcription(transcription, session)
+
+        assert result is None
+        transcribe_mock.assert_called_once_with(str(stem_path))
+        track_mock.assert_not_called()
+        tempo_mock.assert_not_called()
+        key_mock.assert_not_called()
+        rhythm_mock.assert_not_called()
+        chords_mock.assert_not_called()
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.lyrics_generation_status == "completed"
+        assert json.loads(refreshed.lyrics_data)["text"] == "hello there"
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.notes_data == '{"notes": [{"pitch": 60}]}'
+        assert refreshed.tablature_data == '{"tablature": [{"fret": 3}]}'
+        assert refreshed.midi_file_path == "/tmp/original.mid"
+        assert refreshed.tab_file_path == "/tmp/original.tab"
+        assert refreshed.can_play_stem is True
+    finally:
+        session.close()
+
+
+def test_generate_lyrics_output_empty_text_completes_with_warning(tmp_path):
+    reset_database()
+    stem_path = tmp_path / "vocals.wav"
+    stem_path.write_bytes(b"fake wav")
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-warning-owner", "lyrics-warning@example.com")
+        transcription = models.Transcription(
+            title="Quiet vocal lyrics",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_file_path=str(stem_path),
+            processing_status="stem_ready",
+            lyrics_generation_status="processing",
+            can_play_stem=True,
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+
+        lyrics_result = {
+            "text": "",
+            "segments": [],
+            "language": None,
+            "model": "faster-whisper",
+            "model_size": "base",
+            "device": "cpu",
+            "compute_type": "int8",
+            "message": "No clear vocals detected for lyrics generation.",
+        }
+        with (
+            patch("app.tasks.lyrics.resolve_whisper_runtime", return_value={
+                "model_size": "base",
+                "device": "cpu",
+                "compute_type": "int8",
+            }),
+            patch("app.tasks.lyrics.transcribe_vocal_stem", return_value=lyrics_result),
+            patch("app.tasks.generate_single_track_transcription_output") as track_mock,
+        ):
+            tasks.generate_lyrics_output_for_transcription(transcription, session)
+
+        track_mock.assert_not_called()
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        payload = json.loads(refreshed.lyrics_data)
+        assert refreshed.lyrics_generation_status == "completed_with_warning"
+        assert payload["message"] == "No clear vocals detected for lyrics generation."
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.can_play_stem is True
+    finally:
+        session.close()
+
+
+def test_worker_lyrics_failure_keeps_vocal_stem_playable_and_viewer_status():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-fail-owner", "lyrics-fail-owner@example.com")
+        transcription = models.Transcription(
+            title="Vocal failure",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/vocals.wav",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            lyrics_generation_status="processing",
+            modal_job_type="generate_lyrics",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/failed",
+            headers={"Authorization": "Bearer test-worker-token"},
+            json={"error": "internal stack detail"},
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "stem_ready"
+    assert payload["lyrics_generation_status"] == "failed"
+    assert payload["can_play_stem"] is True
+    assert payload["separated_audio_url"].endswith("vocals.wav")
+
+    status_response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("lyrics-fail-owner"),
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "stem_ready"
+    assert status_response.json()["lyrics_generation_status"] == "failed"
+
+
+def test_worker_lyrics_complete_only_updates_lyrics_fields():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-complete-owner", "lyrics-complete@example.com")
+        transcription = models.Transcription(
+            title="Vocal complete",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/vocals.wav",
+            notes_data='{"notes": [{"pitch": 60}]}',
+            tablature_data='{"tablature": [{"fret": 3}]}',
+            midi_file_path="/tmp/original.mid",
+            tab_file_path="/tmp/original.tab",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            lyrics_generation_status="processing",
+            modal_job_type="generate_lyrics",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"Authorization": "Bearer test-worker-token"},
+            json={
+                "lyrics_data": {
+                    "text": "hello there",
+                    "segments": [{"start": 0, "end": 1.2, "text": "hello there"}],
+                    "language": "en",
+                    "model": "faster-whisper",
+                }
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "stem_ready"
+    assert payload["lyrics_generation_status"] == "completed"
+    assert json.loads(payload["lyrics_data"])["text"] == "hello there"
+    assert payload["notes_data"] == '{"notes": [{"pitch": 60}]}'
+    assert payload["tablature_data"] == '{"tablature": [{"fret": 3}]}'
+    assert payload["midi_file_path"] == "/tmp/original.mid"
+    assert payload["tab_file_path"] == "/tmp/original.tab"
+    assert payload["separated_audio_url"].endswith("vocals.wav")
+
+
+def test_worker_failed_saves_sanitized_error_without_internal_logs():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "failed-owner", "failed-owner@example.com")
+        transcription = models.Transcription(
+            title="Failed job",
+            user_id=owner.id,
+            selected_stem="bass",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/failed",
+            headers={"Authorization": "Bearer test-worker-token"},
+            json={
+                "error": "Could not isolate the selected stem.",
+                "internal_logs": "stack trace with modal internals and secrets",
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "failed"
+    assert payload["is_processed"] is False
+    assert payload["processing_error"] == "Could not isolate the selected stem."
+    assert "stack trace" not in payload["processing_error"]
+
+
+def test_modal_failed_callback_accepts_missing_optional_fields():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "modal-failed-owner", "modal-failed@example.com")
+        transcription = models.Transcription(
+            title="Modal failed callback",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+            processing_error=None,
+            queue_position=0,
+            estimated_wait_time=0,
+            celery_task_id="modal-job",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/failed",
+            headers={"Authorization": "Bearer test-worker-token"},
+            json={},
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "failed"
+    assert payload["is_processed"] is False
+    assert payload["processing_error"] == "Worker processing failed."
+    assert payload["queue_position"] is None
+    assert payload["estimated_wait_time"] is None
+    assert payload["celery_task_id"] is None
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "failed"
+        assert refreshed.processing_error == "Worker processing failed."
+    finally:
+        session.close()
+
+
+def test_modal_failed_callback_truncates_long_worker_error():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "modal-long-error-owner", "modal-long-error@example.com")
+        transcription = models.Transcription(
+            title="Modal long error callback",
+            user_id=owner.id,
+            selected_stem="bass",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/failed",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "error": "Demucs failed " + ("because the selected stem was absent " * 40),
+                "internal_logs": {"stderr": "full demucs traceback"},
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "failed"
+    assert payload["processing_error"].startswith("Demucs failed")
+    assert len(payload["processing_error"]) == 500
+    assert "full demucs traceback" not in payload["processing_error"]
+
+
+def test_extract_audio_from_youtube_requires_selected_stem():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-owner", "youtube-owner@example.com")
+    finally:
+        session.close()
+
+    response = client.post(
+        "/api/v1/audio/youtube",
+        headers=auth_headers("youtube-owner"),
+        json={"youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_extract_audio_from_youtube_returns_service_unavailable_for_verification_challenge():
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = None
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-bot-check", "youtube-bot-check@example.com")
+    finally:
+        session.close()
+
+    class RaisingYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def extract_info(self, url, download):
+            raise RuntimeError("Sign in to confirm you're not a bot. Use --cookies for authentication.")
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", RaisingYoutubeDL):
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-bot-check"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert "YOUTUBE_COOKIES" in response.json()["detail"]
+
+
+def test_extract_audio_from_youtube_rejects_missing_cookie_file_before_ytdlp(tmp_path):
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = str(tmp_path / "missing.cookies.txt")
+    config.settings.YOUTUBE_COOKIES = None
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-missing-cookies", "youtube-missing-cookies@example.com")
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL") as youtube_dl:
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-missing-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert "missing or invalid" in response.json()["detail"]
+    youtube_dl.assert_not_called()
+
+
+def test_extract_audio_from_youtube_rejects_placeholder_cookie_file_before_ytdlp(tmp_path):
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    cookie_file = tmp_path / "youtube.cookies.txt"
+    cookie_file.write_text("# Place your YouTube browser cookies here.\n", encoding="utf-8")
+    config.settings.YOUTUBE_COOKIES_FILE = str(cookie_file)
+    config.settings.YOUTUBE_COOKIES = None
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-placeholder-cookies", "youtube-placeholder-cookies@example.com")
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL") as youtube_dl:
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-placeholder-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert "missing or invalid" in response.json()["detail"]
+    youtube_dl.assert_not_called()
+
+
+def test_youtube_raw_cookies_with_escaped_newlines_are_normalized():
+    from app.api.v1.endpoints.audio import _get_youtube_cookiefile
+
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfresh-cookie\\n"
+    )
+
+    cookiefile = None
+    try:
+        resolved = _get_youtube_cookiefile()
+        cookiefile = Path(resolved.path)
+
+        assert resolved.loaded is True
+        assert resolved.cleanup is True
+        assert resolved.cookie_count == 1
+        assert "\n.youtube.com" in cookiefile.read_text(encoding="utf-8")
+    finally:
+        if cookiefile and cookiefile.exists():
+            cookiefile.unlink()
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+
+def test_youtube_env_cookies_win_and_ignore_placeholder_file(tmp_path, caplog):
+    from app.api.v1.endpoints.audio import _get_youtube_cookiefile
+
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    cookie_file = tmp_path / "youtube.cookies.txt"
+    cookie_file.write_text("# Place your YouTube browser cookies here.\n", encoding="utf-8")
+    raw_secret_cookie = "fresh-secret-cookie"
+    config.settings.YOUTUBE_COOKIES_FILE = str(cookie_file)
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\n"
+        f".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\t{raw_secret_cookie}\n"
+    )
+    caplog.set_level("INFO", logger="app.api.v1.endpoints.audio")
+
+    cookiefile = None
+    try:
+        resolved = _get_youtube_cookiefile()
+        cookiefile = Path(resolved.path)
+
+        assert resolved.loaded is True
+        assert resolved.cleanup is True
+        assert resolved.source == "YOUTUBE_COOKIES"
+        assert cookiefile.exists()
+        assert "Using YOUTUBE_COOKIES from environment; ignoring YOUTUBE_COOKIES_FILE." in caplog.text
+        assert "effective cookie source=env" in caplog.text
+        assert "has_youtube_domain=True" in caplog.text
+        assert "cookie fingerprint=" in caplog.text
+        assert raw_secret_cookie not in caplog.text
+    finally:
+        if cookiefile and cookiefile.exists():
+            cookiefile.unlink()
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+
+def test_youtube_cookie_diagnostics_warn_for_low_count_and_do_not_log_raw_values(caplog):
+    from app.api.v1.endpoints.audio import _get_youtube_cookiefile
+
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    raw_secret_cookie = "raw-cookie-value-that-must-not-appear"
+    cookie_payload = (
+        "# Netscape HTTP Cookie File\n"
+        f".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\t{raw_secret_cookie}\n"
+    )
+    expected_fingerprint = hashlib.sha256(cookie_payload.encode("utf-8")).hexdigest()[:8]
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = cookie_payload
+    caplog.set_level("INFO", logger="app.api.v1.endpoints.audio")
+
+    cookiefile = None
+    try:
+        resolved = _get_youtube_cookiefile()
+        cookiefile = Path(resolved.path)
+
+        assert resolved.cookie_count == 1
+        assert f"cookie fingerprint={expected_fingerprint}" in caplog.text
+        assert "cookie_count=1" in caplog.text
+        assert "has_youtube_domain=True" in caplog.text
+        assert "SID': True" in caplog.text
+        assert "YouTube cookie count appears low; cookies may be incomplete or expired." in caplog.text
+        assert raw_secret_cookie not in caplog.text
+        assert cookie_payload not in caplog.text
+    finally:
+        if cookiefile and cookiefile.exists():
+            cookiefile.unlink()
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+
+def test_extract_audio_from_youtube_rejects_malformed_env_cookies_before_ytdlp():
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = "not netscape cookies"
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-bad-env-cookies", "youtube-bad-env-cookies@example.com")
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL") as youtube_dl:
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-bad-env-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "YOUTUBE_COOKIES is configured but is not valid Netscape cookie format."
+    )
+    youtube_dl.assert_not_called()
+
+
+def test_extract_audio_from_youtube_rejects_env_cookies_without_youtube_domain_before_ytdlp():
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\n"
+        ".google.com\tTRUE\t/\tTRUE\t2147483647\tSID\tgoogle-cookie\n"
+    )
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-no-domain-cookies", "youtube-no-domain-cookies@example.com")
+    finally:
+        session.close()
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL") as youtube_dl:
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-no-domain-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "YOUTUBE_COOKIES is configured but does not contain YouTube cookies."
+    )
+    youtube_dl.assert_not_called()
+
+
+def test_extract_audio_from_youtube_returns_cookie_rejected_detail_when_loaded_cookies_fail():
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfresh-cookie\n"
+    )
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-rejected-cookies", "youtube-rejected-cookies@example.com")
+    finally:
+        session.close()
+
+    class RaisingYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def extract_info(self, url, download):
+            raise RuntimeError("Sign in to confirm you're not a bot. Use --cookies for authentication.")
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", RaisingYoutubeDL):
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-rejected-cookies"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Cookies were loaded, but YouTube rejected them. "
+        "Re-export fresh cookies or upload audio directly."
+    )
+
+
+def test_youtube_download_options_include_cookiefile_when_configured():
+    from app.api.v1.endpoints.audio import _build_youtube_download_options
+
+    options = _build_youtube_download_options(
+        unique_filename="song",
+        ffmpeg_path="/usr/bin",
+        cookiefile="/app/secrets/youtube.cookies.txt",
+    )
+
+    assert options["cookiefile"] == "/app/secrets/youtube.cookies.txt"
 
 
 def test_list_instrument_tracks_requires_transcription_access():
@@ -223,6 +2614,317 @@ def test_list_and_get_instrument_tracks_for_owner():
     track_payload = get_response.json()
     assert track_payload["display_name"] == "Guitar"
     assert track_payload["tab_json"] == '{"strings": []}'
+
+
+def test_delete_transcription_cancels_queued_job_and_hides_record(tmp_path):
+    reset_database()
+    local_audio = tmp_path / "source.wav"
+    local_audio.write_bytes(b"audio")
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "delete-owner", "delete-owner@example.com")
+        transcription = models.Transcription(
+            title="Queued song",
+            audio_file_path=str(local_audio),
+            original_audio_public_id="musicstudio/original",
+            separated_audio_public_id="musicstudio/stem",
+            midi_file_public_id="musicstudio/midi",
+            tab_file_public_id="musicstudio/tab",
+            celery_task_id="task-123",
+            user_id=owner.id,
+            is_processed=False,
+            processing_status="queued",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with (
+        patch("app.api.v1.endpoints.audio.celery_app.control.revoke") as revoke_mock,
+        patch("app.api.v1.endpoints.audio.storage.delete_cloudinary_asset", return_value=True) as delete_mock,
+    ):
+        response = client.delete(
+            f"/api/v1/transcriptions/{transcription_id}",
+            headers=auth_headers("delete-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_deleted"] is True
+    assert payload["processing_status"] == "cancelled"
+    revoke_mock.assert_called_once_with("task-123", terminate=False)
+    assert delete_mock.call_count == 4
+    delete_mock.assert_any_call("musicstudio/original", resource_type="video")
+    delete_mock.assert_any_call("musicstudio/stem", resource_type="video")
+    delete_mock.assert_any_call("musicstudio/midi", resource_type="raw")
+    delete_mock.assert_any_call("musicstudio/tab", resource_type="raw")
+    assert not local_audio.exists()
+
+    list_response = client.get("/api/v1/audio/", headers=auth_headers("delete-owner"))
+    assert list_response.status_code == 200
+    assert list_response.json() == []
+
+
+def test_delete_transcription_skips_cloudinary_asset_still_referenced_elsewhere():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "shared-delete-owner", "shared-delete@example.com")
+        deleting = models.Transcription(
+            title="Shared source",
+            original_audio_public_id="musicstudio/shared-original",
+            separated_audio_public_id="musicstudio/delete-stem",
+            user_id=owner.id,
+            is_processed=True,
+            processing_status="completed",
+        )
+        keeper = models.Transcription(
+            title="Keep source",
+            original_audio_public_id="musicstudio/shared-original",
+            user_id=owner.id,
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add_all([deleting, keeper])
+        session.commit()
+        deleting_id = deleting.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=True,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/transcriptions/{deleting_id}",
+            headers=auth_headers("shared-delete-owner"),
+        )
+
+    assert response.status_code == 200
+    deleted_public_ids = [call.args[0] for call in delete_mock.call_args_list]
+    assert "musicstudio/shared-original" not in deleted_public_ids
+    assert "musicstudio/delete-stem" in deleted_public_ids
+
+
+def test_delete_transcription_with_missing_assets_does_not_crash():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "missing-delete-owner", "missing-delete@example.com")
+        transcription = models.Transcription(
+            title="No cloud assets",
+            user_id=owner.id,
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=False,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/transcriptions/{transcription_id}",
+            headers=auth_headers("missing-delete-owner"),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["is_deleted"] is True
+    assert delete_mock.call_count == 4
+
+
+def test_delete_project_removes_transcriptions_and_cloudinary_assets():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "project-delete-owner", "project-delete@example.com")
+        project = models.Project(
+            name="Delete me",
+            owner_id=owner.id,
+        )
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        transcription = models.Transcription(
+            title="Project song",
+            project_id=project.id,
+            user_id=owner.id,
+            original_audio_public_id="musicstudio/project-original",
+            separated_audio_public_id="musicstudio/project-stem",
+            midi_file_public_id="musicstudio/project-midi",
+            tab_file_public_id="musicstudio/project-tab",
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add(transcription)
+        session.commit()
+        project_id = project.id
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=True,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/projects/{project_id}",
+            headers=auth_headers("project-delete-owner"),
+        )
+
+    assert response.status_code == 200
+    delete_mock.assert_any_call("musicstudio/project-original", resource_type="video")
+    delete_mock.assert_any_call("musicstudio/project-stem", resource_type="video")
+    delete_mock.assert_any_call("musicstudio/project-midi", resource_type="raw")
+    delete_mock.assert_any_call("musicstudio/project-tab", resource_type="raw")
+
+    session = TestingSessionLocal()
+    try:
+        assert session.query(models.Project).filter(models.Project.id == project_id).first() is None
+        assert (
+            session.query(models.Transcription)
+            .filter(models.Transcription.id == transcription_id)
+            .first()
+            is None
+        )
+    finally:
+        session.close()
+
+
+def test_delete_project_keeps_duplicate_cloudinary_assets_referenced_elsewhere():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "project-shared-owner", "project-shared@example.com")
+        project = models.Project(name="Shared delete", owner_id=owner.id)
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        deleting = models.Transcription(
+            title="Project duplicate",
+            project_id=project.id,
+            user_id=owner.id,
+            original_audio_public_id="musicstudio/shared-project-original",
+            separated_audio_public_id="musicstudio/project-only-stem",
+            is_processed=True,
+            processing_status="completed",
+        )
+        keeper = models.Transcription(
+            title="Outside duplicate",
+            user_id=owner.id,
+            original_audio_public_id="musicstudio/shared-project-original",
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add_all([deleting, keeper])
+        session.commit()
+        project_id = project.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=True,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/projects/{project_id}",
+            headers=auth_headers("project-shared-owner"),
+        )
+
+    assert response.status_code == 200
+    deleted_public_ids = [call.args[0] for call in delete_mock.call_args_list]
+    assert "musicstudio/shared-project-original" not in deleted_public_ids
+    assert "musicstudio/project-only-stem" in deleted_public_ids
+
+
+def test_soft_delete_project_marks_records_after_cloudinary_cleanup():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "project-soft-owner", "project-soft@example.com")
+        project = models.Project(name="Soft delete", owner_id=owner.id)
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        transcription = models.Transcription(
+            title="Soft project song",
+            project_id=project.id,
+            user_id=owner.id,
+            original_audio_public_id="musicstudio/soft-original",
+            is_processed=True,
+            processing_status="completed",
+        )
+        session.add(transcription)
+        session.commit()
+        project_id = project.id
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch(
+        "app.api.v1.endpoints.audio.storage.delete_cloudinary_asset",
+        return_value=True,
+    ) as delete_mock:
+        response = client.delete(
+            f"/api/v1/projects/{project_id}?hard_delete=false",
+            headers=auth_headers("project-soft-owner"),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["is_deleted"] is True
+    delete_mock.assert_any_call("musicstudio/soft-original", resource_type="video")
+
+    session = TestingSessionLocal()
+    try:
+        project = session.query(models.Project).filter(models.Project.id == project_id).one()
+        transcription = (
+            session.query(models.Transcription)
+            .filter(models.Transcription.id == transcription_id)
+            .one()
+        )
+        assert project.is_deleted is True
+        assert transcription.is_deleted is True
+        assert transcription.processing_status == "deleted"
+    finally:
+        session.close()
+
+
+def test_delete_transcription_marks_processing_job_best_effort_cancelled():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "processing-delete-owner", "processing-delete@example.com")
+        transcription = models.Transcription(
+            title="Processing song",
+            user_id=owner.id,
+            is_processed=False,
+            processing_status="processing",
+            celery_task_id="task-processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio.celery_app.control.revoke") as revoke_mock:
+        response = client.delete(
+            f"/api/v1/transcriptions/{transcription_id}",
+            headers=auth_headers("processing-delete-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_deleted"] is True
+    assert payload["processing_status"] == "cancelled"
+    assert "best-effort" in payload["processing_error"]
+    revoke_mock.assert_called_once_with("task-processing", terminate=True)
 
 
 def test_update_instrument_track_metadata_only_changes_user_editable_fields():
@@ -350,9 +3052,9 @@ def test_reprocess_instrument_track_rejects_unsupported_instrument(tmp_path):
     reset_database()
     session = TestingSessionLocal()
     try:
-        owner = create_user(session, "reprocess-vocal-owner", "reprocess-vocal-owner@example.com")
-        stem_path = tmp_path / "vocals.wav"
-        stem_path.write_bytes(b"vocals")
+        owner = create_user(session, "reprocess-strings-owner", "reprocess-strings-owner@example.com")
+        stem_path = tmp_path / "strings.wav"
+        stem_path.write_bytes(b"strings")
         transcription = models.Transcription(
             title="Unsupported reprocess song",
             audio_file_path="uploads/unsupported-reprocess.wav",
@@ -364,8 +3066,8 @@ def test_reprocess_instrument_track_rejects_unsupported_instrument(tmp_path):
         session.refresh(transcription)
         track = models.InstrumentTrack(
             transcription_id=transcription.id,
-            instrument_type="vocals",
-            display_name="Vocals",
+                instrument_type="strings",
+                display_name="Strings",
             stem_audio_path=str(stem_path),
             processing_status="completed",
         )
@@ -378,11 +3080,11 @@ def test_reprocess_instrument_track_rejects_unsupported_instrument(tmp_path):
 
     response = client.post(
         f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
-        headers=auth_headers("reprocess-vocal-owner"),
+        headers=auth_headers("reprocess-strings-owner"),
     )
 
     assert response.status_code == 422
-    assert "supports guitar, bass, piano, and drum tracks" in response.json()["detail"]
+    assert "supports guitar, bass, drum, and vocal stems" in response.json()["detail"]
 
 
 def test_reprocess_instrument_track_marks_missing_stem_failed():
@@ -464,7 +3166,10 @@ def test_reprocess_instrument_track_queues_supported_track_and_clears_outputs(tm
     finally:
         session.close()
 
-    with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+    with (
+        patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=True),
+        patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
+    ):
         response = client.post(
             f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
             headers=auth_headers("reprocess-guitar-owner"),
@@ -517,7 +3222,10 @@ def test_reprocess_drum_track_queues_and_clears_outputs(tmp_path):
     finally:
         session.close()
 
-    with patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock:
+    with (
+        patch("app.api.v1.endpoints.audio._celery_has_available_worker", return_value=True),
+        patch("app.api.v1.endpoints.audio.celery_app.send_task") as send_task_mock,
+    ):
         response = client.post(
             f"/api/v1/audio/{transcription_id}/tracks/{track_id}/reprocess",
             headers=auth_headers("reprocess-drum-owner"),
@@ -741,10 +3449,10 @@ def test_get_piano_track_exports_use_note_events_without_tab_data():
         headers=auth_headers("piano-export-owner"),
     )
 
-    assert midi_response.status_code == 200
-    assert midi_response.content.startswith(b"MThd")
-    assert musicxml_response.status_code == 200
-    assert musicxml_response.text == "<score-partwise version=\"3.1\"></score-partwise>"
+    assert midi_response.status_code == 422
+    assert "Per-track MIDI export currently supports guitar and bass" in midi_response.json()["detail"]
+    assert musicxml_response.status_code == 422
+    assert "Per-track MUSICXML export currently supports guitar and bass" in musicxml_response.json()["detail"]
     assert tab_response.status_code == 422
     assert "Per-track TAB export currently supports guitar and bass" in tab_response.json()["detail"]
 
@@ -876,7 +3584,7 @@ def test_get_track_export_rejects_stem_only_track_with_useful_error():
     )
 
     assert response.status_code == 422
-    assert "Per-track MIDI export currently supports guitar, bass, and piano" in response.json()["detail"]
+    assert "Per-track MIDI export currently supports guitar and bass" in response.json()["detail"]
 
 
 def test_get_drum_track_export_remains_unsupported_with_rhythm_data():
@@ -914,7 +3622,7 @@ def test_get_drum_track_export_remains_unsupported_with_rhythm_data():
     )
 
     assert response.status_code == 422
-    assert "Per-track MIDI export currently supports guitar, bass, and piano" in response.json()["detail"]
+    assert "Per-track MIDI export currently supports guitar and bass" in response.json()["detail"]
 
 
 def test_get_track_export_requires_transcription_access():

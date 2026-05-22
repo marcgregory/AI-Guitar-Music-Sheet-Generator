@@ -8,6 +8,45 @@ interface AudioPlayerProps {
 
 type PlayerIconName = "play" | "pause" | "volume" | "mute";
 
+const mediaErrorDetails = (audio: HTMLMediaElement) => {
+  const error = audio.error;
+  if (!error) return null;
+  const messages: Record<number, string> = {
+    [MediaError.MEDIA_ERR_ABORTED]: "Playback was aborted.",
+    [MediaError.MEDIA_ERR_NETWORK]: "A network error interrupted loading.",
+    [MediaError.MEDIA_ERR_DECODE]: "The audio could not be decoded.",
+    [MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED]: "The audio source is not supported.",
+  };
+  return {
+    code: error.code,
+    message: error.message || messages[error.code] || "Unknown media error.",
+  };
+};
+
+const errorMessageOf = (error: unknown, fallback: string): string => {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+};
+
+const probeAudioNetwork = async (src: string): Promise<void> => {
+  if (!src || src.startsWith("blob:")) return;
+  try {
+    const response = await fetch(src, { method: "HEAD", mode: "cors" });
+    console.error("Audio playback network probe", {
+      src,
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      contentType: response.headers.get("content-type"),
+    });
+  } catch (error: unknown) {
+    console.error("Audio playback network error", {
+      src,
+      error: errorMessageOf(error, "Network request failed"),
+    });
+  }
+};
+
 const PlayerIcon = ({ name }: { name: PlayerIconName }) => {
   const paths: Record<PlayerIconName, React.ReactNode> = {
     play: <path d="m8 5 11 7-11 7V5Z" />,
@@ -93,8 +132,14 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({
     };
 
     const handleError = () => {
+      const src = audio.currentSrc || audio.src || audioUrl;
       setIsPlaying(false);
       setDuration(0);
+      console.error("Audio element failed to load", {
+        src,
+        mediaError: mediaErrorDetails(audio),
+      });
+      void probeAudioNetwork(src);
       setLoadError("Audio file could not be loaded.");
     };
 
@@ -122,8 +167,15 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({
         await audioRef.current.play();
         setIsPlaying(true);
         setLoadError(null);
-      } catch {
+      } catch (error: unknown) {
+        const src = audioRef.current.currentSrc || audioRef.current.src || audioUrl;
         setIsPlaying(false);
+        console.error("Audio playback could not start", {
+          src,
+          playError: errorMessageOf(error, "HTMLMediaElement.play() failed"),
+          mediaError: mediaErrorDetails(audioRef.current),
+        });
+        void probeAudioNetwork(src);
         setLoadError("Audio playback could not start.");
       }
     }

@@ -136,11 +136,16 @@
 
 ## Next Steps for Phase 1
 Now that the SQLAlchemy compatibility issue is resolved, Phase 0 is fully complete and we can proceed to:
-1. Implement file upload endpoint (MP3/WAV) with size validation
-2. Integrate yt-dlp for YouTube audio extraction
-3. Add audio preprocessing using librosa
-4. Implement source separation for guitar isolation
-5. And other Phase 1 audio processing tasks
+1. Implement file upload and YouTube ingestion with original audio uploaded to Cloudinary
+2. Require one `selected_stem` value: `vocals`, `drums`, `bass`, or `other`
+3. Add duplicate detection with `audio_hash` or normalized YouTube/source ID plus `selected_stem`
+4. Use Demucs for selected-stem separation only; guitar transcription maps to `other`
+5. Queue work through backend job records; use Modal GPU as the production worker with `AUDIO_PROCESSING_MODE=modal` and Redis/Celery only for local fallback with concurrency `1`
+6. Upload separated stem audio, MIDI files, and TAB files to Cloudinary when generated
+7. Persist Cloudinary `secure_url` and `public_id` fields plus duplicate/deletion/status fields
+8. Let users delete completed, completed_with_warning, failed, queued, and processing records
+9. Treat Railway local storage as temporary scratch space and clean files after terminal/deleted/cancelled job status
+10. Keep vocal Generate Lyrics separate from audio processing by using `lyrics_generation_status`
 
 ## Verification
 The infrastructure is correctly set up and SQLAlchemy/Python 3.13 compatibility issue is RESOLVED:

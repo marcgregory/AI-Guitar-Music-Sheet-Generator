@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Write-Output \"Current directory: $\\(pwd\\)\")",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\Activate.ps1)",
+      "PowerShell(python --version)",
+      "PowerShell(python -c \"import sys; print\\('Python executable:', sys.executable\\); print\\('Sys path:'\\); [print\\(p\\) for p in sys.path]\")",
+      "PowerShell(python -c \"import torch; print\\('torch version:', torch.__version__\\); print\\('torch file:', torch.__file__\\)\")",
+      "PowerShell($env:PYTHONPATH)",
+      "PowerShell(deactivate *)",
+      "PowerShell($env:PATH)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\deactivate.ps1)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\deactivate.ps1)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(\\($env:PATH -split ';'\\).Count)",
+      "PowerShell($entry = 'C:\\\\Users\\\\TO GOD BE THE GROY\\\\Desktop\\\\cwm_claude_code\\\\generate musicsheet\\\\backend\\\\.venv\\\\Scripts')",
+      "PowerShell(python -c \"import sys; print\\('Sys path contains tmp:', any\\('demucs_py313' in p for p in sys.path\\)\\); print\\('PYTHONPATH:', $env:PYTHONPATH\\)\")",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\activate.ps1)",
+      "PowerShell(python -m demucs.separate --help)",
+      "PowerShell(python -c \"import torch; x = torch.rand\\(3, 3\\); print\\('Torch tensor:', x\\); print\\('Torch version:', torch.__version__\\)\")",
+      "PowerShell([Environment]::GetEnvironmentVariable\\(\"PYTHONPATH\", \"Machine\"\\))",
+      "PowerShell([Environment]::GetEnvironmentVariable\\(\"PYTHONPATH\", \"User\"\\))",
+      "PowerShell(python -c \"import sys; [print\\(p\\) for p in sys.path if 'demucs' in p.lower\\(\\)]\")",
+      "PowerShell(python -c \"import sys; [print\\(p\\) for p in sys.path if 'tmp' in p.lower\\(\\)]\")",
+      "PowerShell(python -c \"import torch; print\\('torch file:', torch.__file__\\); import demucs; print\\('demucs file:', demucs.__file__\\)\")",
+      "PowerShell(python -c \"import torchaudio; print\\('torchaudio version:', torchaudio.__version__\\)\")"
+    ]
+  }
+}

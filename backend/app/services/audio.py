@@ -1,8 +1,6 @@
-import librosa
-import numpy as np
-import soundfile as sf
 from pathlib import Path
 import importlib.util
+import importlib.metadata
 import os
 import subprocess
 import tempfile
@@ -10,19 +8,51 @@ import sys
 import json
 import csv
 import shutil
+import logging
 
+from app.core.config import settings
+from app.services import storage
 
-DEMUCS_GUITAR_MODEL = "htdemucs_6s"
-DEMUCS_FALLBACK_MODEL = "htdemucs"
+logger = logging.getLogger(__name__)
+
+DEMUCS_GUITAR_MODEL = settings.DEMUCS_GUITAR_MODEL
+DEMUCS_FALLBACK_MODEL = settings.DEMUCS_FALLBACK_MODEL
+DEMUCS_CMD_TIMEOUT_SECONDS = settings.DEMUCS_CMD_TIMEOUT_SECONDS
 DEMUCS_MULTI_STEMS = {
-    "guitar": "guitar",
     "bass": "bass",
     "drums": "drums",
     "vocals": "vocals",
-    "piano": "piano",
     "other": "other",
 }
 DEMUCS_VENDOR_PATH = Path(os.environ.get("DEMUCS_VENDOR_PATH", r"C:\tmp\demucs_py313"))
+
+
+def _load_librosa():
+    import librosa
+
+    return librosa
+
+
+def _load_numpy():
+    import numpy as np
+
+    return np
+
+
+def _load_soundfile():
+    import soundfile as sf
+
+    return sf
+
+
+def __getattr__(name: str):
+    if name == "librosa":
+        return _load_librosa()
+    if name == "np":
+        return _load_numpy()
+    if name == "sf":
+        return _load_soundfile()
+    raise AttributeError(name)
 
 
 def _configure_demucs_vendor_path() -> None:
@@ -32,15 +62,140 @@ def _configure_demucs_vendor_path() -> None:
             sys.path.append(vendor_path)
 
 
-def _ensure_demucs_available() -> None:
+def _dependency_status(
+    module_name: str,
+    package_name: str | None = None,
+    *,
+    verify_import: bool = True,
+) -> dict:
     _configure_demucs_vendor_path()
-    if importlib.util.find_spec("demucs") is None:
+    package_name = package_name or module_name
+    status = {
+        "available": False,
+        "version": None,
+        "error": None,
+    }
+
+    if importlib.util.find_spec(module_name) is None:
+        status["error"] = f"{module_name} is not importable"
+        return status
+
+    try:
+        status["version"] = importlib.metadata.version(package_name)
+    except importlib.metadata.PackageNotFoundError:
+        status["version"] = "unknown"
+    except Exception as exc:
+        status["error"] = f"Could not read {package_name} version: {exc}"
+
+    if verify_import:
+        try:
+            __import__(module_name)
+            status["available"] = True
+        except Exception as exc:
+            status["error"] = f"{module_name} import failed: {exc}"
+    else:
+        status["available"] = True
+
+    return status
+
+
+def _ffmpeg_status() -> dict:
+    executable = shutil.which("ffmpeg")
+    status = {
+        "available": bool(executable),
+        "version": None,
+        "path": executable,
+        "error": None,
+    }
+    if not executable:
+        status["error"] = "ffmpeg executable was not found on PATH"
+        return status
+
+    try:
+        result = subprocess.run(
+            [executable, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        status["available"] = False
+        status["error"] = f"ffmpeg version check failed: {exc}"
+        return status
+
+    if result.returncode != 0:
+        status["available"] = False
+        status["error"] = (result.stderr or result.stdout or "ffmpeg returned a non-zero exit code").strip()
+        return status
+
+    first_line = (result.stdout or "").splitlines()
+    status["version"] = first_line[0] if first_line else "unknown"
+    return status
+
+
+def validate_audio_dependencies(
+    raise_on_error: bool = False,
+    *,
+    verify_imports: bool = True,
+    include_ffmpeg: bool = True,
+) -> dict:
+    """Return availability/version details for selected-stem audio dependencies."""
+    dependencies = {
+        "demucs": _dependency_status("demucs", verify_import=verify_imports),
+        "torch": _dependency_status("torch", verify_import=verify_imports),
+        "torchaudio": _dependency_status("torchaudio", verify_import=verify_imports),
+    }
+    if include_ffmpeg:
+        dependencies["ffmpeg"] = _ffmpeg_status()
+    missing = [
+        name
+        for name, status in dependencies.items()
+        if not status.get("available")
+    ]
+    result = {
+        "available": not missing,
+        "dependencies": dependencies,
+        "missing": missing,
+    }
+
+    if missing and raise_on_error:
+        details = "; ".join(
+            f"{name}: {dependencies[name].get('error') or 'unavailable'}"
+            for name in missing
+        )
         raise RuntimeError(
-            "Demucs is not installed. Install backend requirements to enable source separation."
+            "Selected-stem audio dependencies are unavailable. "
+            f"Missing or failing checks: {details}"
+        )
+
+    return result
+
+
+def _ensure_demucs_available() -> None:
+    dependency_status = validate_audio_dependencies(
+        verify_imports=False,
+        include_ffmpeg=False,
+    )
+    if not dependency_status["available"]:
+        missing = ", ".join(dependency_status["missing"])
+        raise RuntimeError(
+            "Selected-stem source separation dependencies are unavailable. "
+            f"Missing or failing checks: {missing}. "
+            "Install backend requirements and ensure ffmpeg is on PATH."
         )
 
 
-def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems: str = None) -> None:
+def _demucs_file_listing(output_path: Path) -> list[str]:
+    if not output_path.exists():
+        return []
+    return [
+        storage.normalize_local_path(path)
+        for path in output_path.rglob("*")
+        if path.is_file()
+    ]
+
+
+def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems: str = None) -> dict:
     _configure_demucs_vendor_path()
     cmd = [
         sys.executable,
@@ -54,6 +209,16 @@ def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems:
     if two_stems:
         cmd.extend(["--two-stems", two_stems])
     cmd.append(str(input_path))
+    logger.info(
+        "Running Demucs command=%s model=%s two_stems=%s input=%s output_dir=%s input_exists=%s input_size=%s",
+        cmd,
+        model_name,
+        two_stems,
+        storage.normalize_local_path(input_path),
+        storage.normalize_local_path(output_path),
+        input_path.exists(),
+        input_path.stat().st_size if input_path.exists() and input_path.is_file() else None,
+    )
 
     env = os.environ.copy()
     if DEMUCS_VENDOR_PATH.exists():
@@ -64,31 +229,105 @@ def _run_demucs(input_path: Path, output_path: Path, model_name: str, two_stems:
             else str(DEMUCS_VENDOR_PATH)
         )
 
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=DEMUCS_CMD_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as timeout_error:
+        raise RuntimeError(
+            f"Demucs separation timed out after {DEMUCS_CMD_TIMEOUT_SECONDS} seconds "
+            f"for model {model_name}"
+        ) from timeout_error
+
+    run_debug = {
+        "command": cmd,
+        "exit_code": result.returncode,
+        "stdout": result.stdout or "",
+        "stderr": result.stderr or "",
+        "file_list": _demucs_file_listing(output_path),
+    }
+
     if result.returncode != 0:
         error_text = result.stderr.strip() or result.stdout.strip()
+        logger.error("Demucs failed debug=%s", run_debug)
         raise RuntimeError(f"Demucs separation failed with {model_name}: {error_text}")
+    logger.info(
+        "Demucs completed command=%s exit_code=%s model=%s two_stems=%s output_dir=%s stdout_tail=%s stderr_tail=%s file_list=%s",
+        cmd,
+        result.returncode,
+        model_name,
+        two_stems,
+        storage.normalize_local_path(output_path),
+        (result.stdout or "")[-1000:],
+        (result.stderr or "")[-1000:],
+        run_debug["file_list"],
+    )
+    return run_debug
 
 
-def _find_demucs_stem(output_path: Path, model_name: str, input_stem: str, stem_name: str) -> Path:
-    expected_path = output_path / model_name / input_stem / f"{stem_name}.wav"
-    if expected_path.exists():
-        return expected_path
-
-    matches = list((output_path / model_name).rglob(f"{stem_name}.wav"))
+def _find_demucs_stem(
+    output_path: Path,
+    model_name: str,
+    input_stem: str,
+    stem_name: str,
+    run_debug: dict | None = None,
+) -> Path:
+    requested_name = stem_name.lower()
+    matches = [
+        path for path in output_path.rglob("*")
+        if (
+            path.is_file()
+            and path.stem.lower() == requested_name
+            and path.suffix.lower() in {".wav", ".mp3"}
+        )
+    ]
     if matches:
-        return matches[0]
+        selected_path = matches[0]
+        logger.info(
+            "Found Demucs stem by recursive filename search model=%s input_stem=%s stem=%s path=%s size=%s matches=%s",
+            model_name,
+            input_stem,
+            stem_name,
+            storage.normalize_local_path(selected_path),
+            selected_path.stat().st_size if selected_path.is_file() else None,
+            [storage.normalize_local_path(match) for match in matches],
+        )
+        return selected_path
 
-    all_matches = list(output_path.rglob(f"{stem_name}.wav"))
-    if all_matches:
-        return all_matches[0]
+    generated = _demucs_file_listing(output_path)
+    debug_payload = {
+        "demucs_command": (run_debug or {}).get("command"),
+        "demucs_exit_code": (run_debug or {}).get("exit_code"),
+        "demucs_stdout": (run_debug or {}).get("stdout"),
+        "demucs_stderr": (run_debug or {}).get("stderr"),
+        "recursive_file_list": generated,
+    }
+    logger.error(
+        "Could not find Demucs stem model=%s input_stem=%s stem=%s debug=%s",
+        model_name,
+        input_stem,
+        stem_name,
+        debug_payload,
+    )
+    raise FileNotFoundError(
+        f"Could not find {stem_name}.wav or {stem_name}.mp3 after Demucs separation. "
+        f"Debug: {json.dumps(debug_payload)}"
+    )
 
-    raise FileNotFoundError(f"Could not find {stem_name} stem after Demucs separation")
 
-
-def _maybe_find_demucs_stem(output_path: Path, model_name: str, input_stem: str, stem_name: str) -> Path | None:
+def _maybe_find_demucs_stem(
+    output_path: Path,
+    model_name: str,
+    input_stem: str,
+    stem_name: str,
+    run_debug: dict | None = None,
+) -> Path | None:
     try:
-        return _find_demucs_stem(output_path, model_name, input_stem, stem_name)
+        return _find_demucs_stem(output_path, model_name, input_stem, stem_name, run_debug)
     except FileNotFoundError:
         return None
 
@@ -105,14 +344,21 @@ def preprocess_audio(input_file_path: str, output_file_path: str = None, target_
     Returns:
         Path to the preprocessed audio file.
     """
-    input_path = Path(input_file_path)
+    librosa = _load_librosa()
+    np = _load_numpy()
+    sf = _load_soundfile()
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
+        logger.error(
+            "Input audio file disappeared before selected-stem separation: path=%s",
+            input_file_path,
+        )
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     # Determine output file path
     if output_file_path is None:
         output_file_path = str(input_path.parent / f"{input_path.stem}_preprocessed{input_path.suffix}")
-    output_path = Path(output_file_path)
+    output_path = Path(storage.normalize_local_path(output_file_path))
 
     # Load the audio file
     try:
@@ -137,14 +383,14 @@ def preprocess_audio(input_file_path: str, output_file_path: str = None, target_
     except Exception as e:
         raise RuntimeError(f"Failed to save preprocessed audio: {str(e)}")
 
-    return str(output_path)
+    return output_path.as_posix()
 
 
 def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict[str, str]:
     """
     Separate audio sources using Demucs and return available instrument stems.
 
-    The primary path uses Demucs' 6-stem model. If that model is unavailable at
+    The primary path uses Demucs' configured model. If that model is unavailable at
     runtime, the fallback uses the standard vocals/accompaniment split and maps
     accompaniment to the app's broad "other" instrument track.
 
@@ -156,15 +402,20 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
     Returns:
         Dictionary mapping instrument type to separated stem path.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     # Determine output directory
     if output_dir is None:
         output_dir = tempfile.mkdtemp()
-    output_path = Path(output_dir)
+    output_path = Path(storage.normalize_local_path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "Starting multi-stem separation input=%s output_dir=%s",
+        storage.normalize_local_path(input_path),
+        storage.normalize_local_path(output_path),
+    )
 
     _ensure_demucs_available()
 
@@ -172,7 +423,7 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
     try:
         input_stem = input_path.stem
         try:
-            _run_demucs(input_path, output_path, DEMUCS_GUITAR_MODEL)
+            run_debug = _run_demucs(input_path, output_path, DEMUCS_GUITAR_MODEL)
             stems = {}
             for instrument_type, stem_name in DEMUCS_MULTI_STEMS.items():
                 stem_path = _maybe_find_demucs_stem(
@@ -180,9 +431,10 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
                     DEMUCS_GUITAR_MODEL,
                     input_stem,
                     stem_name,
+                    run_debug,
                 )
                 if stem_path:
-                    stems[instrument_type] = str(stem_path)
+                    stems[instrument_type] = storage.normalize_local_path(stem_path)
 
             if stems:
                 return stems
@@ -191,19 +443,20 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
         except Exception as e:
             primary_error = e
 
-        _run_demucs(input_path, output_path, DEMUCS_FALLBACK_MODEL, two_stems="vocals")
+        fallback_debug = _run_demucs(input_path, output_path, DEMUCS_FALLBACK_MODEL, two_stems="vocals")
         fallback_stems = {}
-        vocals_path = _maybe_find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, "vocals")
+        vocals_path = _maybe_find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, "vocals", fallback_debug)
         accompaniment_path = _maybe_find_demucs_stem(
             output_path,
             DEMUCS_FALLBACK_MODEL,
             input_stem,
             "accompaniment",
+            fallback_debug,
         )
         if vocals_path:
-            fallback_stems["vocals"] = str(vocals_path)
+            fallback_stems["vocals"] = storage.normalize_local_path(vocals_path)
         if accompaniment_path:
-            fallback_stems["other"] = str(accompaniment_path)
+            fallback_stems["other"] = storage.normalize_local_path(accompaniment_path)
         if fallback_stems:
             return fallback_stems
         raise FileNotFoundError("No stems found after Demucs fallback separation")
@@ -218,6 +471,57 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
         raise RuntimeError(f"Failed to separate audio sources: {str(e)}")
 
 
+def separate_selected_stem(
+    input_file_path: str,
+    selected_stem: str,
+    output_dir: str = None,
+) -> str:
+    """
+    Separate one Demucs MVP stem and return only that stem path.
+
+    Demucs may write a complementary ``no_<stem>`` file while separating, but
+    callers should persist only the requested output. This keeps the Railway MVP
+    storage and transcription cost focused on one selected target per job.
+    """
+    if selected_stem not in DEMUCS_MULTI_STEMS:
+        raise ValueError(
+            f"selected_stem must be one of: {', '.join(sorted(DEMUCS_MULTI_STEMS))}"
+        )
+
+    input_path = Path(storage.normalize_local_path(input_file_path))
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
+
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp()
+    output_path = Path(storage.normalize_local_path(output_dir))
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    _ensure_demucs_available()
+    input_stem = input_path.stem
+    try:
+        run_debug = _run_demucs(input_path, output_path, DEMUCS_GUITAR_MODEL, two_stems=selected_stem)
+        return storage.normalize_local_path(
+            _find_demucs_stem(output_path, DEMUCS_GUITAR_MODEL, input_stem, selected_stem, run_debug)
+        )
+    except Exception as primary_error:
+        if DEMUCS_FALLBACK_MODEL == DEMUCS_GUITAR_MODEL:
+            raise RuntimeError(
+                f"Failed to separate selected '{selected_stem}' stem: {primary_error}"
+            ) from primary_error
+
+        try:
+            fallback_debug = _run_demucs(input_path, output_path, DEMUCS_FALLBACK_MODEL, two_stems=selected_stem)
+            return storage.normalize_local_path(
+                _find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, selected_stem, fallback_debug)
+            )
+        except Exception as fallback_error:
+            raise RuntimeError(
+                f"Failed to separate selected '{selected_stem}' stem. "
+                f"Primary error: {primary_error}. Fallback error: {fallback_error}"
+            ) from fallback_error
+
+
 def separate_sources(input_file_path: str, output_dir: str = None) -> str:
     """
     Separate audio sources using Demucs and return the preferred analysis stem.
@@ -226,13 +530,98 @@ def separate_sources(input_file_path: str, output_dir: str = None) -> str:
     preferred, then other/accompaniment, then any available separated stem.
     """
     stems = separate_sources_multi(input_file_path, output_dir)
-    for preferred_stem in ("guitar", "other", "bass", "piano", "vocals", "drums"):
+    for preferred_stem in ("other", "bass", "vocals", "drums"):
         if preferred_stem in stems:
             return stems[preferred_stem]
     raise RuntimeError("Source separation completed without usable stems")
 
 
-def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
+def audio_debug_stats(input_file_path: str) -> dict:
+    librosa = _load_librosa()
+    np = _load_numpy()
+    input_path = Path(storage.normalize_local_path(input_file_path))
+    y, sr = librosa.load(input_path, sr=None, mono=True)
+    rms = float(np.sqrt(np.mean(np.square(y)))) if y.size else 0.0
+    peak = float(np.max(np.abs(y))) if y.size else 0.0
+    try:
+        onset_frames = librosa.onset.onset_detect(y=y, sr=sr, hop_length=512)
+        onset_count = int(len(onset_frames))
+    except Exception:
+        onset_count = 0
+    return {
+        "rms_loudness": rms,
+        "peak_amplitude": peak,
+        "detected_onset_count": onset_count,
+        "sample_rate": int(sr),
+    }
+
+
+def normalize_audio_volume(
+    input_file_path: str,
+    output_file_path: str = None,
+    *,
+    target_peak: float = 0.95,
+) -> str:
+    librosa = _load_librosa()
+    np = _load_numpy()
+    sf = _load_soundfile()
+    input_path = Path(storage.normalize_local_path(input_file_path))
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
+
+    if output_file_path is None:
+        output_file_path = str(input_path.parent / f"{input_path.stem}_normalized{input_path.suffix}")
+    output_path = Path(storage.normalize_local_path(output_file_path))
+
+    y, sr = librosa.load(input_path, sr=None, mono=True)
+    peak = float(np.max(np.abs(y))) if y.size else 0.0
+    if peak > 0:
+        y = y * min(target_peak / peak, 20.0)
+    sf.write(output_path, y, sr)
+    return output_path.as_posix()
+
+
+def note_confidence_stats(notes: list) -> dict:
+    confidences = [
+        float(note.get("confidence", 0))
+        for note in notes
+        if isinstance(note, dict)
+    ]
+    if not confidences:
+        return {"count": 0, "min": None, "max": None, "mean": None}
+    return {
+        "count": len(confidences),
+        "min": round(min(confidences), 4),
+        "max": round(max(confidences), 4),
+        "mean": round(sum(confidences) / len(confidences), 4),
+    }
+
+
+def _confidence_threshold_for_sensitivity(
+    sensitivity: str | None,
+    note_confidence_threshold: float | None,
+) -> float:
+    if note_confidence_threshold is not None:
+        return float(note_confidence_threshold)
+    if (sensitivity or "").lower() in {"high", "low_threshold", "retry"}:
+        return float(getattr(settings, "NOTE_CONFIDENCE_THRESHOLD_LOW", 0.2))
+    return float(getattr(settings, "NOTE_CONFIDENCE_THRESHOLD", 0.35))
+
+
+def _filter_note_confidence(notes: list, threshold: float) -> list:
+    return [
+        note for note in notes
+        if not isinstance(note, dict) or float(note.get("confidence", 1.0)) >= threshold
+    ]
+
+
+def detect_pitch(
+    input_file_path: str,
+    output_dir: str = None,
+    *,
+    sensitivity: str | None = None,
+    note_confidence_threshold: float | None = None,
+) -> dict:
     """
     Detect pitch (notes) from audio using Spotify Basic Pitch with CREPE as fallback.
 
@@ -244,15 +633,20 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
     Returns:
         Dictionary containing note data with onset, offset, pitch, velocity, and confidence.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     # Determine output directory
     if output_dir is None:
         output_dir = tempfile.mkdtemp()
-    output_path = Path(output_dir)
+    output_path = Path(storage.normalize_local_path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
+    sensitivity = sensitivity or getattr(settings, "NOTE_DETECTION_SENSITIVITY", "normal")
+    confidence_threshold = _confidence_threshold_for_sensitivity(
+        sensitivity,
+        note_confidence_threshold,
+    )
 
     # First, try Basic Pitch
     try:
@@ -261,10 +655,19 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
             from basic_pitch.inference import predict
 
             model_output, _midi_data, note_events = predict(str(input_path))
-            formatted_notes = _format_basic_pitch_note_events(note_events)
+            formatted_notes = _filter_note_confidence(
+                _format_basic_pitch_note_events(note_events),
+                confidence_threshold,
+            )
             return {
                 "notes": formatted_notes,
-                "model_outputs": {},
+                "model_outputs": {
+                    "backend": "basic_pitch.api",
+                    "sensitivity": sensitivity,
+                    "confidence_threshold": confidence_threshold,
+                    "raw_output_summary": str(type(model_output)),
+                },
+                "confidence_stats": note_confidence_stats(formatted_notes),
                 "total_notes_detected": len(formatted_notes)
             }
         except Exception as api_e:
@@ -297,11 +700,20 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
             if not note_event_files:
                 raise FileNotFoundError("Could not find Basic Pitch note-event CSV output")
 
-            formatted_notes = _load_basic_pitch_note_events_csv(note_event_files[0])
+            formatted_notes = _filter_note_confidence(
+                _load_basic_pitch_note_events_csv(note_event_files[0]),
+                confidence_threshold,
+            )
 
             return {
                 "notes": formatted_notes,
-                "model_outputs": {},
+                "model_outputs": {
+                    "backend": "basic_pitch.cli",
+                    "sensitivity": sensitivity,
+                    "confidence_threshold": confidence_threshold,
+                    "stdout": result.stdout[-1000:],
+                },
+                "confidence_stats": note_confidence_stats(formatted_notes),
                 "total_notes_detected": len(formatted_notes)
             }
         else:
@@ -310,10 +722,19 @@ def detect_pitch(input_file_path: str, output_dir: str = None) -> dict:
     except Exception as e:
         # If Basic Pitch fails, try CREPE
         try:
-            return _detect_pitch_crepe(input_file_path, output_dir)
+            return _detect_pitch_crepe(
+                input_file_path,
+                output_dir,
+                confidence_threshold=confidence_threshold,
+                sensitivity=sensitivity,
+            )
         except Exception as crepe_e:
             try:
-                return _detect_pitch_librosa(input_file_path)
+                return _detect_pitch_librosa(
+                    input_file_path,
+                    confidence_threshold=confidence_threshold,
+                    sensitivity=sensitivity,
+                )
             except Exception as librosa_e:
                 # If all pitch backends fail, raise an error
                 raise RuntimeError(
@@ -357,7 +778,13 @@ def _load_basic_pitch_note_events_csv(csv_path: Path) -> list:
     return _format_basic_pitch_note_events(events)
 
 
-def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
+def _detect_pitch_crepe(
+    input_file_path: str,
+    output_dir: str = None,
+    *,
+    confidence_threshold: float = 0.35,
+    sensitivity: str = "normal",
+) -> dict:
     """
     Detect pitch (notes) from audio using CREPE as a fallback.
 
@@ -369,20 +796,21 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
     Returns:
         Dictionary containing note data with onset, offset, pitch, velocity, and confidence.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     # Determine output directory
     if output_dir is None:
         output_dir = tempfile.mkdtemp()
-    output_path = Path(output_dir)
+    output_path = Path(storage.normalize_local_path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
 
     try:
         # Run CREPE to detect pitches
         # Using CREPE command line interface (if available) or Python API
         # We'll use the Python API for more control
+        librosa = _load_librosa()
         import crepe
         import numpy as np
         from scipy.signal import medfilt
@@ -390,16 +818,13 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
 
         # Load the audio file
         sr = 16000  # CREPE expects 16kHz audio
-        audio, _ = librosa.load(input_file_path, sr=sr, mono=True)
+        audio, _ = librosa.load(input_path, sr=sr, mono=True)
 
         # Run CREPE
         time, frequency, confidence, activation = crepe.predict(
             audio, sr, viterbi=True, step_size=10
         )
 
-        # Filter out low-confidence predictions
-        # We'll use a confidence threshold of 0.5
-        confidence_threshold = 0.5
         valid = confidence > confidence_threshold
         time = time[valid]
         frequency = frequency[valid]
@@ -462,7 +887,12 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
 
         return {
             "notes": notes,
-            "model_outputs": {},  # CREPE doesn't provide the same model outputs as Basic Pitch
+            "model_outputs": {
+                "backend": "crepe",
+                "sensitivity": sensitivity,
+                "confidence_threshold": confidence_threshold,
+            },
+            "confidence_stats": note_confidence_stats(notes),
             "total_notes_detected": len(notes)
         }
 
@@ -470,7 +900,12 @@ def _detect_pitch_crepe(input_file_path: str, output_dir: str = None) -> dict:
         raise RuntimeError(f"CREPE pitch detection failed: {str(e)}")
 
 
-def _detect_pitch_librosa(input_file_path: str) -> dict:
+def _detect_pitch_librosa(
+    input_file_path: str,
+    *,
+    confidence_threshold: float = 0.35,
+    sensitivity: str = "normal",
+) -> dict:
     """
     Detect monophonic pitch using librosa pYIN as a dependency-light fallback.
 
@@ -478,7 +913,10 @@ def _detect_pitch_librosa(input_file_path: str) -> dict:
     local development usable on Python versions where TensorFlow-backed pitch
     detectors are unavailable.
     """
-    y, sr = librosa.load(input_file_path, sr=22050, mono=True)
+    librosa = _load_librosa()
+    np = _load_numpy()
+    input_path = Path(storage.normalize_local_path(input_file_path))
+    y, sr = librosa.load(input_path, sr=22050, mono=True)
     if y.size == 0:
         raise RuntimeError("Audio file is empty")
 
@@ -494,7 +932,7 @@ def _detect_pitch_librosa(input_file_path: str) -> dict:
     )
 
     times = librosa.frames_to_time(np.arange(len(f0)), sr=sr, hop_length=256)
-    valid = voiced_flag & ~np.isnan(f0)
+    valid = voiced_flag & ~np.isnan(f0) & (voiced_prob >= confidence_threshold)
     if not np.any(valid):
         return {"notes": [], "model_outputs": {}, "total_notes_detected": 0}
 
@@ -551,7 +989,12 @@ def _detect_pitch_librosa(input_file_path: str) -> dict:
 
     return {
         "notes": notes,
-        "model_outputs": {"backend": "librosa.pyin"},
+        "model_outputs": {
+            "backend": "librosa.pyin",
+            "sensitivity": sensitivity,
+            "confidence_threshold": confidence_threshold,
+        },
+        "confidence_stats": note_confidence_stats(notes),
         "total_notes_detected": len(notes),
     }
 
@@ -566,11 +1009,13 @@ def detect_beat_and_tempo(input_file_path: str) -> dict:
     Returns:
         Dictionary containing tempo (BPM), confidence, and beat frames/times.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         # Load the audio file
         y, sr = librosa.load(input_path, sr=None)
 
@@ -618,11 +1063,13 @@ def detect_key(input_file_path: str) -> dict:
     Returns:
         Dictionary containing key information (key name, scale, confidence).
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         # Load the audio file
         y, sr = librosa.load(input_path, sr=None)
 
@@ -710,11 +1157,13 @@ def detect_rhythm(input_file_path: str) -> dict:
     Returns:
         Dictionary containing onset times, duration estimates, and rhythm parameters.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         # Load the audio file
         y, sr = librosa.load(input_path, sr=None)
 
@@ -776,11 +1225,13 @@ def analyze_drum_rhythm(input_file_path: str, grid_size: float = 0.125) -> dict:
     This intentionally avoids kit-piece classification. The output is a compact
     rhythm-lane representation for playback-synced UI rendering.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         y, sr = librosa.load(input_path, sr=None, mono=True)
         total_duration = float(librosa.get_duration(y=y, sr=sr))
 
@@ -856,11 +1307,13 @@ def detect_chords(input_file_path: str) -> dict:
     Returns:
         Dictionary containing chord sequence with timestamps.
     """
-    input_path = Path(input_file_path)
+    input_path = Path(storage.normalize_local_path(input_file_path))
     if not input_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {input_file_path}")
 
     try:
+        librosa = _load_librosa()
+        np = _load_numpy()
         # Load the audio file
         y, sr = librosa.load(input_path, sr=None)
 
