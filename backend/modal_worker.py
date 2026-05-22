@@ -687,10 +687,10 @@ def _normalize_job(job: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Job payload must be a JSON object")
     if not job.get("transcription_id"):
         raise ValueError("transcription_id is required")
-    if not job.get("original_audio_url"):
-        if str(job.get("job_type") or "process") == "process":
-            raise ValueError("original_audio_url is required")
-    if str(job.get("job_type") or "process") in {"generate_tab", "reprocess_track", "generate_lyrics"} and not job.get("separated_audio_url"):
+    job_type = str(job.get("job_type") or "process")
+    if job_type == "process" and not job.get("original_audio_url"):
+        raise ValueError("original_audio_url is required")
+    if job_type in {"generate_tab", "reprocess_track", "generate_lyrics"} and not job.get("separated_audio_url"):
         raise ValueError("separated_audio_url is required for this Modal job")
 
     selected_stem = str(job.get("selected_stem") or job.get("demucs_stem") or "other").strip().lower()
@@ -826,6 +826,8 @@ def _process_job(job: dict[str, Any]) -> dict[str, Any]:
             selected_stem_path = _run_demucs(input_path, output_dir, selected_stem)
             upload_result = _upload_stem(selected_stem_path, transcription_id, selected_stem)
         else:
+            if job_type == "generate_tab":
+                logger.info("tab_generation_audio_source=%s", "separated_audio_url")
             selected_stem_path = temp_path / f"selected_{transcription_id}{_download_suffix(str(job['separated_audio_url']))}"
             _download_file(str(job["separated_audio_url"]), selected_stem_path)
 

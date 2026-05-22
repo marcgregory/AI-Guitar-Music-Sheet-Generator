@@ -82,6 +82,23 @@ def test_tablature_supports_standard_bass_tuning():
     assert len(ascii_tab.splitlines()) == 4
 
 
+def test_has_structured_tablature_requires_non_empty_tablature_list():
+    valid_payload = {
+        "instrument": "guitar",
+        "tablature": [{"string": 1, "fret": 3, "onset": 0.0, "offset": 0.5}],
+    }
+
+    assert tablature.has_structured_tablature(valid_payload) is True
+    assert tablature.has_structured_tablature(json.dumps(valid_payload)) is True
+    assert tablature.has_structured_tablature(None) is False
+    assert tablature.has_structured_tablature("{bad json") is False
+    assert tablature.has_structured_tablature([{"string": 1, "fret": 3}]) is False
+    assert tablature.has_structured_tablature({"tracks": [{"tablature": []}]}) is False
+    assert tablature.has_structured_tablature({"tablature": "not-a-list"}) is False
+    assert tablature.has_structured_tablature({"tablature": []}) is False
+    assert tablature.has_structured_tablature({"tablature": [{}]}) is False
+
+
 def test_midi_generation_accepts_enhanced_pitch_info_shape(tmp_path):
     notes_data = {
         "pitch_info": [
@@ -861,7 +878,15 @@ def test_process_audio_transcription_persists_selected_other_stem_and_analyzes_a
                             with patch("app.tasks.midi.save_midi_from_transcription", return_value=str(tmp_path / "out.mid")):
                                 with patch("app.tasks.midi.midi_to_musicxml", return_value="<score />"):
                                     with patch("app.tasks.tablature.save_tablature_from_transcription", return_value=str(tmp_path / "tab.json")):
-                                        with patch("app.tasks.tablature.notes_to_tablature", return_value={"tablature": []}):
+                                        with patch(
+                                            "app.tasks.tablature.notes_to_tablature",
+                                            return_value={
+                                                "instrument": "guitar",
+                                                "tablature": [
+                                                    {"string": 1, "fret": 3, "onset": 0.0, "offset": 0.5}
+                                                ],
+                                            },
+                                        ):
                                             with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
                                                 with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
                                                     with patch("app.tasks.audio.detect_rhythm", return_value={"total_duration": 1.0}):
@@ -1016,7 +1041,15 @@ def test_generate_tab_from_separated_stem_runs_pitch_after_user_confirmation(tmp
                                     with patch("app.tasks.midi.save_midi_from_transcription", return_value=str(tmp_path / "out.mid")):
                                         with patch("app.tasks.midi.midi_to_musicxml", return_value="<score />"):
                                             with patch("app.tasks.tablature.save_tablature_from_transcription", return_value=str(tmp_path / "tab.json")):
-                                                with patch("app.tasks.tablature.notes_to_tablature", return_value={"tablature": []}):
+                                                with patch(
+                                                    "app.tasks.tablature.notes_to_tablature",
+                                                    return_value={
+                                                        "instrument": "guitar",
+                                                        "tablature": [
+                                                            {"string": 1, "fret": 3, "onset": 0.0, "offset": 0.5}
+                                                        ],
+                                                    },
+                                                ):
                                                     with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
                                                         with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
                                                             with patch("app.tasks.audio.detect_rhythm", return_value={"total_duration": 1.0}):
@@ -1036,6 +1069,129 @@ def test_generate_tab_from_separated_stem_runs_pitch_after_user_confirmation(tmp
         assert refreshed.can_generate_score is True
         assert refreshed.tablature_data
         assert refreshed.audio_file_path is None
+    finally:
+        session.close()
+
+
+def test_generate_tab_from_separated_stem_warns_when_structured_tab_missing(tmp_path):
+    session = create_test_session()
+    try:
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"other")
+        transcription = models.Transcription(
+            title="Missing structured tab",
+            separated_audio_file_path=str(stem_path),
+            selected_stem="other",
+            user_id=1,
+            is_processed=True,
+            processing_status="stem_ready",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+
+        def fake_generate_outputs(transcription, db_session, **_kwargs):
+            transcription.notes_data = json.dumps({
+                "notes": [
+                    {"onset": 0.0, "offset": 0.5, "pitch": 64, "velocity": 90}
+                ]
+            })
+            transcription.tablature_data = json.dumps({"tablature": []})
+            transcription.processing_status = "completed"
+            transcription.can_generate_score = True
+            db_session.add(transcription)
+            db_session.commit()
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.audio_processing_mode", return_value="local"):
+                with patch("app.tasks.generate_tab_outputs_for_transcription", side_effect=fake_generate_outputs):
+                    result = generate_tab_from_separated_stem.run(transcription_id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        assert result["status"] == "stem_ready"
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.tab_generation_status == "completed_with_warning"
+        assert refreshed.can_generate_score is False
+        assert "structured tablature" in refreshed.processing_error
+    finally:
+        session.close()
+
+
+def test_generate_tab_from_separated_stem_does_not_fall_back_to_original_audio(tmp_path):
+    session = create_test_session()
+    try:
+        upload_path = tmp_path / "original.wav"
+        upload_path.write_bytes(b"original")
+        transcription = models.Transcription(
+            title="No separated stem",
+            audio_file_path=str(upload_path),
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/original.wav",
+            selected_stem="bass",
+            user_id=1,
+            is_processed=True,
+            processing_status="stem_ready",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.audio_processing_mode", return_value="local"):
+                with pytest.raises(ValueError, match="Separated stem audio is required before generating tabs."):
+                    generate_tab_from_separated_stem.run(transcription_id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        assert refreshed.tab_generation_status == "failed"
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.processing_error == "Separated stem audio is required before generating tabs."
+    finally:
+        session.close()
+
+
+def test_ensure_local_separated_stem_prefers_separated_url_over_local_and_original(tmp_path):
+    session = create_test_session()
+    try:
+        original_path = tmp_path / "original.wav"
+        old_stem_path = tmp_path / "old-bass.wav"
+        original_path.write_bytes(b"original")
+        old_stem_path.write_bytes(b"old stem")
+        transcription = models.Transcription(
+            title="URL first source",
+            audio_file_path=str(original_path),
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/original.wav",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            separated_audio_file_path=str(old_stem_path),
+            selected_stem="bass",
+            user_id=1,
+            is_processed=True,
+            processing_status="stem_ready",
+        )
+        session.add(transcription)
+        session.commit()
+
+        def fake_urlretrieve(url, destination):
+            Path(destination).write_bytes(b"downloaded stem")
+            return str(destination), None
+
+        with patch("app.tasks.settings") as settings_mock:
+            settings_mock.UPLOAD_DIR = str(tmp_path / "uploads")
+            with patch("app.tasks.urllib.request.urlretrieve", side_effect=fake_urlretrieve) as download_mock:
+                from app.tasks import ensure_local_separated_stem
+
+                resolved = ensure_local_separated_stem(transcription, "bass")
+
+        download_mock.assert_called_once()
+        assert download_mock.call_args.args[0] == transcription.separated_audio_url
+        assert resolved != str(old_stem_path)
+        assert Path(resolved).read_bytes() == b"downloaded stem"
     finally:
         session.close()
 

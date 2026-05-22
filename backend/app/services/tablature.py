@@ -10,6 +10,63 @@ STANDARD_GUITAR_TUNING = [40, 45, 50, 55, 59, 64]
 STANDARD_BASS_TUNING = [28, 33, 38, 43]
 
 
+def _parse_jsonish(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value
+
+
+def has_structured_tablature(tablature_data: Any) -> bool:
+    """Return True only for non-empty structured TAB payloads."""
+    parsed = _parse_jsonish(tablature_data)
+    if not isinstance(parsed, dict):
+        return False
+
+    tablature = parsed.get("tablature")
+    if not isinstance(tablature, list):
+        return False
+
+    return any(bool(event) for event in tablature)
+
+
+def has_note_events(notes_data: Any) -> bool:
+    parsed = _parse_jsonish(notes_data)
+    if isinstance(parsed, list):
+        return bool(parsed)
+    if isinstance(parsed, dict):
+        notes = parsed.get("notes")
+        pitch_info = parsed.get("pitch_info")
+        return (
+            isinstance(notes, list) and bool(notes)
+        ) or (
+            isinstance(pitch_info, list) and bool(pitch_info)
+        )
+    return False
+
+
+def repair_structured_tablature(
+    selected_stem: str | None,
+    notes_data: Any,
+    tablature_data: Any,
+) -> Dict[str, Any] | None:
+    """Build structured TAB from notes only when stored TAB is absent or invalid."""
+    if has_structured_tablature(tablature_data):
+        return None
+
+    stem = (selected_stem or "other").strip().lower()
+    if stem not in {"bass", "other"} or not has_note_events(notes_data):
+        return None
+
+    instrument_type = "bass" if stem == "bass" else "guitar"
+    repaired = notes_to_tablature(notes_data, instrument_type=instrument_type)
+    if not has_structured_tablature(repaired):
+        return None
+    return repaired
+
+
 def get_standard_tuning(instrument_type: str = "guitar") -> List[int]:
     """Return standard open-string MIDI notes for supported tab instruments."""
     normalized_instrument = (instrument_type or "guitar").lower()

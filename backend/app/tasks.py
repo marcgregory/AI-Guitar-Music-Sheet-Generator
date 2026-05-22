@@ -465,22 +465,62 @@ def sync_selected_track_to_transcription(
 def ensure_local_separated_stem(
     transcription: models.Transcription,
     selected_stem: str,
+    *,
+    log_source: bool = False,
 ) -> str:
-    if transcription.separated_audio_file_path:
-        local_path = Path(storage.normalize_local_path(transcription.separated_audio_file_path))
-        if local_path.exists() and local_path.is_file():
-            return storage.normalize_local_path(local_path)
+    source_type = "missing"
+    try:
+        if transcription.separated_audio_url:
+            source_type = "separated_audio_url"
+            uploads_dir = Path(storage.normalize_local_path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"))
+            stem_upload_dir = uploads_dir / "separated" / f"transcription_{transcription.id}"
+            stem_upload_dir.mkdir(parents=True, exist_ok=True)
+            destination_path = stem_upload_dir / f"{selected_stem}.wav"
+            urllib.request.urlretrieve(transcription.separated_audio_url, destination_path)
+            transcription.separated_audio_file_path = storage.normalize_local_path(destination_path)
+            return transcription.separated_audio_file_path
 
-    if not transcription.separated_audio_url:
-        raise FileNotFoundError("Separated stem is missing. Run stem separation before generating tabs.")
+        if transcription.separated_audio_file_path:
+            local_path = Path(storage.normalize_local_path(transcription.separated_audio_file_path))
+            if local_path.exists() and local_path.is_file():
+                source_type = "separated_audio_file_path"
+                return storage.normalize_local_path(local_path)
 
-    uploads_dir = Path(storage.normalize_local_path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"))
-    stem_upload_dir = uploads_dir / "separated" / f"transcription_{transcription.id}"
-    stem_upload_dir.mkdir(parents=True, exist_ok=True)
-    destination_path = stem_upload_dir / f"{selected_stem}.wav"
-    urllib.request.urlretrieve(transcription.separated_audio_url, destination_path)
-    transcription.separated_audio_file_path = storage.normalize_local_path(destination_path)
-    return transcription.separated_audio_file_path
+        raise FileNotFoundError("Separated stem audio is required before generating tabs.")
+    finally:
+        if log_source:
+            logger.info("tab_generation_audio_source=%s", source_type)
+
+
+def mark_missing_structured_tab_warning(transcription) -> None:
+    message = (
+        "Tab generation completed with note events, but structured tablature "
+        "could not be assembled."
+    )
+    set_manual_generation_status(transcription, "completed_with_warning")
+    transcription.processing_status = "stem_ready"
+    transcription.warning_message = message
+    transcription.processing_error = message
+    transcription.can_generate_score = False
+
+
+def cleanup_original_cloudinary_audio_after_tab_completion(
+    transcription,
+    db_session: Session,
+) -> None:
+    selected_stem = (getattr(transcription, "selected_stem", None) or "other").strip().lower()
+    if selected_stem not in {"bass", "other"}:
+        return
+    if not tablature.has_structured_tablature(getattr(transcription, "tablature_data", None)):
+        return
+    public_id = getattr(transcription, "original_audio_public_id", None)
+    if public_id:
+        storage.delete_cloudinary_asset(public_id, resource_type="video")
+    if getattr(transcription, "original_audio_url", None) or public_id:
+        transcription.original_audio_url = None
+        transcription.original_audio_public_id = None
+        db_session.add(transcription)
+        db_session.commit()
 
 
 def generate_tab_outputs_for_transcription(
@@ -496,7 +536,11 @@ def generate_tab_outputs_for_transcription(
         raise ValueError("Vocal stems are playback-only in this MVP.")
 
     analysis_instrument = STEM_TO_ANALYSIS_INSTRUMENT[selected_stem]
-    separated_path = ensure_local_separated_stem(transcription, selected_stem)
+    separated_path = ensure_local_separated_stem(
+        transcription,
+        selected_stem,
+        log_source=True,
+    )
     track = db_session.query(models.InstrumentTrack).filter(
         models.InstrumentTrack.transcription_id == transcription.id,
         models.InstrumentTrack.instrument_type == analysis_instrument,
@@ -553,6 +597,11 @@ def generate_tab_outputs_for_transcription(
     sync_selected_track_to_transcription(transcription, track, db_session)
     db_session.refresh(transcription)
     generate_derived_outputs(transcription, db_session)
+    db_session.refresh(transcription)
+    if has_note_events(transcription.notes_data) and not tablature.has_structured_tablature(transcription.tablature_data):
+        mark_missing_structured_tab_warning(transcription)
+        db_session.add(transcription)
+        db_session.commit()
 
 
 def generate_lyrics_output_for_transcription(
@@ -801,12 +850,16 @@ def generate_derived_outputs(transcription, db_session: Session) -> None:
             print(f"Failed to generate MIDI for transcription {transcription.id}: {str(midi_e)}")
 
         try:
-            tablature.save_tablature_from_transcription(
-                transcription.notes_data,
-                transcription.id,
-                settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"
+            instrument_type = (
+                "bass"
+                if (getattr(transcription, "selected_stem", None) or "other").strip().lower() == "bass"
+                else "guitar"
             )
-            transcription.tablature_data = json.dumps(tablature.notes_to_tablature(transcription.notes_data))
+            tab_payload = tablature.notes_to_tablature(
+                transcription.notes_data,
+                instrument_type=instrument_type,
+            )
+            transcription.tablature_data = json.dumps(tab_payload)
             transcription.tab_file_path = storage.normalize_local_path(
                 save_ascii_tab_artifact(
                     transcription,
@@ -1709,8 +1762,13 @@ def generate_tab_from_separated_stem(
         selected_stem = (transcription.selected_stem or "other").strip().lower()
         if selected_stem == "vocals":
             raise ValueError("Vocal stems are playback-only in this MVP.")
+        if selected_stem in {"bass", "other"} and not (
+            transcription.separated_audio_url or transcription.separated_audio_file_path
+        ):
+            logger.info("tab_generation_audio_source=%s", "missing")
+            raise ValueError("Separated stem audio is required before generating tabs.")
         if not stem_playback_available(transcription):
-            raise ValueError("Separated stem is missing. Run stem separation before generating tabs.")
+            raise ValueError("Separated stem audio is required before generating tabs.")
 
         current_generation_status = (
             transcription.rhythm_generation_status
@@ -1742,7 +1800,17 @@ def generate_tab_from_separated_stem(
             ),
         )
         db_session.refresh(transcription)
-        set_manual_generation_status(transcription, "completed")
+        if selected_stem in {"bass", "other"}:
+            if tablature.has_structured_tablature(transcription.tablature_data):
+                set_manual_generation_status(transcription, "completed")
+                transcription.processing_error = None
+                cleanup_original_cloudinary_audio_after_tab_completion(transcription, db_session)
+            elif has_note_events(transcription.notes_data):
+                mark_missing_structured_tab_warning(transcription)
+            else:
+                set_manual_generation_status(transcription, "completed_with_warning")
+        else:
+            set_manual_generation_status(transcription, "completed")
         transcription.celery_task_id = None
         db_session.add(transcription)
         db_session.commit()
