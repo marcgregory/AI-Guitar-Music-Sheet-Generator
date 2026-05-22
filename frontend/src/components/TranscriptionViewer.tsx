@@ -103,7 +103,11 @@ const parseLyricsData = (
   if (!value) return null;
   try {
     const parsed = JSON.parse(value) as unknown;
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+    ) {
       return parsed as LyricsData;
     }
   } catch {
@@ -549,8 +553,7 @@ const inferDrumLane = (
   const sixteenthInBar = slotIndex % 16;
   const nearMeasureStart = sixteenthInBar <= 1 || sixteenthInBar >= 15;
   const nearBackbeat =
-    Math.abs(sixteenthInBar - 4) <= 1 ||
-    Math.abs(sixteenthInBar - 12) <= 1;
+    Math.abs(sixteenthInBar - 4) <= 1 || Math.abs(sixteenthInBar - 12) <= 1;
   const sparsePattern = slotCount <= 12;
 
   if (nearMeasureStart && intensity >= 0.82) return "cymbal";
@@ -631,7 +634,9 @@ const buildDrumTabGrid = (
   };
 };
 
-const slotsPerDrumMeasure = (subdivision: DrumTabGrid["subdivision"]): number => {
+const slotsPerDrumMeasure = (
+  subdivision: DrumTabGrid["subdivision"],
+): number => {
   if (subdivision === "1/4") return 4;
   if (subdivision === "1/8") return 8;
   return 16;
@@ -793,6 +798,7 @@ const buildScoreNotes = (
   const tabNotes = extractTabNotes(tablatureData);
   const noteEvents = extractNoteEvents(notesData);
   const tuning = tuningFromTablature(tablatureData);
+  console.log({ tabNotes, noteEvents, tuning }, "logging line issue");
 
   if (tabNotes.length === 0) {
     return noteEvents
@@ -1784,7 +1790,11 @@ const DrumTabNotation = ({
     title && title.length > 62 ? `${title.slice(0, 59)}...` : title;
 
   return (
-    <div className="drum-tab-view" role="img" aria-label={`${visibleTitle} drum rhythm`}>
+    <div
+      className="drum-tab-view"
+      role="img"
+      aria-label={`${visibleTitle} drum rhythm`}
+    >
       <div className="drum-tab-view-header">
         <div>
           <span className="meta-label">Drum notation</span>
@@ -2314,10 +2324,7 @@ const TranscriptionViewer: React.FC = () => {
   }, []);
 
   const startGenerateTabPolling = useCallback(
-    (
-      transcriptionIdValue: number,
-      mode: "tabs" | "rhythm" | "lyrics",
-    ) => {
+    (transcriptionIdValue: number, mode: "tabs" | "rhythm" | "lyrics") => {
       if (!token) return;
       stopGenerateTabPolling("restart generation polling");
       console.log("polling enabled/disabled state", {
@@ -2333,10 +2340,7 @@ const TranscriptionViewer: React.FC = () => {
           );
           const fetchedStatus = result.processing_status;
           const fetchedLyricsStatus = lyricStatusOf(result);
-          const fetchedGenerationStatus = generationStatusForMode(
-            result,
-            mode,
-          );
+          const fetchedGenerationStatus = generationStatusForMode(result, mode);
           const isLyrics = mode === "lyrics";
           console.log("latest fetched transcription status", {
             transcriptionId: transcriptionIdValue,
@@ -2768,7 +2772,9 @@ const TranscriptionViewer: React.FC = () => {
     const activeKey = activeSegment
       ? lyricSegmentKey(activeSegment, activeLyricsSegmentIndex)
       : null;
-    const activeElement = activeKey ? lyricSegmentRefs.current[activeKey] : null;
+    const activeElement = activeKey
+      ? lyricSegmentRefs.current[activeKey]
+      : null;
     activeElement?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [activeLyricsSegmentIndex, lyricsSegments]);
 
@@ -2978,7 +2984,9 @@ const TranscriptionViewer: React.FC = () => {
     });
     stopGenerateTabPolling("new generate tabs request");
     setGenerationStatus(nextGenerationStatus);
-    setGenerationMessage(isRhythm ? "Rhythm generation started." : "Tab generation started.");
+    setGenerationMessage(
+      isRhythm ? "Rhythm generation started." : "Tab generation started.",
+    );
     setIsGeneratingTab(true);
     isGeneratingTabRef.current = true;
     setError(null);
@@ -2997,8 +3005,9 @@ const TranscriptionViewer: React.FC = () => {
               is_processed: false,
               processing_error: null,
               processing_status: "processing",
-              tab_generation_status:
-                isRhythm ? current.tab_generation_status : "processing",
+              tab_generation_status: isRhythm
+                ? current.tab_generation_status
+                : "processing",
               rhythm_generation_status: isRhythm
                 ? "processing"
                 : current.rhythm_generation_status,
@@ -3010,10 +3019,7 @@ const TranscriptionViewer: React.FC = () => {
         status: "processing",
         message: response.message ?? "Tab generation started.",
       });
-      startGenerateTabPolling(
-        transcription.id,
-        isRhythm ? "rhythm" : "tabs",
-      );
+      startGenerateTabPolling(transcription.id, isRhythm ? "rhythm" : "tabs");
     } catch (err: unknown) {
       setError(
         errorMessageOf(
@@ -3043,7 +3049,10 @@ const TranscriptionViewer: React.FC = () => {
     setError(null);
 
     try {
-      const response = await audioService.generateLyrics(transcription.id, token);
+      const response = await audioService.generateLyrics(
+        transcription.id,
+        token,
+      );
       setGenerationMessage(response.message ?? "Lyrics generation started.");
       setTranscription((current) =>
         current
@@ -3168,7 +3177,8 @@ const TranscriptionViewer: React.FC = () => {
   );
   const selectedTrackIsDrums =
     scoreSource?.instrumentType.toLowerCase() === "drums";
-  const selectedTrackHasDrumHits = extractDrumHits(scoreSource?.notesData).length > 0;
+  const selectedTrackHasDrumHits =
+    extractDrumHits(scoreSource?.notesData).length > 0;
   const selectedTrackReprocessSupported = Boolean(
     selectedTrack &&
     ["guitar", "bass", "drums", "vocals"].includes(
@@ -3222,8 +3232,7 @@ const TranscriptionViewer: React.FC = () => {
   const displayedAsciiTab = asciiTab || globalAsciiTab;
   const canShowTabView = displayedAsciiTab.length > 0;
   const activeScoreViewMode = canShowTabView ? scoreViewMode : "score";
-  const scoreControlsAvailable =
-    canGenerateScore && !selectedTrackIsDrums;
+  const scoreControlsAvailable = canGenerateScore && !selectedTrackIsDrums;
   const isDemoTranscription = Boolean(transcription.is_demo);
   const backendTabsGenerating = isTabsGenerating(transcription);
   const backendRhythmGenerating = isRhythmGenerating(transcription);
@@ -3291,19 +3300,17 @@ const TranscriptionViewer: React.FC = () => {
     : transcription.selected_stem === "drums"
       ? "Drum stem is ready. Listen first, then generate rhythm if the stem sounds useful."
       : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";
-  const displayedProcessingStatus =
-    isGeneratingTabsView
-      ? "processing"
-      : transcription.processing_status === "completed_with_warning"
+  const displayedProcessingStatus = isGeneratingTabsView
+    ? "processing"
+    : transcription.processing_status === "completed_with_warning"
       ? "completed_with_warning"
       : transcription.processing_status === "failed" ||
           scoreSource?.processingStatus === "failed"
         ? "failed"
         : (scoreSource?.processingStatus ?? "completed");
-  const displayedStatusLabel =
-    isGeneratingTabsView
-      ? generationStatus || generatingTitle
-      : transcription.processing_status === "completed_with_warning"
+  const displayedStatusLabel = isGeneratingTabsView
+    ? generationStatus || generatingTitle
+    : transcription.processing_status === "completed_with_warning"
       ? "Stem Ready"
       : statusLabel(displayedProcessingStatus);
   const playbackProgress =
@@ -3751,7 +3758,9 @@ const TranscriptionViewer: React.FC = () => {
           )}
 
           {vocalLyricsAvailable &&
-            (lyricsData || lyricsProcessing || lyricsGenerationStatus === "failed") && (
+            (lyricsData ||
+              lyricsProcessing ||
+              lyricsGenerationStatus === "failed") && (
               <section
                 className="premium-info-section premium-lyrics-section"
                 aria-labelledby="lyrics-heading"
@@ -3759,7 +3768,9 @@ const TranscriptionViewer: React.FC = () => {
                 <h2 id="lyrics-heading">Lyrics</h2>
                 <div className="premium-lyrics-panel">
                   {lyricsProcessing ? (
-                    <p className="premium-lyrics-status">Generating lyrics...</p>
+                    <p className="premium-lyrics-status">
+                      Generating lyrics...
+                    </p>
                   ) : lyricsGenerationStatus === "failed" ? (
                     <div className="alert alert-error">
                       {transcription.processing_error ||
@@ -3793,7 +3804,8 @@ const TranscriptionViewer: React.FC = () => {
                                   : ""}
                               </span>
                               <strong>
-                                {segment.text?.trim() || "Untitled lyric segment"}
+                                {segment.text?.trim() ||
+                                  "Untitled lyric segment"}
                               </strong>
                             </button>
                           );
@@ -3802,7 +3814,9 @@ const TranscriptionViewer: React.FC = () => {
                       {lyricsData?.text && (
                         <details className="premium-lyrics-transcript">
                           <summary>View full transcript</summary>
-                          <pre className="premium-lyrics-text">{lyricsData.text}</pre>
+                          <pre className="premium-lyrics-text">
+                            {lyricsData.text}
+                          </pre>
                         </details>
                       )}
                     </>
@@ -4063,21 +4077,21 @@ const TranscriptionViewer: React.FC = () => {
                         {isGeneratingTabsView
                           ? generationStatus || generatingTitle
                           : selectedStemReady
-                          ? "Stem playback is ready for review."
-                          : transcriptionMetadata.capabilities.playback
-                            ? "Stem playback is available, but no reliable notes were detected for this stem."
-                            : "No note events detected for this stem."}
+                            ? "Stem playback is ready for review."
+                            : transcriptionMetadata.capabilities.playback
+                              ? "Stem playback is available, but no reliable notes were detected for this stem."
+                              : "No note events detected for this stem."}
                       </strong>
                       <p>
                         {isGeneratingTabsView
-                        ? generatingDetails
-                        : selectedStemReady
-                          ? stemReadyMessage
-                          : transcription.selected_stem === "drums"
-                            ? "This stem currently supports rhythm playback only when drum hits are detected."
-                            : transcription.selected_stem === "vocals"
-                              ? "Vocal stem playback is available. Vocal notation is planned for a future release."
-                              : "No note events were detected for the selected stem."}
+                          ? generatingDetails
+                          : selectedStemReady
+                            ? stemReadyMessage
+                            : transcription.selected_stem === "drums"
+                              ? "This stem currently supports rhythm playback only when drum hits are detected."
+                              : transcription.selected_stem === "vocals"
+                                ? "Vocal stem playback is available. Vocal notation is planned for a future release."
+                                : "No note events were detected for the selected stem."}
                       </p>
                       <div className="premium-inline-empty-actions">
                         {generateTabAllowed && (
@@ -4106,17 +4120,17 @@ const TranscriptionViewer: React.FC = () => {
                         {!isDemoTranscription &&
                           !selectedStemReady &&
                           !isGeneratingTabsView && (
-                          <button
-                            type="button"
-                            className="button-primary"
-                            onClick={handleRetryTranscription}
-                            disabled={isRetryingTranscription}
-                          >
-                            {isRetryingTranscription
-                              ? "Retrying..."
-                              : "Retry with higher sensitivity"}
-                          </button>
-                        )}
+                            <button
+                              type="button"
+                              className="button-primary"
+                              onClick={handleRetryTranscription}
+                              disabled={isRetryingTranscription}
+                            >
+                              {isRetryingTranscription
+                                ? "Retrying..."
+                                : "Retry with higher sensitivity"}
+                            </button>
+                          )}
                         {!isDemoTranscription && (
                           <button
                             type="button"
