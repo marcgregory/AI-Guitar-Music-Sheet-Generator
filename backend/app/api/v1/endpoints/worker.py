@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from .... import core, db, models
 from ....services import storage, tablature
+from ....services.audio_source_resolver import resolve_generate_tab_audio_source
 from .. import schemas
 from .audio import _promote_oldest_queued_transcription, _trigger_next_queued_transcription
 
@@ -144,18 +145,34 @@ def _build_worker_job(transcription: models.Transcription, request: Request) -> 
     selected_stem = transcription.selected_stem or "other"
     if selected_stem not in VALID_SELECTED_STEMS:
         selected_stem = "other"
+    job_type = transcription.modal_job_type or "process"
+    original_audio_url = transcription.original_audio_url if job_type == "process" else None
+    separated_audio_url = transcription.separated_audio_url
+    if job_type == "generate_tab" and selected_stem in {"bass", "other"}:
+        resolved_source = resolve_generate_tab_audio_source(transcription)
+        if resolved_source != transcription.separated_audio_url:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="separated_audio_url is required for Modal tab generation.",
+            )
+        separated_audio_url = resolved_source
+    elif job_type == "generate_tab" and not separated_audio_url:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="separated_audio_url is required for Modal tab generation.",
+        )
 
     base_url = str(request.base_url).rstrip("/")
     return schemas.WorkerJob(
         transcription_id=transcription.id,
-        job_type=transcription.modal_job_type or "process",
+        job_type=job_type,
         modal_request_id=transcription.modal_request_id,
         selected_stem=selected_stem,
         demucs_stem=selected_stem,
-        original_audio_url=transcription.original_audio_url,
-        separated_audio_url=transcription.separated_audio_url,
+        original_audio_url=original_audio_url,
+        separated_audio_url=separated_audio_url,
         source_type=transcription.source_type,
-        source_url=transcription.source_url or transcription.youtube_url,
+        source_url=(transcription.source_url or transcription.youtube_url) if job_type == "process" else None,
         normalized_source_id=transcription.normalized_source_id,
         audio_hash=transcription.audio_hash,
         callback_complete_url=(
@@ -286,6 +303,9 @@ async def complete_worker_job(
     transcription.can_play_stem = bool(
         transcription.separated_audio_url or transcription.separated_audio_file_path
     )
+    if transcription.separated_audio_url or transcription.separated_audio_file_path:
+        transcription.audio_file_path = None
+        transcription.preprocessed_audio_file_path = None
     if (
         transcription.notes_data is None
         and selected_stem in {"bass", "other"}

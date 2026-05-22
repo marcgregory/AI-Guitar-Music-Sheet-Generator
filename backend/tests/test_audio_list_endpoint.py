@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 from fastapi import BackgroundTasks
 from sqlalchemy import create_engine
@@ -11,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import db, models, tasks
+from app.api.v1.endpoints import audio as audio_endpoint
 from app.core import config
 from app.core.security import create_access_token, get_password_hash
 from app.services import storage
@@ -1903,6 +1905,48 @@ def test_generate_tab_endpoint_requires_separated_stem_for_bass_other():
     assert response.status_code == 409
     assert response.json()["detail"] == "Separated stem audio is required before generating tabs."
     start_mock.assert_not_called()
+
+
+def test_modal_generate_tab_payload_uses_only_separated_url():
+    transcription = models.Transcription(
+        id=204,
+        title="Modal tab strict source",
+        selected_stem="other",
+        audio_file_path="/tmp/transcriptions/204/original.mp3",
+        preprocessed_audio_file_path="/tmp/transcriptions/204/preprocessed.wav",
+        original_audio_url="https://res.cloudinary.com/demo/video/upload/original.mp3",
+        separated_audio_url="https://res.cloudinary.com/demo/video/upload/selected-stem/other_nqdpu9.wav",
+        separated_audio_file_path="/tmp/transcriptions/204/other.wav",
+        source_url="https://example.test/original",
+        modal_request_id="request-204",
+    )
+
+    payload = audio_endpoint._build_worker_payload_for_modal(
+        transcription,
+        job_type="generate_tab",
+        detection_sensitivity="high",
+    )
+
+    assert payload["separated_audio_url"] == transcription.separated_audio_url
+    assert payload["original_audio_url"] is None
+    assert payload["source_url"] is None
+    assert payload["detection_sensitivity"] == "high"
+
+
+def test_modal_generate_tab_payload_requires_separated_url_not_local_path():
+    transcription = models.Transcription(
+        id=205,
+        title="Modal local-only tab source",
+        selected_stem="bass",
+        separated_audio_file_path="/tmp/transcriptions/205/bass.wav",
+        original_audio_url="https://res.cloudinary.com/demo/video/upload/original.mp3",
+    )
+
+    with pytest.raises(ValueError, match="separated_audio_url is required for Modal tab generation."):
+        audio_endpoint._build_worker_payload_for_modal(
+            transcription,
+            job_type="generate_tab",
+        )
 
 
 def test_generate_tab_endpoint_queues_drum_rhythm_generation():

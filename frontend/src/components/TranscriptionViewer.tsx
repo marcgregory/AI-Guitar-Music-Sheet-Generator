@@ -2478,9 +2478,6 @@ const TranscriptionViewer: React.FC = () => {
       confidenceNotes: null,
       hasStemAudio:
         hasUsableBlob(transcription.separated_audio_url) ||
-        hasUsableBlob(transcription.original_audio_url) ||
-        hasUsableBlob(transcription.audio_file_path) ||
-        hasUsableBlob(transcription.preprocessed_audio_file_path) ||
         hasUsableBlob(transcription.separated_audio_file_path),
       isGlobal: true,
     };
@@ -2503,15 +2500,10 @@ const TranscriptionViewer: React.FC = () => {
           transcription.separated_audio_url,
         );
       }
-      return directTrackAudio || transcription.separated_audio_url || null;
+      return transcription.separated_audio_url || null;
     }
 
-    return (
-      transcription.separated_audio_url ||
-      transcription.original_audio_url ||
-      transcription.audio_file_path ||
-      null
-    );
+    return transcription.separated_audio_url || null;
   }, [activeScoreSource, selectedTrack, transcription]);
 
   useEffect(() => {
@@ -2530,6 +2522,11 @@ const TranscriptionViewer: React.FC = () => {
         setCurrentPlaybackTime(0);
         setPlaybackDuration(0);
         setIsPlaying(false);
+        console.info(
+          "viewer_audio_source transcription_id=%s separated=%s",
+          transcription.id,
+          transcription.separated_audio_url ?? null,
+        );
 
         const playableAudioUrl = audioService.resolvePlayableAudioUrl(audioSrc);
         if (playableAudioUrl) {
@@ -2542,13 +2539,16 @@ const TranscriptionViewer: React.FC = () => {
           return;
         }
 
-        const blob = activeScoreSource.isGlobal
-          ? await audioService.getSourceAudio(transcription.id, token)
-          : await audioService.getInstrumentTrackStem(
-              transcription.id,
-              Number(activeScoreSource.id),
-              token,
-            );
+        if (activeScoreSource.isGlobal) {
+          setAudioError("Separated stem audio file not available");
+          return;
+        }
+
+        const blob = await audioService.getInstrumentTrackStem(
+          transcription.id,
+          Number(activeScoreSource.id),
+          token,
+        );
 
         if (cancelled) return;
         objectUrl = window.URL.createObjectURL(blob);

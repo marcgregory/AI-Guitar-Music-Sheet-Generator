@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import models
 from app.services import audio, chord_chart, midi, tablature
+from app.services.audio_source_resolver import resolve_generate_tab_audio_source
 from app.tasks import (
     cleanup_transient_audio_files,
     copy_and_persist_instrument_tracks,
@@ -32,6 +33,59 @@ def create_test_session():
     models.Base.metadata.create_all(bind=engine)
     testing_session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return testing_session()
+
+
+def test_generate_tab_audio_source_resolver_prefers_separated_url(caplog):
+    transcription = models.Transcription(
+        id=101,
+        title="Strict URL source",
+        selected_stem="other",
+        audio_file_path="/tmp/transcriptions/101/original.mp3",
+        preprocessed_audio_file_path="/tmp/transcriptions/101/preprocessed.wav",
+        original_audio_url="https://res.cloudinary.com/demo/video/upload/original.mp3",
+        separated_audio_url="https://res.cloudinary.com/demo/video/upload/selected-stem/other_nqdpu9.wav",
+        separated_audio_file_path="/tmp/transcriptions/101/old-other.wav",
+    )
+
+    with caplog.at_level("INFO", logger="app.services.audio_source_resolver"):
+        source = resolve_generate_tab_audio_source(transcription)
+
+    assert source == transcription.separated_audio_url
+    assert "tab_generation_audio_source=separated_audio_url" in caplog.text
+    assert "original.mp3" not in caplog.text
+
+
+def test_generate_tab_audio_source_resolver_uses_file_path_when_url_missing(caplog):
+    transcription = models.Transcription(
+        id=102,
+        title="Strict local source",
+        selected_stem="bass",
+        audio_file_path="/tmp/transcriptions/102/original.mp3",
+        separated_audio_file_path="/tmp/transcriptions/102/bass.wav",
+    )
+
+    with caplog.at_level("INFO", logger="app.services.audio_source_resolver"):
+        source = resolve_generate_tab_audio_source(transcription)
+
+    assert source == transcription.separated_audio_file_path
+    assert "tab_generation_audio_source=separated_audio_file_path" in caplog.text
+
+
+def test_generate_tab_audio_source_resolver_rejects_original_only(caplog):
+    transcription = models.Transcription(
+        id=103,
+        title="Original only",
+        selected_stem="other",
+        audio_file_path="/tmp/transcriptions/103/original.mp3",
+        original_audio_url="https://res.cloudinary.com/demo/video/upload/original.mp3",
+        preprocessed_audio_file_path="/tmp/transcriptions/103/preprocessed.wav",
+    )
+
+    with caplog.at_level("INFO", logger="app.services.audio_source_resolver"):
+        with pytest.raises(ValueError, match="Separated stem audio is required before generating tabs."):
+            resolve_generate_tab_audio_source(transcription)
+
+    assert "tab_generation_audio_source=missing" in caplog.text
 
 
 def test_chord_chart_generation_handles_muted_strings():

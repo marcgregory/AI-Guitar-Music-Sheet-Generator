@@ -23,6 +23,10 @@ from .... import db, core, models
 from ....core.security import get_current_user
 from .. import schemas
 from ....services import midi, storage, tablature
+from ....services.audio_source_resolver import (
+    MISSING_SEPARATED_STEM_MESSAGE,
+    resolve_generate_tab_audio_source,
+)
 from ....services.tablature import tablature_to_ascii_tab
 from ....celery import celery_app
 
@@ -287,18 +291,31 @@ def _build_worker_payload_for_modal(
     track_id: int | None = None,
 ) -> dict[str, str | int | None]:
     selected_stem = transcription.selected_stem or "other"
+    original_audio_url = transcription.original_audio_url if job_type == "process" else None
+    separated_audio_url = transcription.separated_audio_url
+    if job_type == "generate_tab" and selected_stem in {"bass", "other"}:
+        resolved_source = resolve_generate_tab_audio_source(transcription)
+        if resolved_source != transcription.separated_audio_url:
+            raise ValueError("separated_audio_url is required for Modal tab generation.")
+        separated_audio_url = resolved_source
+    elif job_type == "generate_tab" and not separated_audio_url:
+        raise ValueError("separated_audio_url is required for Modal tab generation.")
     return {
         "transcription_id": transcription.id,
         "job_type": job_type,
         "modal_request_id": transcription.modal_request_id,
         "selected_stem": selected_stem,
         "demucs_stem": selected_stem,
-        "original_audio_url": transcription.original_audio_url,
-        "separated_audio_url": transcription.separated_audio_url,
+        "original_audio_url": original_audio_url,
+        "separated_audio_url": separated_audio_url,
         "detection_sensitivity": detection_sensitivity,
         "track_id": track_id,
         "source_type": transcription.source_type,
-        "source_url": transcription.source_url or transcription.youtube_url,
+        "source_url": (
+            (transcription.source_url or transcription.youtube_url)
+            if job_type == "process"
+            else None
+        ),
         "normalized_source_id": transcription.normalized_source_id,
         "audio_hash": transcription.audio_hash,
     }
@@ -594,6 +611,32 @@ def _trigger_modal_worker(
                 transcription.modal_request_id,
             )
             return
+
+        if is_manual_generation_job and (transcription.selected_stem or "other").strip().lower() in {"bass", "other"}:
+            try:
+                resolved_source = resolve_generate_tab_audio_source(transcription)
+            except ValueError as exc:
+                _set_manual_generation_status(transcription, "failed")
+                transcription.processing_status = "stem_ready"
+                transcription.is_processed = True
+                transcription.processing_error = str(exc)
+                transcription.modal_dispatch_status = "failed"
+                transcription.queue_position = None
+                transcription.estimated_wait_time = None
+                session.add(transcription)
+                session.commit()
+                return
+            if resolved_source != transcription.separated_audio_url:
+                _set_manual_generation_status(transcription, "failed")
+                transcription.processing_status = "stem_ready"
+                transcription.is_processed = True
+                transcription.processing_error = "separated_audio_url is required for Modal tab generation."
+                transcription.modal_dispatch_status = "failed"
+                transcription.queue_position = None
+                transcription.estimated_wait_time = None
+                session.add(transcription)
+                session.commit()
+                return
 
         if not modal_trigger_url:
             if is_lyrics_job:
@@ -3225,17 +3268,18 @@ async def generate_tab(
             status_code=status.HTTP_409_CONFLICT,
             detail="Vocal stems are playback-only in this MVP.",
         )
-    if selected_stem in {"bass", "other"} and not (
-        transcription.separated_audio_url or transcription.separated_audio_file_path
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Separated stem audio is required before generating tabs.",
-        )
+    if selected_stem in {"bass", "other"}:
+        try:
+            resolve_generate_tab_audio_source(transcription)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
     if not _can_play_stem(transcription):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Separated stem audio is required before generating tabs.",
+            detail=MISSING_SEPARATED_STEM_MESSAGE,
         )
     if transcription.processing_status == "processing":
         raise HTTPException(

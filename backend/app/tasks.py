@@ -3,6 +3,10 @@ from app.celery import celery_app
 from app.core.config import settings
 from app import db, models
 from app.services import storage
+from app.services.audio_source_resolver import (
+    MISSING_SEPARATED_STEM_MESSAGE,
+    resolve_generate_tab_audio_source,
+)
 import json
 import os
 import shutil
@@ -469,8 +473,19 @@ def ensure_local_separated_stem(
     log_source: bool = False,
 ) -> str:
     source_type = "missing"
+    resolved_source = resolve_generate_tab_audio_source(transcription)
     try:
-        if transcription.separated_audio_url:
+        if resolved_source and resolved_source == transcription.separated_audio_url:
+            source_type = "separated_audio_url"
+            uploads_dir = Path(storage.normalize_local_path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"))
+            stem_upload_dir = uploads_dir / "separated" / f"transcription_{transcription.id}"
+            stem_upload_dir.mkdir(parents=True, exist_ok=True)
+            destination_path = stem_upload_dir / f"{selected_stem}.wav"
+            urllib.request.urlretrieve(resolved_source, destination_path)
+            transcription.separated_audio_file_path = storage.normalize_local_path(destination_path)
+            return transcription.separated_audio_file_path
+
+        if not resolved_source and transcription.separated_audio_url:
             source_type = "separated_audio_url"
             uploads_dir = Path(storage.normalize_local_path(settings.UPLOAD_DIR if hasattr(settings, 'UPLOAD_DIR') else "uploads"))
             stem_upload_dir = uploads_dir / "separated" / f"transcription_{transcription.id}"
@@ -480,13 +495,14 @@ def ensure_local_separated_stem(
             transcription.separated_audio_file_path = storage.normalize_local_path(destination_path)
             return transcription.separated_audio_file_path
 
-        if transcription.separated_audio_file_path:
-            local_path = Path(storage.normalize_local_path(transcription.separated_audio_file_path))
+        local_source = resolved_source or transcription.separated_audio_file_path
+        if local_source:
+            local_path = Path(storage.normalize_local_path(local_source))
             if local_path.exists() and local_path.is_file():
                 source_type = "separated_audio_file_path"
                 return storage.normalize_local_path(local_path)
 
-        raise FileNotFoundError("Separated stem audio is required before generating tabs.")
+        raise FileNotFoundError(MISSING_SEPARATED_STEM_MESSAGE)
     finally:
         if log_source:
             logger.info("tab_generation_audio_source=%s", source_type)
@@ -1108,6 +1124,9 @@ def persist_selected_stem_track(
             transcription.id,
             exc,
         )
+    if transcription.separated_audio_url or transcription.separated_audio_file_path:
+        transcription.audio_file_path = None
+        transcription.preprocessed_audio_file_path = None
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(track)
@@ -1762,13 +1781,10 @@ def generate_tab_from_separated_stem(
         selected_stem = (transcription.selected_stem or "other").strip().lower()
         if selected_stem == "vocals":
             raise ValueError("Vocal stems are playback-only in this MVP.")
-        if selected_stem in {"bass", "other"} and not (
-            transcription.separated_audio_url or transcription.separated_audio_file_path
-        ):
-            logger.info("tab_generation_audio_source=%s", "missing")
-            raise ValueError("Separated stem audio is required before generating tabs.")
+        if selected_stem in {"bass", "other"}:
+            resolve_generate_tab_audio_source(transcription)
         if not stem_playback_available(transcription):
-            raise ValueError("Separated stem audio is required before generating tabs.")
+            raise ValueError(MISSING_SEPARATED_STEM_MESSAGE)
 
         current_generation_status = (
             transcription.rhythm_generation_status
