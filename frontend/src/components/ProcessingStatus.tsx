@@ -20,7 +20,6 @@ const ProcessingStatus: React.FC = () => {
     "Waiting for Modal capacity. Retry scheduled.";
   const [selectedStem, setSelectedStem] = useState<string | null>(null);
   const transcriptionIdNumRef = useRef<number | null>(null);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showErrorDialog, setShowErrorDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -117,30 +116,6 @@ const ProcessingStatus: React.FC = () => {
     navigate("/dashboard");
   }, [transcriptionId, checkTranscriptionStatus, navigate]);
 
-  useEffect(() => {
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) {
-        setIsMenuOpen(false);
-      }
-    };
-
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setIsMenuOpen(false);
-        setShowDeleteDialog(false);
-        setShowErrorDialog(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleEscape);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, []);
-
   const showToast = (tone: "success" | "error", message: string) => {
     setToast({ tone, message });
     window.setTimeout(() => setToast(null), 3600);
@@ -206,40 +181,31 @@ const ProcessingStatus: React.FC = () => {
     }
   };
 
-  const statusActionLabel =
-    status === "queued" || status === "pending"
-      ? "View queue status"
-      : "View progress";
-
   const isWaitingForModalCapacity =
     status === "queued" && statusMessage === WAITING_FOR_MODAL_CAPACITY_MESSAGE;
-
-  const canShowProcessingMenu =
-    !isDemo &&
-    (status === "pending" ||
-      status === "queued" ||
-      status === "processing" ||
-      status === "stem_ready" ||
-      status === "completed" ||
-      status === "completed_with_warning" ||
-      status === "failed");
 
   const stemReadyCopy = (() => {
     if (selectedStem === "drums") {
       return {
-        ready: "Drum stem is ready. Listen first, then generate rhythm if the stem sounds useful.",
-        followup: "Rhythm generation will only run after you confirm from the preview screen.",
+        ready:
+          "Drum stem is ready. Listen first, then generate rhythm if the stem sounds useful.",
+        followup:
+          "Rhythm generation will only run after you confirm from the preview screen.",
       };
     }
     if (selectedStem === "vocals") {
       return {
-        ready: "Vocal stem is ready. Listen first, then generate lyrics when you want a timestamped transcription.",
-        followup: "Lyrics generation will only run after you confirm from the preview screen.",
+        ready:
+          "Vocal stem is ready. Listen first, then generate lyrics when you want a timestamped transcription.",
+        followup:
+          "Lyrics generation will only run after you confirm from the preview screen.",
       };
     }
     return {
-      ready: "Stem is ready. Listen first, then generate tabs if the stem sounds useful.",
-      followup: "Tab generation will only run after you confirm from the preview screen.",
+      ready:
+        "Stem is ready. Listen first, then generate tabs if the stem sounds useful.",
+      followup:
+        "Tab generation will only run after you confirm from the preview screen.",
     };
   })();
 
@@ -274,63 +240,6 @@ const ProcessingStatus: React.FC = () => {
               : "We're preparing your selected-stem analysis"}
           </p>
         </div>
-        {canShowProcessingMenu && (
-          <div className="project-menu-shell processing-menu-shell">
-            <button
-              type="button"
-              className={`project-more-button ${isMenuOpen ? "active" : ""}`}
-              aria-label="Processing actions"
-              aria-haspopup="menu"
-              aria-expanded={isMenuOpen}
-              onClick={() => setIsMenuOpen((open) => !open)}
-            >
-              <Icon name="more" />
-            </button>
-            {isMenuOpen && (
-              <div className="project-action-menu" role="menu">
-                {(status === "pending" ||
-                  status === "queued" ||
-                  status === "processing") && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="project-action-menu-item"
-                    onClick={() => setIsMenuOpen(false)}
-                  >
-                    <Icon name={status === "processing" ? "eye" : "clock"} />
-                    <span>{statusActionLabel}</span>
-                  </button>
-                )}
-                {status === "failed" && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="project-action-menu-item"
-                    onClick={() => {
-                      setIsMenuOpen(false);
-                      setShowErrorDialog(true);
-                    }}
-                  >
-                    <Icon name="alert" />
-                    <span>View processing error</span>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="project-action-menu-item danger"
-                  onClick={() => {
-                    setIsMenuOpen(false);
-                    setShowDeleteDialog(true);
-                  }}
-                >
-                  <Icon name="trash" />
-                  <span>Delete project</span>
-                </button>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {(status === "pending" ||
@@ -420,9 +329,7 @@ const ProcessingStatus: React.FC = () => {
             </p>
           ) : status === "stem_ready" ? (
             <>
-              <p>
-                {stemReadyCopy.ready}
-              </p>
+              <p>{stemReadyCopy.ready}</p>
               <p>{stemReadyCopy.followup}</p>
             </>
           ) : (
