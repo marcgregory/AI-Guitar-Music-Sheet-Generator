@@ -374,11 +374,9 @@ def _detect_pitch_basic_pitch(input_path: Path, sensitivity: str = "normal") -> 
 def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict[str, Any]:
     if instrument_type == "bass":
         tuning = [28, 33, 38, 43]  # E1, A1, D2, G2
-        string_labels = ["E", "A", "D", "G"]
     else:
         # Standard guitar tuning: E2, A2, D3, G3, B3, E4
         tuning = [40, 45, 50, 55, 59, 64]
-        string_labels = ["E", "A", "D", "G", "B", "E"]
 
     tab_notes = []
     previous_string = None
@@ -387,7 +385,7 @@ def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict
     for note in notes_data.get("notes", []):
         pitch = int(note.get("pitch", 0))
         candidates = [
-            (string_index + 1, pitch - open_pitch)
+            (string_index, pitch - open_pitch)
             for string_index, open_pitch in enumerate(tuning)
             if 0 <= pitch - open_pitch <= 24
         ]
@@ -407,16 +405,18 @@ def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict
 
             # Minimize hand movement from previous note
             if previous_string is not None and previous_fret is not None:
-                string_distance = abs(string_index + 1 - previous_string)
+                string_number = len(tuning) - string_index
+                string_distance = abs(string_number - previous_string)
                 fret_distance = abs(fret - previous_fret)
                 # Weight string change more than fret change (changing strings is harder)
                 score += string_distance * 0.3 + fret_distance * 0.1
 
             # Slight preference for varying strings (avoid always same string)
-            if previous_string is not None and string_index + 1 == previous_string:
+            string_number = len(tuning) - string_index
+            if previous_string is not None and string_number == previous_string:
                 score += 0.1  # Small penalty for same string
 
-            scored_candidates.append((score, string_index + 1, fret))
+            scored_candidates.append((score, string_number, fret))
 
         # Choose candidate with lowest score
         if scored_candidates:
@@ -425,7 +425,8 @@ def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict
             previous_fret = fret
         else:
             # Fallback to original method if scoring fails
-            string_number, fret = min(candidates, key=lambda item: (item[1], item[0]))
+            string_index, fret = min(candidates, key=lambda item: (item[1], item[0]))
+            string_number = len(tuning) - string_index
             previous_string = string_number
             previous_fret = fret
 
@@ -441,7 +442,7 @@ def _note_to_tablature(notes_data: dict[str, Any], instrument_type: str) -> dict
 
     return {
         "instrument": instrument_type,
-        "tuning": string_labels,
+        "tuning": tuning,
         "tablature": tab_notes,
     }
 
@@ -488,7 +489,13 @@ def _midi_to_musicxml(midi_path: Path) -> str | None:
 
 
 def _tablature_to_ascii(tab_data: dict[str, Any]) -> str:
-    labels = tab_data.get("tuning") or ["E", "A", "D", "G", "B", "E"]
+    tuning = tab_data.get("tuning") or [40, 45, 50, 55, 59, 64]
+    if tuning == [28, 33, 38, 43] or tuning == ["E", "A", "D", "G"]:
+        labels = ["E", "A", "D", "G"]
+    elif tuning == [40, 45, 50, 55, 59, 64] or tuning == ["E", "A", "D", "G", "B", "E"]:
+        labels = ["E", "A", "D", "G", "B", "E"]
+    else:
+        labels = [str(label) for label in tuning]
     notes = tab_data.get("tablature") or []
     lines = {label: [f"{label}|"] for label in labels}
     for note in sorted(notes, key=lambda item: float(item.get("startTime", item.get("onset", 0)))):
@@ -687,10 +694,10 @@ def _normalize_job(job: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Job payload must be a JSON object")
     if not job.get("transcription_id"):
         raise ValueError("transcription_id is required")
-    if not job.get("original_audio_url"):
-        if str(job.get("job_type") or "process") == "process":
-            raise ValueError("original_audio_url is required")
-    if str(job.get("job_type") or "process") in {"generate_tab", "reprocess_track", "generate_lyrics"} and not job.get("separated_audio_url"):
+    job_type = str(job.get("job_type") or "process")
+    if job_type == "process" and not job.get("original_audio_url"):
+        raise ValueError("original_audio_url is required")
+    if job_type in {"generate_tab", "reprocess_track", "generate_lyrics"} and not job.get("separated_audio_url"):
         raise ValueError("separated_audio_url is required for this Modal job")
 
     selected_stem = str(job.get("selected_stem") or job.get("demucs_stem") or "other").strip().lower()
@@ -826,6 +833,8 @@ def _process_job(job: dict[str, Any]) -> dict[str, Any]:
             selected_stem_path = _run_demucs(input_path, output_dir, selected_stem)
             upload_result = _upload_stem(selected_stem_path, transcription_id, selected_stem)
         else:
+            if job_type == "generate_tab":
+                logger.info("tab_generation_audio_source=%s", "separated_audio_url")
             selected_stem_path = temp_path / f"selected_{transcription_id}{_download_suffix(str(job['separated_audio_url']))}"
             _download_file(str(job["separated_audio_url"]), selected_stem_path)
 

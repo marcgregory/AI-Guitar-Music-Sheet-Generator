@@ -11,6 +11,7 @@ alembic==1.10.0
 redis==5.0.1
 celery==5.3.4
 cloudinary==1.44.1
+mido==1.2.0
 faster-whisper
 ctranslate2
 # Demucs/Basic Pitch dependencies live in backend/modal_worker.py's Modal image.

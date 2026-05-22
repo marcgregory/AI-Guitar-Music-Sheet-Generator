@@ -22,7 +22,11 @@ import random
 from .... import db, core, models
 from ....core.security import get_current_user
 from .. import schemas
-from ....services import storage
+from ....services import midi, storage, tablature
+from ....services.audio_source_resolver import (
+    MISSING_SEPARATED_STEM_MESSAGE,
+    resolve_generate_tab_audio_source,
+)
 from ....services.tablature import tablature_to_ascii_tab
 from ....celery import celery_app
 
@@ -287,18 +291,31 @@ def _build_worker_payload_for_modal(
     track_id: int | None = None,
 ) -> dict[str, str | int | None]:
     selected_stem = transcription.selected_stem or "other"
+    original_audio_url = transcription.original_audio_url if job_type == "process" else None
+    separated_audio_url = transcription.separated_audio_url
+    if job_type == "generate_tab" and selected_stem in {"bass", "other"}:
+        resolved_source = resolve_generate_tab_audio_source(transcription)
+        if resolved_source != transcription.separated_audio_url:
+            raise ValueError("separated_audio_url is required for Modal tab generation.")
+        separated_audio_url = resolved_source
+    elif job_type == "generate_tab" and not separated_audio_url:
+        raise ValueError("separated_audio_url is required for Modal tab generation.")
     return {
         "transcription_id": transcription.id,
         "job_type": job_type,
         "modal_request_id": transcription.modal_request_id,
         "selected_stem": selected_stem,
         "demucs_stem": selected_stem,
-        "original_audio_url": transcription.original_audio_url,
-        "separated_audio_url": transcription.separated_audio_url,
+        "original_audio_url": original_audio_url,
+        "separated_audio_url": separated_audio_url,
         "detection_sensitivity": detection_sensitivity,
         "track_id": track_id,
         "source_type": transcription.source_type,
-        "source_url": transcription.source_url or transcription.youtube_url,
+        "source_url": (
+            (transcription.source_url or transcription.youtube_url)
+            if job_type == "process"
+            else None
+        ),
         "normalized_source_id": transcription.normalized_source_id,
         "audio_hash": transcription.audio_hash,
     }
@@ -594,6 +611,32 @@ def _trigger_modal_worker(
                 transcription.modal_request_id,
             )
             return
+
+        if is_manual_generation_job and (transcription.selected_stem or "other").strip().lower() in {"bass", "other"}:
+            try:
+                resolved_source = resolve_generate_tab_audio_source(transcription)
+            except ValueError as exc:
+                _set_manual_generation_status(transcription, "failed")
+                transcription.processing_status = "stem_ready"
+                transcription.is_processed = True
+                transcription.processing_error = str(exc)
+                transcription.modal_dispatch_status = "failed"
+                transcription.queue_position = None
+                transcription.estimated_wait_time = None
+                session.add(transcription)
+                session.commit()
+                return
+            if resolved_source != transcription.separated_audio_url:
+                _set_manual_generation_status(transcription, "failed")
+                transcription.processing_status = "stem_ready"
+                transcription.is_processed = True
+                transcription.processing_error = "separated_audio_url is required for Modal tab generation."
+                transcription.modal_dispatch_status = "failed"
+                transcription.queue_position = None
+                transcription.estimated_wait_time = None
+                session.add(transcription)
+                session.commit()
+                return
 
         if not modal_trigger_url:
             if is_lyrics_job:
@@ -995,23 +1038,83 @@ def _start_instrument_track_reprocess(
 
 
 def _has_note_events(notes_data: str | None) -> bool:
-    if not notes_data:
+    return tablature.has_note_events(notes_data)
+
+
+def _ensure_structured_tablature_repaired(
+    transcription: models.Transcription,
+    db_session: Session,
+) -> bool:
+    selected_stem = (transcription.selected_stem or "other").strip().lower()
+    if selected_stem not in {"bass", "other"}:
         return False
-    try:
-        parsed = json.loads(notes_data)
-    except json.JSONDecodeError:
+    if (transcription.tab_generation_status or "idle") == "processing":
+        return False
+    if tablature.has_structured_tablature(transcription.tablature_data):
         return False
 
-    if isinstance(parsed, list):
-        return len(parsed) > 0
-    if isinstance(parsed, dict):
-        notes = parsed.get("notes")
-        pitch_info = parsed.get("pitch_info")
-        return (
-            isinstance(notes, list) and len(notes) > 0
-        ) or (
-            isinstance(pitch_info, list) and len(pitch_info) > 0
+    try:
+        repaired = tablature.repair_structured_tablature(
+            selected_stem,
+            transcription.notes_data,
+            transcription.tablature_data,
         )
+    except Exception:
+        logger.exception(
+            "structured_tablature_repair_failed transcription_id=%s selected_stem=%s",
+            transcription.id,
+            selected_stem,
+        )
+        if (
+            _has_note_events(transcription.notes_data)
+            and (transcription.tab_generation_status or "idle") == "completed"
+        ):
+            transcription.tab_generation_status = "completed_with_warning"
+            transcription.processing_status = "stem_ready"
+            transcription.can_generate_score = False
+            message = (
+                "Tab generation completed with note events, but structured "
+                "tablature could not be assembled."
+            )
+            transcription.warning_message = transcription.warning_message or message
+            transcription.processing_error = transcription.processing_error or message
+            db_session.add(transcription)
+            db_session.commit()
+            db_session.refresh(transcription)
+            return True
+        return False
+
+    if not repaired:
+        if (
+            _has_note_events(transcription.notes_data)
+            and (transcription.tab_generation_status or "idle") == "completed"
+        ):
+            transcription.tab_generation_status = "completed_with_warning"
+            transcription.processing_status = "stem_ready"
+            transcription.can_generate_score = False
+            message = (
+                "Tab generation completed with note events, but structured "
+                "tablature could not be assembled."
+            )
+            transcription.warning_message = transcription.warning_message or message
+            transcription.processing_error = transcription.processing_error or message
+            db_session.add(transcription)
+            db_session.commit()
+            db_session.refresh(transcription)
+            return True
+        return False
+
+    transcription.tablature_data = json.dumps(repaired)
+    if tablature.has_structured_tablature(transcription.tablature_data):
+        transcription.can_generate_score = True
+        if (transcription.tab_generation_status or "idle") == "completed_with_warning":
+            transcription.tab_generation_status = "completed"
+        if transcription.processing_error and "structured tablature" in transcription.processing_error:
+            transcription.processing_error = None
+        db_session.add(transcription)
+        db_session.commit()
+        db_session.refresh(transcription)
+        return True
     return False
 
 
@@ -1571,7 +1674,7 @@ def _available_exports(transcription: models.Transcription) -> list[str]:
     exports: list[str] = []
     if transcription.midi_file_url or transcription.midi_file_path:
         exports.append("midi")
-    if _has_tablature_events(transcription.tablature_data) or transcription.tab_file_url or transcription.tab_file_path:
+    if _has_tablature_events(transcription.tablature_data):
         exports.append("tab")
     if transcription.notation_data:
         exports.append("musicxml")
@@ -1588,17 +1691,7 @@ def _json_field(value: str | None):
 
 
 def _has_tablature_events(value: str | None) -> bool:
-    parsed = _json_field(value)
-    if isinstance(parsed, dict):
-        tablature = parsed.get("tablature")
-        tracks = parsed.get("tracks")
-        return bool(
-            (isinstance(tablature, list) and tablature) or
-            (isinstance(tracks, list) and tracks)
-        )
-    if isinstance(parsed, list):
-        return bool(parsed)
-    return bool(value and value.strip())
+    return tablature.has_structured_tablature(value)
 
 
 def _has_score_output(transcription: models.Transcription) -> bool:
@@ -2944,6 +3037,7 @@ async def get_transcription_status(
     _cleanup_stale_active_transcription_jobs(db_session)
     db_session.refresh(transcription)
     _repair_playback_only_stem_ready(transcription, db_session)
+    _ensure_structured_tablature_repaired(transcription, db_session)
 
     selected_stem = transcription.selected_stem or "other"
     if transcription.is_deleted:
@@ -3108,6 +3202,7 @@ async def get_transcription_result(
 
     _ensure_transcription_access(transcription, db_session, current_user)
     _repair_playback_only_stem_ready(transcription, db_session)
+    _ensure_structured_tablature_repaired(transcription, db_session)
 
     processing_status_value = transcription.processing_status or "pending"
     if processing_status_value in {"pending", "queued", "processing"}:
@@ -3173,10 +3268,18 @@ async def generate_tab(
             status_code=status.HTTP_409_CONFLICT,
             detail="Vocal stems are playback-only in this MVP.",
         )
+    if selected_stem in {"bass", "other"}:
+        try:
+            resolve_generate_tab_audio_source(transcription)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
     if not _can_play_stem(transcription):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Separated stem is required before generating tabs.",
+            detail=MISSING_SEPARATED_STEM_MESSAGE,
         )
     if transcription.processing_status == "processing":
         raise HTTPException(

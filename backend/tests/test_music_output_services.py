@@ -1,5 +1,8 @@
 import json
+import importlib.util
 from pathlib import Path
+import sys
+import types
 from unittest.mock import Mock, patch
 
 import pytest
@@ -9,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import models
 from app.services import audio, chord_chart, midi, tablature
+from app.services.audio_source_resolver import resolve_generate_tab_audio_source
 from app.tasks import (
     cleanup_transient_audio_files,
     copy_and_persist_instrument_tracks,
@@ -23,6 +27,46 @@ from app.tasks import (
 )
 
 
+def _load_modal_worker_with_stub():
+    existing = sys.modules.get("modal_worker")
+    if existing is not None:
+        return existing
+
+    class _ModalImage:
+        @classmethod
+        def debian_slim(cls, **_kwargs):
+            return cls()
+
+        def apt_install(self, *_args, **_kwargs):
+            return self
+
+        def pip_install(self, *_args, **_kwargs):
+            return self
+
+    class _ModalApp:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def function(self, *_args, **_kwargs):
+            return lambda fn: fn
+
+    modal_stub = types.SimpleNamespace(
+        App=_ModalApp,
+        Image=_ModalImage,
+        Secret=types.SimpleNamespace(from_name=lambda *_args, **_kwargs: object()),
+        fastapi_endpoint=lambda *_args, **_kwargs: (lambda fn: fn),
+    )
+
+    with patch.dict(sys.modules, {"modal": modal_stub}):
+        module_path = Path(__file__).resolve().parents[1] / "modal_worker.py"
+        spec = importlib.util.spec_from_file_location("modal_worker", module_path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["modal_worker"] = module
+        spec.loader.exec_module(module)
+        return module
+
+
 def create_test_session():
     engine = create_engine(
         "sqlite://",
@@ -32,6 +76,59 @@ def create_test_session():
     models.Base.metadata.create_all(bind=engine)
     testing_session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return testing_session()
+
+
+def test_generate_tab_audio_source_resolver_prefers_separated_url(caplog):
+    transcription = models.Transcription(
+        id=101,
+        title="Strict URL source",
+        selected_stem="other",
+        audio_file_path="/tmp/transcriptions/101/original.mp3",
+        preprocessed_audio_file_path="/tmp/transcriptions/101/preprocessed.wav",
+        original_audio_url="https://res.cloudinary.com/demo/video/upload/original.mp3",
+        separated_audio_url="https://res.cloudinary.com/demo/video/upload/selected-stem/other_nqdpu9.wav",
+        separated_audio_file_path="/tmp/transcriptions/101/old-other.wav",
+    )
+
+    with caplog.at_level("INFO", logger="app.services.audio_source_resolver"):
+        source = resolve_generate_tab_audio_source(transcription)
+
+    assert source == transcription.separated_audio_url
+    assert "tab_generation_audio_source=separated_audio_url" in caplog.text
+    assert "original.mp3" not in caplog.text
+
+
+def test_generate_tab_audio_source_resolver_uses_file_path_when_url_missing(caplog):
+    transcription = models.Transcription(
+        id=102,
+        title="Strict local source",
+        selected_stem="bass",
+        audio_file_path="/tmp/transcriptions/102/original.mp3",
+        separated_audio_file_path="/tmp/transcriptions/102/bass.wav",
+    )
+
+    with caplog.at_level("INFO", logger="app.services.audio_source_resolver"):
+        source = resolve_generate_tab_audio_source(transcription)
+
+    assert source == transcription.separated_audio_file_path
+    assert "tab_generation_audio_source=separated_audio_file_path" in caplog.text
+
+
+def test_generate_tab_audio_source_resolver_rejects_original_only(caplog):
+    transcription = models.Transcription(
+        id=103,
+        title="Original only",
+        selected_stem="other",
+        audio_file_path="/tmp/transcriptions/103/original.mp3",
+        original_audio_url="https://res.cloudinary.com/demo/video/upload/original.mp3",
+        preprocessed_audio_file_path="/tmp/transcriptions/103/preprocessed.wav",
+    )
+
+    with caplog.at_level("INFO", logger="app.services.audio_source_resolver"):
+        with pytest.raises(ValueError, match="Separated stem audio is required before generating tabs."):
+            resolve_generate_tab_audio_source(transcription)
+
+    assert "tab_generation_audio_source=missing" in caplog.text
 
 
 def test_chord_chart_generation_handles_muted_strings():
@@ -80,6 +177,60 @@ def test_tablature_supports_standard_bass_tuning():
     assert {note["string"] for note in tab["tablature"]}.issubset({1, 2, 3, 4})
     assert ascii_tab.splitlines()[0].startswith("G|")
     assert len(ascii_tab.splitlines()) == 4
+
+
+def test_modal_worker_bass_tablature_uses_four_valid_strings_and_midi_tuning():
+    modal_worker = _load_modal_worker_with_stub()
+    notes_data = {
+        "notes": [
+            {
+                "onset": 0.0,
+                "offset": 0.5,
+                "pitch": 28,
+                "velocity": 80,
+                "confidence": 0.95,
+            },
+            {
+                "onset": 0.5,
+                "offset": 1.0,
+                "pitch": 43,
+                "velocity": 76,
+                "confidence": 0.9,
+            },
+            {
+                "onset": 1.0,
+                "offset": 1.5,
+                "pitch": 51,
+                "velocity": 72,
+                "confidence": 0.88,
+            },
+        ],
+    }
+
+    tab = modal_worker._note_to_tablature(notes_data, "bass")
+
+    assert tab["instrument"] == "bass"
+    assert tab["tuning"] == [28, 33, 38, 43]
+    assert len(tab["tablature"]) == 3
+    assert {note["string"] for note in tab["tablature"]}.issubset({1, 2, 3, 4})
+    assert modal_worker._tablature_to_ascii(tab).splitlines()[0].startswith("G|")
+
+
+def test_has_structured_tablature_requires_non_empty_tablature_list():
+    valid_payload = {
+        "instrument": "guitar",
+        "tablature": [{"string": 1, "fret": 3, "onset": 0.0, "offset": 0.5}],
+    }
+
+    assert tablature.has_structured_tablature(valid_payload) is True
+    assert tablature.has_structured_tablature(json.dumps(valid_payload)) is True
+    assert tablature.has_structured_tablature(None) is False
+    assert tablature.has_structured_tablature("{bad json") is False
+    assert tablature.has_structured_tablature([{"string": 1, "fret": 3}]) is False
+    assert tablature.has_structured_tablature({"tracks": [{"tablature": []}]}) is False
+    assert tablature.has_structured_tablature({"tablature": "not-a-list"}) is False
+    assert tablature.has_structured_tablature({"tablature": []}) is False
+    assert tablature.has_structured_tablature({"tablature": [{}]}) is False
 
 
 def test_midi_generation_accepts_enhanced_pitch_info_shape(tmp_path):
@@ -861,7 +1012,15 @@ def test_process_audio_transcription_persists_selected_other_stem_and_analyzes_a
                             with patch("app.tasks.midi.save_midi_from_transcription", return_value=str(tmp_path / "out.mid")):
                                 with patch("app.tasks.midi.midi_to_musicxml", return_value="<score />"):
                                     with patch("app.tasks.tablature.save_tablature_from_transcription", return_value=str(tmp_path / "tab.json")):
-                                        with patch("app.tasks.tablature.notes_to_tablature", return_value={"tablature": []}):
+                                        with patch(
+                                            "app.tasks.tablature.notes_to_tablature",
+                                            return_value={
+                                                "instrument": "guitar",
+                                                "tablature": [
+                                                    {"string": 1, "fret": 3, "onset": 0.0, "offset": 0.5}
+                                                ],
+                                            },
+                                        ):
                                             with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
                                                 with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
                                                     with patch("app.tasks.audio.detect_rhythm", return_value={"total_duration": 1.0}):
@@ -1016,7 +1175,15 @@ def test_generate_tab_from_separated_stem_runs_pitch_after_user_confirmation(tmp
                                     with patch("app.tasks.midi.save_midi_from_transcription", return_value=str(tmp_path / "out.mid")):
                                         with patch("app.tasks.midi.midi_to_musicxml", return_value="<score />"):
                                             with patch("app.tasks.tablature.save_tablature_from_transcription", return_value=str(tmp_path / "tab.json")):
-                                                with patch("app.tasks.tablature.notes_to_tablature", return_value={"tablature": []}):
+                                                with patch(
+                                                    "app.tasks.tablature.notes_to_tablature",
+                                                    return_value={
+                                                        "instrument": "guitar",
+                                                        "tablature": [
+                                                            {"string": 1, "fret": 3, "onset": 0.0, "offset": 0.5}
+                                                        ],
+                                                    },
+                                                ):
                                                     with patch("app.tasks.audio.detect_beat_and_tempo", return_value={"tempo": 120, "tempo_confidence": 88}):
                                                         with patch("app.tasks.audio.detect_key", return_value={"key": "C major", "confidence": 77}):
                                                             with patch("app.tasks.audio.detect_rhythm", return_value={"total_duration": 1.0}):
@@ -1036,6 +1203,129 @@ def test_generate_tab_from_separated_stem_runs_pitch_after_user_confirmation(tmp
         assert refreshed.can_generate_score is True
         assert refreshed.tablature_data
         assert refreshed.audio_file_path is None
+    finally:
+        session.close()
+
+
+def test_generate_tab_from_separated_stem_warns_when_structured_tab_missing(tmp_path):
+    session = create_test_session()
+    try:
+        stem_path = tmp_path / "other.wav"
+        stem_path.write_bytes(b"other")
+        transcription = models.Transcription(
+            title="Missing structured tab",
+            separated_audio_file_path=str(stem_path),
+            selected_stem="other",
+            user_id=1,
+            is_processed=True,
+            processing_status="stem_ready",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+
+        def fake_generate_outputs(transcription, db_session, **_kwargs):
+            transcription.notes_data = json.dumps({
+                "notes": [
+                    {"onset": 0.0, "offset": 0.5, "pitch": 64, "velocity": 90}
+                ]
+            })
+            transcription.tablature_data = json.dumps({"tablature": []})
+            transcription.processing_status = "completed"
+            transcription.can_generate_score = True
+            db_session.add(transcription)
+            db_session.commit()
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.audio_processing_mode", return_value="local"):
+                with patch("app.tasks.generate_tab_outputs_for_transcription", side_effect=fake_generate_outputs):
+                    result = generate_tab_from_separated_stem.run(transcription_id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        assert result["status"] == "stem_ready"
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.tab_generation_status == "completed_with_warning"
+        assert refreshed.can_generate_score is False
+        assert "structured tablature" in refreshed.processing_error
+    finally:
+        session.close()
+
+
+def test_generate_tab_from_separated_stem_does_not_fall_back_to_original_audio(tmp_path):
+    session = create_test_session()
+    try:
+        upload_path = tmp_path / "original.wav"
+        upload_path.write_bytes(b"original")
+        transcription = models.Transcription(
+            title="No separated stem",
+            audio_file_path=str(upload_path),
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/original.wav",
+            selected_stem="bass",
+            user_id=1,
+            is_processed=True,
+            processing_status="stem_ready",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.audio_processing_mode", return_value="local"):
+                with pytest.raises(ValueError, match="Separated stem audio is required before generating tabs."):
+                    generate_tab_from_separated_stem.run(transcription_id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).first()
+        assert refreshed.tab_generation_status == "failed"
+        assert refreshed.processing_status == "stem_ready"
+        assert refreshed.processing_error == "Separated stem audio is required before generating tabs."
+    finally:
+        session.close()
+
+
+def test_ensure_local_separated_stem_prefers_separated_url_over_local_and_original(tmp_path):
+    session = create_test_session()
+    try:
+        original_path = tmp_path / "original.wav"
+        old_stem_path = tmp_path / "old-bass.wav"
+        original_path.write_bytes(b"original")
+        old_stem_path.write_bytes(b"old stem")
+        transcription = models.Transcription(
+            title="URL first source",
+            audio_file_path=str(original_path),
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/original.wav",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            separated_audio_file_path=str(old_stem_path),
+            selected_stem="bass",
+            user_id=1,
+            is_processed=True,
+            processing_status="stem_ready",
+        )
+        session.add(transcription)
+        session.commit()
+
+        def fake_urlretrieve(url, destination):
+            Path(destination).write_bytes(b"downloaded stem")
+            return str(destination), None
+
+        with patch("app.tasks.settings") as settings_mock:
+            settings_mock.UPLOAD_DIR = str(tmp_path / "uploads")
+            with patch("app.tasks.urllib.request.urlretrieve", side_effect=fake_urlretrieve) as download_mock:
+                from app.tasks import ensure_local_separated_stem
+
+                resolved = ensure_local_separated_stem(transcription, "bass")
+
+        download_mock.assert_called_once()
+        assert download_mock.call_args.args[0] == transcription.separated_audio_url
+        assert resolved != str(old_stem_path)
+        assert Path(resolved).read_bytes() == b"downloaded stem"
     finally:
         session.close()
 

@@ -8,7 +8,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from .... import core, db, models
-from ....services import tablature
+from ....services import storage, tablature
+from ....services.audio_source_resolver import resolve_generate_tab_audio_source
 from .. import schemas
 from .audio import _promote_oldest_queued_transcription, _trigger_next_queued_transcription
 
@@ -91,32 +92,11 @@ def _sanitize_worker_error(error: str | None) -> str:
 
 
 def _payload_has_note_events(value: Any) -> bool:
-    if isinstance(value, list):
-        return len(value) > 0
-    if isinstance(value, dict):
-        notes = value.get("notes")
-        pitch_info = value.get("pitch_info")
-        return (
-            isinstance(notes, list) and len(notes) > 0
-        ) or (
-            isinstance(pitch_info, list) and len(pitch_info) > 0
-        )
-    return False
+    return tablature.has_note_events(value)
 
 
 def _payload_has_tablature_data(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except Exception:
-            return False
-    if isinstance(value, dict):
-        return bool(value.get("tablature") is not None or value.get("tracks") is not None)
-    if isinstance(value, list):
-        return bool(value)
-    return False
+    return tablature.has_structured_tablature(value)
 
 
 def _structured_tablature_payload(
@@ -129,8 +109,12 @@ def _structured_tablature_payload(
     if selected_stem not in {"bass", "other"} or not _payload_has_note_events(notes_data):
         return tablature_data
 
-    instrument_type = "bass" if selected_stem == "bass" else "guitar"
-    return tablature.notes_to_tablature(notes_data, instrument_type=instrument_type)
+    repaired = tablature.repair_structured_tablature(
+        selected_stem,
+        notes_data,
+        tablature_data,
+    )
+    return repaired if repaired else tablature_data
 
 
 def _payload_has_drum_hits(value: Any) -> bool:
@@ -140,22 +124,55 @@ def _payload_has_drum_hits(value: Any) -> bool:
     return False
 
 
+def _cleanup_original_cloudinary_audio_after_tab_completion(
+    transcription: models.Transcription,
+) -> None:
+    selected_stem = (transcription.selected_stem or "other").strip().lower()
+    if selected_stem not in {"bass", "other"}:
+        return
+    if not tablature.has_structured_tablature(transcription.tablature_data):
+        return
+    if transcription.original_audio_public_id:
+        storage.delete_cloudinary_asset(
+            transcription.original_audio_public_id,
+            resource_type="video",
+        )
+    transcription.original_audio_url = None
+    transcription.original_audio_public_id = None
+
+
 def _build_worker_job(transcription: models.Transcription, request: Request) -> schemas.WorkerJob:
     selected_stem = transcription.selected_stem or "other"
     if selected_stem not in VALID_SELECTED_STEMS:
         selected_stem = "other"
+    job_type = transcription.modal_job_type or "process"
+    original_audio_url = transcription.original_audio_url if job_type == "process" else None
+    separated_audio_url = transcription.separated_audio_url
+    if job_type == "generate_tab" and selected_stem in {"bass", "other"}:
+        resolved_source = resolve_generate_tab_audio_source(transcription)
+        if resolved_source != transcription.separated_audio_url:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="separated_audio_url is required for Modal tab generation.",
+            )
+        separated_audio_url = resolved_source
+    elif job_type == "generate_tab" and not separated_audio_url:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="separated_audio_url is required for Modal tab generation.",
+        )
 
     base_url = str(request.base_url).rstrip("/")
     return schemas.WorkerJob(
         transcription_id=transcription.id,
-        job_type=transcription.modal_job_type or "process",
+        job_type=job_type,
         modal_request_id=transcription.modal_request_id,
         selected_stem=selected_stem,
         demucs_stem=selected_stem,
-        original_audio_url=transcription.original_audio_url,
-        separated_audio_url=transcription.separated_audio_url,
+        original_audio_url=original_audio_url,
+        separated_audio_url=separated_audio_url,
         source_type=transcription.source_type,
-        source_url=transcription.source_url or transcription.youtube_url,
+        source_url=(transcription.source_url or transcription.youtube_url) if job_type == "process" else None,
         normalized_source_id=transcription.normalized_source_id,
         audio_hash=transcription.audio_hash,
         callback_complete_url=(
@@ -286,6 +303,9 @@ async def complete_worker_job(
     transcription.can_play_stem = bool(
         transcription.separated_audio_url or transcription.separated_audio_file_path
     )
+    if transcription.separated_audio_url or transcription.separated_audio_file_path:
+        transcription.audio_file_path = None
+        transcription.preprocessed_audio_file_path = None
     if (
         transcription.notes_data is None
         and selected_stem in {"bass", "other"}
@@ -296,30 +316,40 @@ async def complete_worker_job(
         )
     if is_generate_tab_job:
         transcription.can_generate_score = bool(selected_stem in {"bass", "other"} and has_notes)
+        has_valid_tablature = tablature.has_structured_tablature(transcription.tablature_data)
         if (
             selected_stem in {"bass", "other"}
             and has_notes
-            and (missing_required_tablature or not transcription.tablature_data)
+            and (missing_required_tablature or not has_valid_tablature)
         ):
-            _set_manual_generation_status(transcription, "failed")
+            _set_manual_generation_status(transcription, "completed_with_warning")
             warning_message = (
-                "Tab generation finished without structured tablature data. "
-                "Please try generating tabs again."
+                "Tab generation completed with note events, but structured tablature "
+                "could not be assembled."
             )
             transcription.warning_message = warning_message
             transcription.processing_status = "stem_ready"
             transcription.processing_error = warning_message
             transcription.can_generate_score = False
         else:
-            _set_manual_generation_status(transcription, "completed")
+            if selected_stem in {"bass", "other"}:
+                _set_manual_generation_status(
+                    transcription,
+                    "completed" if has_valid_tablature else "completed_with_warning",
+                )
+            else:
+                _set_manual_generation_status(transcription, "completed")
             transcription.processing_status = (
                 "completed"
-                if transcription.can_generate_score or (selected_stem == "drums" and has_drum_hits)
+                if (selected_stem in {"bass", "other"} and has_valid_tablature)
+                or (selected_stem == "drums" and has_drum_hits)
                 else "completed_with_warning"
                 if warning_message
                 else "stem_ready"
             )
             transcription.processing_error = None
+            if selected_stem in {"bass", "other"} and has_valid_tablature:
+                _cleanup_original_cloudinary_audio_after_tab_completion(transcription)
     else:
         transcription.can_generate_score = False
         transcription.processing_status = "stem_ready"
@@ -328,7 +358,10 @@ async def complete_worker_job(
         is_generate_tab_job
         and selected_stem in {"bass", "other"}
         and has_notes
-        and (missing_required_tablature or not transcription.tablature_data)
+        and (
+            missing_required_tablature
+            or not tablature.has_structured_tablature(transcription.tablature_data)
+        )
     ):
         transcription.processing_error = None
     transcription.queue_position = None

@@ -20,6 +20,7 @@ vi.mock("../services/audioService", () => ({
     listInstrumentTracks: vi.fn(),
     generateTab: vi.fn(),
     generateLyrics: vi.fn(),
+    getInstrumentTrackStem: vi.fn(),
     resolvePlayableAudioUrl: vi.fn((value: string | null | undefined) =>
       value || null,
     ),
@@ -45,6 +46,7 @@ const stemReadyTranscription: Transcription = {
 describe("TranscriptionViewer generate tabs polling", () => {
   beforeEach(() => {
     vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "info").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     Object.defineProperty(window.HTMLMediaElement.prototype, "load", {
       configurable: true,
@@ -63,6 +65,7 @@ describe("TranscriptionViewer generate tabs polling", () => {
       listInstrumentTracks: ReturnType<typeof vi.fn>;
       generateTab: ReturnType<typeof vi.fn>;
       generateLyrics: ReturnType<typeof vi.fn>;
+      getInstrumentTrackStem: ReturnType<typeof vi.fn>;
     };
 
     mockedAudioService.getTranscriptionResult.mockResolvedValue({
@@ -80,6 +83,7 @@ describe("TranscriptionViewer generate tabs polling", () => {
       transcription_id: 42,
       message: "Lyrics generation started.",
     });
+    mockedAudioService.getInstrumentTrackStem.mockResolvedValue(new Blob(["stem"]));
   });
 
   afterEach(() => {
@@ -152,6 +156,34 @@ describe("TranscriptionViewer generate tabs polling", () => {
     expect(
       screen.queryByRole("button", { name: /Generating tabs/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("uses separated stem playback and ignores original audio fallbacks", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        separated_audio_url: "/demo/selected-stem/other_nqdpu9.wav",
+        original_audio_url: "/demo/original.mp3",
+        audio_file_path: "/tmp/transcriptions/42/original.mp3",
+        preprocessed_audio_file_path: "/tmp/transcriptions/42/preprocessed.wav",
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    await waitFor(() => {
+      expect(audioService.resolvePlayableAudioUrl).toHaveBeenCalledWith(
+        "/demo/selected-stem/other_nqdpu9.wav",
+      );
+    });
+
+    expect(audioService.resolvePlayableAudioUrl).not.toHaveBeenCalledWith(
+      "/demo/original.mp3",
+    );
+    expect(audioService.resolvePlayableAudioUrl).not.toHaveBeenCalledWith(
+      "/tmp/transcriptions/42/original.mp3",
+    );
   });
 
   it("restores manual tab generation state from backend status on mount", async () => {
