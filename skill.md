@@ -487,3 +487,51 @@ First compare local and prod API JSON using separate local/prod transcription ID
 Only if prod has stale generated tab artifacts and the stem is tab-capable, clear generated DB artifact fields and trigger prod regeneration.
 
 Before DB mutation, print the exact fields and values that will be cleared, then require execution to continue only if the script is running in explicit `--apply` mode. Default mode must be dry-run.
+
+#==============
+Yes — the login card/container is too tall on large screens.
+
+Use this fix prompt:
+
+```md
+Fix the login/auth page height on large screens.
+
+Problem:
+On desktop/large screens, the auth layout becomes too tall and stretched vertically. The main split card should fit comfortably inside the viewport without looking oversized.
+
+Tasks:
+
+- Inspect the auth/login page layout and CSS first.
+- Find the outer auth wrapper, split panel/card, left hero panel, and right login panel styles.
+- Add a responsive max-height for desktop, e.g. `min(92vh, 820px)` or similar.
+- Avoid fixed huge heights like `100vh` inside the card content.
+- Make the auth shell vertically centered with safe padding.
+- Ensure the card does not overflow on 1366x768 / 1440x900 / 1920x1080.
+- Keep mobile layout unchanged.
+- If content exceeds height, allow internal scrolling only where needed.
+- Keep the current design, colors, typography, and split layout.
+
+Acceptance:
+
+- On large screens, the login card is shorter and balanced.
+- Top and bottom spacing look even.
+- No clipped content.
+- Mobile still works.
+```
+
+Likely CSS direction:
+
+```css
+.auth-shell {
+  min-height: 100dvh;
+  padding: clamp(16px, 3vw, 32px);
+  display: grid;
+  place-items: center;
+}
+
+.auth-card {
+  width: min(100%, 1100px);
+  height: min(92dvh, 820px);
+  max-height: 820px;
+}
+```

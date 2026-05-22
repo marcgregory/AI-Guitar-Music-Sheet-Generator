@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         case_sensitive=True,
         env_file=(".env", ".env.local"),
+        extra="ignore",
     )
 
     PROJECT_NAME: str = "AI Guitar Music Sheet Generator"
