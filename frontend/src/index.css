@@ -13127,3 +13127,43 @@ body,
     width: 100%;
   }
 }
+
+/* Auth page scrollbar */
+.cinematic-auth-page {
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 98, 72, 0.75) transparent;
+}
+
+/* Chrome / Edge / Brave */
+.cinematic-auth-page::-webkit-scrollbar {
+  width: 10px;
+}
+
+.cinematic-auth-page::-webkit-scrollbar-track {
+  background: transparent;
+  margin-block: 8px;
+}
+
+.cinematic-auth-page::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(140, 108, 76, 0.78),
+    rgba(110, 84, 58, 0.92)
+  );
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s ease;
+}
+
+.cinematic-auth-page::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(165, 125, 86, 0.95),
+    rgba(125, 92, 62, 1)
+  );
+}
