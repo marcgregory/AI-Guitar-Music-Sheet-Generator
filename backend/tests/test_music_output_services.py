@@ -17,6 +17,7 @@ from app.tasks import (
     generate_tab_from_separated_stem,
     generate_track_transcription_outputs,
     process_audio_transcription,
+    persist_selected_stem_track,
     reprocess_instrument_track,
     select_analysis_source,
 )
@@ -328,6 +329,86 @@ def test_copy_and_persist_instrument_tracks_creates_rows_and_retains_stems(tmp_p
         assert all(track.processing_status == "completed" for track in tracks)
         assert all(track.confidence_score == 90 for track in tracks)
         assert all(track.stem_audio_path and Path(track.stem_audio_path).exists() for track in tracks)
+    finally:
+        session.close()
+
+
+def test_persist_selected_stem_track_uses_local_path_when_cloudinary_upload_fails(tmp_path):
+    session = create_test_session()
+    try:
+        transcription = models.Transcription(
+            title="Local stem fallback",
+            user_id=1,
+            selected_stem="other",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/old.wav",
+            separated_audio_public_id="old-public-id",
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        source_path = tmp_path / "other.wav"
+        source_path.write_bytes(b"stem")
+        upload_dir = tmp_path / "uploads"
+
+        with patch("app.tasks.settings") as settings_mock:
+            settings_mock.UPLOAD_DIR = str(upload_dir)
+            with patch("app.tasks.estimate_stem_confidence", return_value=90):
+                with patch(
+                    "app.tasks.upload_transcription_artifact",
+                    side_effect=RuntimeError("cloudinary unavailable"),
+                ):
+                    track = persist_selected_stem_track(
+                        transcription,
+                        "other",
+                        str(source_path),
+                        session,
+                    )
+
+        session.refresh(transcription)
+        assert transcription.separated_audio_url is None
+        assert transcription.separated_audio_public_id is None
+        assert transcription.separated_audio_file_path
+        assert Path(transcription.separated_audio_file_path).exists()
+        assert track.stem_audio_path == transcription.separated_audio_file_path
+    finally:
+        session.close()
+
+
+def test_persist_selected_stem_track_requires_secure_url_before_saving_cloudinary_url(tmp_path):
+    session = create_test_session()
+    try:
+        transcription = models.Transcription(
+            title="Missing secure url",
+            user_id=1,
+            selected_stem="other",
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+
+        source_path = tmp_path / "other.wav"
+        source_path.write_bytes(b"stem")
+        upload_dir = tmp_path / "uploads"
+
+        with patch("app.tasks.settings") as settings_mock:
+            settings_mock.UPLOAD_DIR = str(upload_dir)
+            with patch("app.tasks.estimate_stem_confidence", return_value=90):
+                with patch(
+                    "app.tasks.upload_transcription_artifact",
+                    return_value={"secure_url": None, "public_id": "stem-public-id"},
+                ):
+                    persist_selected_stem_track(
+                        transcription,
+                        "other",
+                        str(source_path),
+                        session,
+                    )
+
+        session.refresh(transcription)
+        assert transcription.separated_audio_url is None
+        assert transcription.separated_audio_public_id is None
+        assert transcription.separated_audio_file_path
     finally:
         session.close()
 
@@ -945,6 +1026,75 @@ def test_generate_tab_from_separated_stem_runs_pitch_after_user_confirmation(tmp
         assert refreshed.can_play_stem is True
         assert refreshed.can_generate_score is True
         assert refreshed.tablature_data
+    finally:
+        session.close()
+
+
+def test_generate_tab_from_separated_stem_drums_generates_rhythm_only(tmp_path):
+    session = create_test_session()
+    try:
+        stem_path = tmp_path / "drums.wav"
+        stem_path.write_bytes(b"drums")
+        transcription = models.Transcription(
+            title="Confirmed rhythm generation",
+            separated_audio_file_path=str(stem_path),
+            selected_stem="drums",
+            user_id=1,
+            is_processed=True,
+            processing_status="stem_ready",
+            can_play_stem=True,
+            can_generate_score=False,
+            tablature_data='{"tablature": [{"fret": 0}]}',
+            midi_file_path=str(tmp_path / "stale.mid"),
+            tab_file_path=str(tmp_path / "stale.tab"),
+        )
+        session.add(transcription)
+        session.commit()
+        session.refresh(transcription)
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="drums",
+            display_name="Drums",
+            stem_audio_path=str(stem_path),
+            processing_status="stem_ready",
+        )
+        session.add(track)
+        session.commit()
+
+        drum_result = {
+            "drum_hits": [{"onset": 0.0, "offset": 0.12, "confidence": 0.75}],
+            "rhythm_analysis": {"source": "drum_stem_onset_detection", "total_duration": 1.0},
+        }
+
+        with patch("app.tasks.get_db_session", return_value=session):
+            with patch("app.tasks.audio.detect_pitch") as pitch_mock:
+                with patch("app.tasks.tablature.notes_to_tablature") as tab_mock:
+                    with patch("app.tasks.midi.save_midi_from_transcription") as midi_mock:
+                        with patch("app.tasks.audio.analyze_drum_rhythm", return_value=drum_result) as drum_mock:
+                            result = generate_tab_from_separated_stem.run(transcription.id)
+
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription.id
+        ).first()
+        refreshed_track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.transcription_id == transcription.id,
+            models.InstrumentTrack.instrument_type == "drums",
+        ).one()
+
+        assert result["status"] == "completed"
+        assert result["can_generate_score"] is False
+        assert result["message"] == "Rhythm generation completed."
+        assert drum_mock.call_count == 1
+        assert pitch_mock.call_count == 0
+        assert tab_mock.call_count == 0
+        assert midi_mock.call_count == 0
+        assert json.loads(refreshed.notes_data)["drum_hits"][0]["confidence"] == 0.75
+        assert json.loads(refreshed_track.notes_json)["drum_hits"][0]["confidence"] == 0.75
+        assert refreshed.tablature_data is None
+        assert refreshed.notation_data is None
+        assert refreshed.can_generate_score is False
+        assert refreshed.midi_file_path is None
+        assert refreshed.tab_file_path is None
     finally:
         session.close()
 

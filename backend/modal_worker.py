@@ -647,14 +647,10 @@ def _complete_job(
     track_metadata = analysis_result.get("track_metadata") or {}
     if upload_result.get("secure_url"):
         track_metadata.setdefault("confidence_notes", "Selected stem separated by Modal/Demucs.")
+    selected_stem = str(job.get("selected_stem") or job.get("demucs_stem") or "other").strip().lower()
     payload = {
         "separated_audio_url": upload_result.get("secure_url"),
         "separated_audio_public_id": upload_result.get("public_id"),
-        "midi_file_url": analysis_result.get("midi_file_url"),
-        "midi_file_public_id": analysis_result.get("midi_file_public_id"),
-        "tab_file_url": analysis_result.get("tab_file_url"),
-        "tab_file_public_id": analysis_result.get("tab_file_public_id"),
-        "tablature_data": analysis_result.get("tablature_data"),
         "lyrics_data": analysis_result.get("lyrics_data"),
         "confidence": analysis_result.get("confidence", 90),
         "duration": analysis_result.get("duration"),
@@ -667,6 +663,14 @@ def _complete_job(
         "chord_chart_data": analysis_result.get("chord_chart_data"),
         "track_metadata": track_metadata,
     }
+    if selected_stem != "drums":
+        payload.update({
+            "midi_file_url": analysis_result.get("midi_file_url"),
+            "midi_file_public_id": analysis_result.get("midi_file_public_id"),
+            "tab_file_url": analysis_result.get("tab_file_url"),
+            "tab_file_public_id": analysis_result.get("tab_file_public_id"),
+            "tablature_data": analysis_result.get("tablature_data"),
+        })
     _post_json(_complete_url(job), payload)
 
 

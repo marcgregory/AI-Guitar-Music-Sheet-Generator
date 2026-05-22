@@ -1052,6 +1052,59 @@ def test_worker_complete_saves_cloudinary_outputs_and_track_metadata():
         session.close()
 
 
+def test_worker_complete_does_not_keep_stale_separated_audio_url_without_secure_url():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "missing-secure-owner", "missing-secure@example.com")
+        transcription = models.Transcription(
+            title="Missing secure URL job",
+            user_id=owner.id,
+            selected_stem="other",
+            original_audio_url="https://res.cloudinary.com/demo/video/upload/source.wav",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/stale.wav",
+            separated_audio_public_id="musicstudio/stale",
+            is_processed=False,
+            processing_status="processing",
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "separated_audio_url": None,
+                "separated_audio_public_id": "musicstudio/new-without-url",
+                "confidence": 84,
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["separated_audio_url"] is None
+    assert payload["separated_audio_public_id"] is None
+    assert payload["can_play_stem"] is False
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.separated_audio_url is None
+        assert refreshed.separated_audio_public_id is None
+    finally:
+        session.close()
+
+
 def test_worker_complete_persists_empty_notes_warning_for_modal_stem():
     reset_database()
     original_token = config.settings.WORKER_API_TOKEN
@@ -1155,24 +1208,24 @@ def test_status_no_note_warning_is_completed_and_playable(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload == {
-        "status": "stem_ready",
-        "warning": "No note events detected for this stem.",
-        "warning_message": "No note events detected for this stem.",
-        "transcription_id": transcription_id,
-        "selected_stem": "other",
-        "can_play_stem": True,
-        "can_generate_score": False,
-        "separated_audio_url": None,
-        "available_exports": [],
-        "is_demo": False,
-        "queue_position": None,
-        "estimated_wait_time": None,
-        "modal_dispatch_status": None,
-        "modal_retry_at": None,
-        "message": "Stem is ready. Listen first, then generate tabs if the stem sounds useful.",
-        "output_mode": "playback_only",
-    }
+    assert payload["status"] == "stem_ready"
+    assert payload["warning"] == "No note events detected for this stem."
+    assert payload["warning_message"] == "No note events detected for this stem."
+    assert payload["transcription_id"] == transcription_id
+    assert payload["selected_stem"] == "other"
+    assert payload["can_play_stem"] is True
+    assert payload["can_generate_score"] is False
+    assert payload["can_generate_tab"] is False
+    assert payload["can_generate_rhythm"] is False
+    assert payload["separated_audio_url"] is None
+    assert payload["available_exports"] == []
+    assert payload["is_demo"] is False
+    assert payload["queue_position"] is None
+    assert payload["estimated_wait_time"] is None
+    assert payload["modal_dispatch_status"] is None
+    assert payload["modal_retry_at"] is None
+    assert payload["message"] == "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+    assert payload["output_mode"] == "playback_only"
 
 
 def test_status_repairs_processing_playback_only_stem_to_stem_ready(tmp_path):
@@ -1211,6 +1264,8 @@ def test_status_repairs_processing_playback_only_stem_to_stem_ready(tmp_path):
     assert payload["output_mode"] == "playback_only"
     assert payload["can_play_stem"] is True
     assert payload["can_generate_score"] is False
+    assert payload["can_generate_tab"] is False
+    assert payload["can_generate_rhythm"] is False
     assert payload["selected_stem"] == "bass"
     assert payload["queue_position"] is None
     assert payload["estimated_wait_time"] is None
@@ -1226,6 +1281,8 @@ def test_status_repairs_processing_playback_only_stem_to_stem_ready(tmp_path):
     result_payload = result_response.json()
     assert result_payload["processing_status"] == "stem_ready"
     assert result_payload["output_mode"] == "playback_only"
+    assert result_payload["can_generate_tab"] is False
+    assert result_payload["can_generate_rhythm"] is False
 
     session = TestingSessionLocal()
     try:
@@ -1239,6 +1296,88 @@ def test_status_repairs_processing_playback_only_stem_to_stem_ready(tmp_path):
         assert refreshed.estimated_wait_time is None
     finally:
         session.close()
+
+
+def test_drum_payloads_are_rhythm_only_across_result_and_status(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "drum-owner", "drum-owner@example.com")
+        stem_path = tmp_path / "drums.wav"
+        stem_path.write_bytes(b"stem")
+        notes_data = json.dumps({
+            "drum_hits": [{"onset": 0.0, "offset": 0.1, "confidence": 0.8}],
+            "rhythm_analysis": {"total_duration": 1.0},
+        })
+        transcription = models.Transcription(
+            title="Drum rhythm",
+            user_id=owner.id,
+            selected_stem="drums",
+            separated_audio_file_path=str(stem_path),
+            notes_data=notes_data,
+            tablature_data='{"tablature": [{"fret": 0}]}',
+            midi_file_path=str(tmp_path / "stale.mid"),
+            tab_file_path=str(tmp_path / "stale.tab"),
+            is_processed=True,
+            processing_status="completed",
+            can_play_stem=True,
+            can_generate_score=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    for suffix in ("result", "status"):
+        response = client.get(
+            f"/api/v1/audio/{transcription_id}/{suffix}",
+            headers=auth_headers("drum-owner"),
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["selected_stem"] == "drums"
+        assert payload["can_generate_score"] is False
+        assert payload["can_generate_tab"] is False
+        assert payload["can_generate_rhythm"] is True
+        assert payload["available_exports"] == []
+        assert payload["output_mode"] == "rhythm"
+
+
+def test_drum_stem_ready_payload_is_playback_with_rhythm_generation_available(tmp_path):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "drum-ready-owner", "drum-ready@example.com")
+        stem_path = tmp_path / "drums.wav"
+        stem_path.write_bytes(b"stem")
+        transcription = models.Transcription(
+            title="Drum stem ready",
+            user_id=owner.id,
+            selected_stem="drums",
+            separated_audio_file_path=str(stem_path),
+            is_processed=True,
+            processing_status="stem_ready",
+            can_play_stem=True,
+            can_generate_score=False,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/status",
+        headers=auth_headers("drum-ready-owner"),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_mode"] == "playback_only"
+    assert payload["can_generate_score"] is False
+    assert payload["can_generate_tab"] is False
+    assert payload["can_generate_rhythm"] is True
+    assert payload["available_exports"] == []
 
 
 def test_retry_transcription_endpoint_queues_lower_threshold_retry(tmp_path):
@@ -1350,6 +1489,57 @@ def test_generate_tab_endpoint_accepts_high_sensitivity_option():
         assert refreshed.tab_generation_status == "processing"
         assert refreshed.rhythm_generation_status == "idle"
         assert refreshed.celery_task_id == "tab-task"
+    finally:
+        session.close()
+
+
+def test_generate_tab_endpoint_queues_drum_rhythm_generation():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "rhythm-owner", "rhythm-owner@example.com")
+        transcription = models.Transcription(
+            title="Rhythm from stem",
+            user_id=owner.id,
+            selected_stem="drums",
+            separated_audio_file_path=str(Path("/tmp/drums.wav")),
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_tab_generation", return_value="rhythm-task") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/generate-tabs",
+            headers=auth_headers("rhythm-owner"),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "processing"
+    assert payload["selected_stem"] == "drums"
+    assert payload["can_generate_score"] is False
+    assert payload["can_generate_tab"] is False
+    assert payload["available_exports"] == []
+    assert payload["tab_generation_status"] == "idle"
+    assert payload["rhythm_generation_status"] == "processing"
+    assert payload["message"] == "Rhythm generation started."
+    assert start_mock.call_args.args[0] == transcription_id
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status == "processing"
+        assert refreshed.tab_generation_status == "idle"
+        assert refreshed.rhythm_generation_status == "processing"
+        assert refreshed.celery_task_id == "rhythm-task"
     finally:
         session.close()
 

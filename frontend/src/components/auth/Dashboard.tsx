@@ -74,6 +74,13 @@ const getDifficulty = (duration?: number | null): Project["difficulty"] => {
 const mapTranscriptionToProject = (transcription: Transcription): Project => {
   const status = getTranscriptionStatus(transcription);
   const metadata = buildTranscriptionMetadata(transcription);
+  const selectedStem = (transcription.selected_stem || "other").toLowerCase();
+  const stemReadyDescription =
+    selectedStem === "drums"
+      ? "Drum stem is ready. Listen first, then generate rhythm if the stem sounds useful."
+      : selectedStem === "vocals"
+        ? "Vocal stem is ready. Listen first, then generate lyrics when you want a timestamped transcription."
+        : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";
   const audioFileName = transcription.youtube_url
     ? "YouTube audio"
     : transcription.is_demo
@@ -90,7 +97,7 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
         : status === "warning"
           ? transcription.warning_message || metadata.description
           : status === "stem_ready"
-            ? "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+            ? stemReadyDescription
             : status === "queued"
               ? "Queued for Modal processing"
               : status === "pending"

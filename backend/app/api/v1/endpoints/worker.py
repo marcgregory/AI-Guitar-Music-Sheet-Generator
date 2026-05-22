@@ -202,10 +202,13 @@ async def complete_worker_job(
         )
         return transcription
 
-    transcription.separated_audio_url = payload.separated_audio_url or transcription.separated_audio_url
-    transcription.separated_audio_public_id = (
-        payload.separated_audio_public_id or transcription.separated_audio_public_id
-    )
+    separated_audio_url = (payload.separated_audio_url or "").strip()
+    if separated_audio_url.startswith("https://"):
+        transcription.separated_audio_url = separated_audio_url
+        transcription.separated_audio_public_id = payload.separated_audio_public_id
+    else:
+        transcription.separated_audio_url = None
+        transcription.separated_audio_public_id = None
     transcription.midi_file_url = payload.midi_file_url
     transcription.midi_file_public_id = payload.midi_file_public_id
     transcription.tab_file_url = payload.tab_file_url
@@ -230,7 +233,9 @@ async def complete_worker_job(
     elif selected_stem in {"bass", "other"} and not has_notes:
         warning_message = "No note events detected for this stem."
     transcription.warning_message = warning_message
-    transcription.can_play_stem = bool(transcription.separated_audio_url)
+    transcription.can_play_stem = bool(
+        transcription.separated_audio_url or transcription.separated_audio_file_path
+    )
     if (
         transcription.notes_data is None
         and selected_stem in {"bass", "other"}

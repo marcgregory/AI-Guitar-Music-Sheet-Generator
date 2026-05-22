@@ -135,12 +135,13 @@ export const buildTranscriptionMetadata = (
 ): TranscriptionMetadata => {
   const importType = normalizeImportType(transcription.source_type, transcription.import_type);
   const isImport = Boolean(importType);
-  const selectedStem = transcription.selected_stem || "other";
+  const selectedStem = (transcription.selected_stem || "other").toLowerCase();
   const trackCount = Number(transcription.track_count ?? tracks.length ?? 0);
   const isMultiTrack = Boolean(importType && (trackCount > 1 || transcription.output_mode === "multi_track"));
-  const hasNotes = Boolean(transcription.can_generate_score || hasNoteEvents(transcription.notes_data));
-  const hasTabs = Boolean(transcription.can_generate_tab ?? hasTabData(transcription.tablature_data));
-  const hasRhythm = Boolean(transcription.can_generate_rhythm ?? hasDrumHits(transcription.notes_data));
+  const isDrums = selectedStem === "drums";
+  const hasNotes = Boolean(!isDrums && (transcription.can_generate_score || hasNoteEvents(transcription.notes_data)));
+  const hasTabs = Boolean(!isDrums && (transcription.can_generate_tab ?? hasTabData(transcription.tablature_data)));
+  const hasRhythm = Boolean(isDrums && (transcription.can_generate_rhythm ?? hasDrumHits(transcription.notes_data)));
   const hasScore = Boolean(transcription.can_generate_score && (hasNotes || hasText(transcription.notation_data)));
   const hasPlayback = Boolean(transcription.can_play_stem || transcription.original_audio_url || transcription.separated_audio_url || transcription.audio_file_path);
   const stemLabel = isImport ? "Imported Project" : stemLabelOf(selectedStem);
@@ -165,8 +166,8 @@ export const buildTranscriptionMetadata = (
   const outputBadges = [
     hasTabs ? "TAB READY" : null,
     hasScore ? "SCORE READY" : null,
-    hasPlayback ? "SYNC READY" : null,
     hasRhythm ? "RHYTHM READY" : null,
+    hasPlayback ? "SYNC READY" : null,
     hasPlayback && !hasTabs && !hasScore && !hasRhythm ? "PLAYBACK ONLY" : null,
     isMultiTrack ? "MULTI-TRACK" : null,
     importType === "midi" ? "IMPORTED MIDI" : null,

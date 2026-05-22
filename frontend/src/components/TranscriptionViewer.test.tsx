@@ -193,7 +193,7 @@ describe("TranscriptionViewer generate tabs polling", () => {
     expect(generatingButton).toBeDisabled();
   });
 
-  it("renders readable drum tabs as wrapped measure notation", async () => {
+  it("renders readable drum rhythm as wrapped measure notation without tab readiness", async () => {
     const drumNotes = JSON.stringify({
       drum_hits: [
         { onset: 0, offset: 0.08, intensity: 0.9, instrument: "kick" },
@@ -212,7 +212,10 @@ describe("TranscriptionViewer generate tabs polling", () => {
         processing_status: "completed",
         notes_data: drumNotes,
         can_generate_score: false,
+        can_generate_tab: false,
         can_generate_rhythm: true,
+        available_exports: [],
+        output_mode: "rhythm",
       });
     (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
       .mockResolvedValue([
@@ -229,10 +232,39 @@ describe("TranscriptionViewer generate tabs polling", () => {
 
     render(<TranscriptionViewer />);
 
-    expect(await screen.findByText("Drum Tabs")).toBeInTheDocument();
+    expect(await screen.findByText("Drum Rhythm")).toBeInTheDocument();
+    expect(screen.getAllByText("RHYTHM READY").length).toBeGreaterThan(0);
+    expect(screen.queryByText("TAB READY")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^TAB$/i })).not.toBeInTheDocument();
     expect(screen.getByText("HH|")).toBeInTheDocument();
     expect(screen.getByText("SD|")).toBeInTheDocument();
     expect(screen.getByText("BD|")).toBeInTheDocument();
+  });
+
+  it("shows Generate Rhythm for drum stem-ready and never Generate Tabs", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Drum Stem Ready",
+        selected_stem: "drums",
+        processing_status: "stem_ready",
+        can_generate_score: false,
+        can_generate_tab: false,
+        can_generate_rhythm: true,
+        output_mode: "playback_only",
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    expect(
+      await screen.findByRole("button", { name: /Generate Rhythm/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Generate Tabs/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText("RHYTHM READY").length).toBeGreaterThan(0);
   });
 
   it("shows vocal lyrics generation without switching to audio processing UI", async () => {

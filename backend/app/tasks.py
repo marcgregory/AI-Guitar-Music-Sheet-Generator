@@ -511,6 +511,49 @@ def generate_tab_outputs_for_transcription(
     db_session.add(track)
     db_session.commit()
 
+    if selected_stem == "drums":
+        drum_result = audio.analyze_drum_rhythm(separated_path)
+        track.notes_json = json.dumps(drum_result)
+        track.tab_json = None
+        track.notation_json = None
+        track.processing_status = "completed" if has_drum_hits(drum_result) else "completed_with_warning"
+        track.confidence_score = average_drum_hit_confidence(drum_result) if has_drum_hits(drum_result) else None
+        track.confidence_notes = None if has_drum_hits(drum_result) else "No drum hits detected for this stem."
+
+        transcription.notes_data = track.notes_json
+        transcription.tablature_data = None
+        transcription.notation_data = None
+        transcription.midi_file_path = None
+        transcription.midi_file_url = None
+        transcription.midi_file_public_id = None
+        transcription.tab_file_path = None
+        transcription.tab_file_url = None
+        transcription.tab_file_public_id = None
+        transcription.can_generate_score = False
+        transcription.can_play_stem = stem_playback_available(transcription)
+        transcription.warning_message = track.confidence_notes
+        transcription.processing_error = None
+        transcription.is_processed = True
+        transcription.processing_status = (
+            "completed" if has_drum_hits(drum_result) else "completed_with_warning"
+        )
+        db_session.add(track)
+        db_session.add(transcription)
+        db_session.commit()
+        return
+
+    generate_single_track_transcription_output(
+        track,
+        db_session,
+        clear_existing=True,
+        detection_sensitivity=detection_sensitivity,
+        selected_stem=selected_stem,
+    )
+    db_session.refresh(track)
+    sync_selected_track_to_transcription(transcription, track, db_session)
+    db_session.refresh(transcription)
+    generate_derived_outputs(transcription, db_session)
+
 
 def generate_lyrics_output_for_transcription(
     transcription: models.Transcription,
@@ -717,6 +760,9 @@ def set_manual_generation_status(transcription, generation_status: str) -> None:
 
 def generate_derived_outputs(transcription, db_session: Session) -> None:
     """Regenerate MIDI, MusicXML, tablature, and chord charts from stored JSON."""
+    if (getattr(transcription, "selected_stem", None) or "other").strip().lower() in {"drums", "vocals"}:
+        return
+
     if transcription.notes_data:
         try:
             midi_file_path = midi.save_midi_from_transcription(
@@ -974,22 +1020,27 @@ def persist_selected_stem_track(
             str(destination_path),
             folder_name="selected-stem",
         )
-        if stem_upload:
-            transcription.separated_audio_url = stem_upload["secure_url"]
-            transcription.separated_audio_public_id = stem_upload["public_id"]
+        secure_url = str((stem_upload or {}).get("secure_url") or "").strip()
+        if secure_url.startswith("https://"):
+            transcription.separated_audio_url = secure_url
+            transcription.separated_audio_public_id = stem_upload.get("public_id")
+        else:
+            transcription.separated_audio_url = None
+            transcription.separated_audio_public_id = None
         logger.info(
             "Selected stem upload complete for transcription %s stem=%s uploaded=%s",
             transcription.id,
             selected_stem,
-            bool(stem_upload),
+            bool(secure_url),
         )
     except Exception as exc:
+        transcription.separated_audio_url = None
+        transcription.separated_audio_public_id = None
         logger.warning(
-            "Failed to upload selected stem for transcription %s: %s",
+            "Failed to upload selected stem for transcription %s; using local API-served file path instead: %s",
             transcription.id,
             exc,
         )
-        raise
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(track)
@@ -1687,7 +1738,11 @@ def generate_tab_from_separated_stem(
             "selected_stem": selected_stem,
             "can_play_stem": transcription.can_play_stem,
             "can_generate_score": transcription.can_generate_score,
-            "message": "Tab generation completed.",
+            "message": (
+                "Rhythm generation completed."
+                if selected_stem == "drums"
+                else "Tab generation completed."
+            ),
         }
     except Exception as e:
         if db_session:

@@ -1525,7 +1525,12 @@ def _is_viewable_stem_ready(transcription: models.Transcription) -> bool:
 
 
 def _can_generate_score(transcription: models.Transcription) -> bool:
-    return bool(transcription.can_generate_score and _has_note_events(transcription.notes_data))
+    selected_stem = (transcription.selected_stem or "other").lower()
+    return bool(
+        selected_stem in {"other", "bass"}
+        and transcription.can_generate_score
+        and _has_note_events(transcription.notes_data)
+    )
 
 
 def _available_exports(transcription: models.Transcription) -> list[str]:
@@ -1567,6 +1572,11 @@ def _has_tablature_events(value: str | None) -> bool:
 
 
 def _has_score_output(transcription: models.Transcription) -> bool:
+    selected_stem = (transcription.selected_stem or "other").lower()
+    if selected_stem == "drums":
+        return _has_drum_hits(transcription.notes_data)
+    if selected_stem == "vocals":
+        return False
     return bool(
         _has_note_events(transcription.notes_data)
         or _has_tablature_events(transcription.tablature_data)
@@ -1692,15 +1702,26 @@ def _tuning_for(transcription: models.Transcription) -> str | None:
 
 
 def _metadata_payload(transcription: models.Transcription) -> dict:
-    selected_stem = transcription.selected_stem or "other"
+    selected_stem = (transcription.selected_stem or "other").lower()
     import_type = _import_type(transcription)
     track_count = len(transcription.instrument_tracks or [])
-    can_generate_tab = _has_tablature_events(transcription.tablature_data)
-    can_generate_rhythm = selected_stem == "drums" and _has_drum_hits(transcription.notes_data)
+    has_drum_hits = _has_drum_hits(transcription.notes_data)
+    can_generate_tab = (
+        selected_stem in {"other", "bass"}
+        and _has_tablature_events(transcription.tablature_data)
+    )
+    can_generate_rhythm = selected_stem == "drums" and (
+        has_drum_hits
+        or (
+            transcription.processing_status == "stem_ready"
+            and _can_play_stem(transcription)
+            and _has_stem_audio_reference(transcription)
+        )
+    )
     can_generate_score = _can_generate_score(transcription)
     can_play_stem = _can_play_stem(transcription)
     output_mode = (
-        "rhythm" if can_generate_rhythm else
+        "rhythm" if has_drum_hits else
         "tab_score" if can_generate_tab and can_generate_score else
         "tab" if can_generate_tab else
         "score" if can_generate_score else
@@ -1737,22 +1758,15 @@ def _status_payload(
     message: str | None = None,
 ) -> dict:
     warning = transcription.warning_message
-    can_play_stem = _can_play_stem(transcription)
-    can_generate_score = _can_generate_score(transcription)
+    metadata = _metadata_payload(transcription)
     payload = {
         "status": transcription.processing_status or "completed",
         "warning": warning,
         "transcription_id": transcription_id,
-        "selected_stem": selected_stem,
-        "can_play_stem": can_play_stem,
-        "can_generate_score": can_generate_score,
+        **metadata,
         "warning_message": warning,
         "lyrics_generation_status": transcription.lyrics_generation_status,
-        "tab_generation_status": transcription.tab_generation_status or "idle",
-        "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
         "lyrics_data": transcription.lyrics_data,
-        "separated_audio_url": transcription.separated_audio_url,
-        "available_exports": _available_exports(transcription),
         "is_demo": transcription.is_demo,
         "queue_position": transcription.queue_position,
         "estimated_wait_time": transcription.estimated_wait_time,
@@ -1768,12 +1782,6 @@ def _status_payload(
         payload["message"] = "Waiting for Modal capacity. Retry scheduled."
     elif transcription.processing_status == "stem_ready":
         payload["message"] = STEM_READY_MESSAGE
-    if (
-        transcription.processing_status == "stem_ready"
-        and can_play_stem
-        and not _has_score_output(transcription)
-    ):
-        payload["output_mode"] = "playback_only"
     return _finalize_status_response_for_mode(payload)
 
 
@@ -1791,7 +1799,7 @@ def _finalize_status_response_for_mode(payload: dict) -> dict:
         local_payload["message"] = (
             "Queued for local processing."
             if local_payload.get("status") == "queued"
-            else None
+            else local_payload.get("message")
         )
 
     if local_payload.get("modal_dispatch_status") == "modal_required":
@@ -2908,17 +2916,11 @@ async def get_transcription_status(
         return _finalize_status_response_for_mode({
             "status": transcription.processing_status or "deleted",
             "transcription_id": transcription_id,
-            "selected_stem": selected_stem,
+            **_metadata_payload(transcription),
             "warning": transcription.warning_message,
             "warning_message": transcription.warning_message,
             "lyrics_generation_status": transcription.lyrics_generation_status,
-            "tab_generation_status": transcription.tab_generation_status or "idle",
-            "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
             "lyrics_data": transcription.lyrics_data,
-            "can_play_stem": _can_play_stem(transcription),
-            "can_generate_score": _can_generate_score(transcription),
-            "separated_audio_url": transcription.separated_audio_url,
-            "available_exports": _available_exports(transcription),
             "is_demo": transcription.is_demo,
             "deleted_at": transcription.deleted_at,
             "message": "This transcription record was deleted.",
@@ -2934,17 +2936,11 @@ async def get_transcription_status(
             "status": "failed",
             "error": blocking_error or transcription.processing_error or "Processing failed",
             "transcription_id": transcription_id,
-            "selected_stem": selected_stem,
+            **_metadata_payload(transcription),
             "warning": transcription.warning_message,
             "warning_message": transcription.warning_message,
             "lyrics_generation_status": transcription.lyrics_generation_status,
-            "tab_generation_status": transcription.tab_generation_status or "idle",
-            "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
             "lyrics_data": transcription.lyrics_data,
-            "can_play_stem": _can_play_stem(transcription),
-            "can_generate_score": _can_generate_score(transcription),
-            "separated_audio_url": transcription.separated_audio_url,
-            "available_exports": _available_exports(transcription),
             "is_demo": transcription.is_demo,
             "queue_position": None,
             "estimated_wait_time": None,
@@ -2989,17 +2985,11 @@ async def get_transcription_status(
         return _finalize_status_response_for_mode({
             "status": current_status,
             "transcription_id": transcription_id,
-            "selected_stem": selected_stem,
+            **_metadata_payload(transcription),
             "warning": transcription.warning_message,
             "warning_message": transcription.warning_message,
             "lyrics_generation_status": transcription.lyrics_generation_status,
-            "tab_generation_status": transcription.tab_generation_status or "idle",
-            "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
             "lyrics_data": transcription.lyrics_data,
-            "can_play_stem": _can_play_stem(transcription),
-            "can_generate_score": _can_generate_score(transcription),
-            "separated_audio_url": transcription.separated_audio_url,
-            "available_exports": _available_exports(transcription),
             "is_demo": transcription.is_demo,
             "message": message,
             "queue_position": transcription.queue_position,
@@ -3194,17 +3184,18 @@ async def generate_tab(
         db_session.add(transcription)
         db_session.commit()
         db_session.refresh(transcription)
+    metadata = _metadata_payload(transcription)
+    message = (
+        "Rhythm generation started."
+        if selected_stem == "drums"
+        else "Tab generation started."
+    )
     return {
         "status": transcription.processing_status,
         "transcription_id": transcription.id,
-        "selected_stem": selected_stem,
-        "can_play_stem": transcription.can_play_stem,
-        "can_generate_score": transcription.can_generate_score,
-        "separated_audio_url": transcription.separated_audio_url,
+        **metadata,
         "is_demo": transcription.is_demo,
-        "tab_generation_status": transcription.tab_generation_status or "idle",
-        "rhythm_generation_status": transcription.rhythm_generation_status or "idle",
-        "message": "Tab generation started.",
+        "message": message,
     }
 
 

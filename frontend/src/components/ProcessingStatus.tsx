@@ -224,6 +224,25 @@ const ProcessingStatus: React.FC = () => {
       status === "completed_with_warning" ||
       status === "failed");
 
+  const stemReadyCopy = (() => {
+    if (selectedStem === "drums") {
+      return {
+        ready: "Drum stem is ready. Listen first, then generate rhythm if the stem sounds useful.",
+        followup: "Rhythm generation will only run after you confirm from the preview screen.",
+      };
+    }
+    if (selectedStem === "vocals") {
+      return {
+        ready: "Vocal stem is ready. Listen first, then generate lyrics when you want a timestamped transcription.",
+        followup: "Lyrics generation will only run after you confirm from the preview screen.",
+      };
+    }
+    return {
+      ready: "Stem is ready. Listen first, then generate tabs if the stem sounds useful.",
+      followup: "Tab generation will only run after you confirm from the preview screen.",
+    };
+  })();
+
   if (status === "idle") {
     return (
       <div className="processing-status-container">
@@ -402,13 +421,9 @@ const ProcessingStatus: React.FC = () => {
           ) : status === "stem_ready" ? (
             <>
               <p>
-                Stem is ready. Listen first, then generate tabs if the stem
-                sounds useful.
+                {stemReadyCopy.ready}
               </p>
-              <p>
-                Tab generation will only run after you confirm from the preview
-                screen.
-              </p>
+              <p>{stemReadyCopy.followup}</p>
             </>
           ) : (
             <>

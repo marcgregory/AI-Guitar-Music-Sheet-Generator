@@ -1693,11 +1693,11 @@ const DrumRhythmLane = ({
         <span>0:00</span>
         <span>{formatDuration(duration)}</span>
       </div>
-      <section className="drum-tabs-panel" aria-label="Drum tabs">
+      <section className="drum-tabs-panel" aria-label="Drum rhythm notation">
         <div className="drum-tabs-header">
           <div>
             <span className="meta-label">Drum notation</span>
-            <strong>Drum Tabs</strong>
+            <strong>Drum Rhythm</strong>
           </div>
           {drumTabGrid ? <span>{drumTabGrid.subdivision} grid</span> : null}
         </div>
@@ -1731,7 +1731,7 @@ const DrumRhythmLane = ({
           </div>
         ) : (
           <p className="drum-tabs-empty">
-            Not enough drum hits detected to generate tabs.
+            Not enough drum hits detected to generate rhythm notation.
           </p>
         )}
       </section>
@@ -1784,11 +1784,11 @@ const DrumTabNotation = ({
     title && title.length > 62 ? `${title.slice(0, 59)}...` : title;
 
   return (
-    <div className="drum-tab-view" role="img" aria-label={`${visibleTitle} drum tabs`}>
+    <div className="drum-tab-view" role="img" aria-label={`${visibleTitle} drum rhythm`}>
       <div className="drum-tab-view-header">
         <div>
           <span className="meta-label">Drum notation</span>
-          <strong>Drum Tabs</strong>
+          <strong>Drum Rhythm</strong>
         </div>
         <span>
           {hits.length} hits
@@ -1862,7 +1862,7 @@ const DrumTabNotation = ({
         </div>
       ) : (
         <p className="drum-tabs-empty">
-          Not enough drum hits detected to generate tabs.
+          Not enough drum hits detected to generate rhythm notation.
         </p>
       )}
 
@@ -2978,7 +2978,7 @@ const TranscriptionViewer: React.FC = () => {
     });
     stopGenerateTabPolling("new generate tabs request");
     setGenerationStatus(nextGenerationStatus);
-    setGenerationMessage("Tab generation started.");
+    setGenerationMessage(isRhythm ? "Rhythm generation started." : "Tab generation started.");
     setIsGeneratingTab(true);
     isGeneratingTabRef.current = true;
     setError(null);
@@ -2986,7 +2986,10 @@ const TranscriptionViewer: React.FC = () => {
     try {
       const response = await audioService.generateTab(transcription.id, token);
       console.log("API response", response);
-      setGenerationMessage(response.message ?? "Tab generation started.");
+      setGenerationMessage(
+        response.message ??
+          (isRhythm ? "Rhythm generation started." : "Tab generation started."),
+      );
       setTranscription((current) =>
         current
           ? {
@@ -3165,6 +3168,7 @@ const TranscriptionViewer: React.FC = () => {
   );
   const selectedTrackIsDrums =
     scoreSource?.instrumentType.toLowerCase() === "drums";
+  const selectedTrackHasDrumHits = extractDrumHits(scoreSource?.notesData).length > 0;
   const selectedTrackReprocessSupported = Boolean(
     selectedTrack &&
     ["guitar", "bass", "drums", "vocals"].includes(
@@ -3211,7 +3215,9 @@ const TranscriptionViewer: React.FC = () => {
   const canGenerateScore = Boolean(
     scoreSource &&
     ((scoreGenerationAllowed && selectedTrackHasScore) ||
-      selectedTrackIsDrums),
+      (selectedTrackIsDrums &&
+        transcription.output_mode === "rhythm" &&
+        selectedTrackHasDrumHits)),
   );
   const displayedAsciiTab = asciiTab || globalAsciiTab;
   const canShowTabView = displayedAsciiTab.length > 0;
@@ -3264,6 +3270,7 @@ const TranscriptionViewer: React.FC = () => {
     selectedStemReady &&
     hasStemPlayback &&
     rhythmStemSupported &&
+    transcription.can_generate_rhythm !== false &&
     !isDemoTranscription,
   );
   const generateTabAllowed = canGenerateTabs || canGenerateRhythm;
@@ -3281,7 +3288,9 @@ const TranscriptionViewer: React.FC = () => {
       : "Creating tabs and score from the isolated stem...";
   const stemReadyMessage = isVocalStemReady
     ? "Vocal stem is ready for playback. Generate lyrics when you want a timestamped transcription."
-    : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";
+    : transcription.selected_stem === "drums"
+      ? "Drum stem is ready. Listen first, then generate rhythm if the stem sounds useful."
+      : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";
   const displayedProcessingStatus =
     isGeneratingTabsView
       ? "processing"
@@ -4061,9 +4070,9 @@ const TranscriptionViewer: React.FC = () => {
                       </strong>
                       <p>
                         {isGeneratingTabsView
-                          ? generatingDetails
-                          : selectedStemReady
-                          ? "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
+                        ? generatingDetails
+                        : selectedStemReady
+                          ? stemReadyMessage
                           : transcription.selected_stem === "drums"
                             ? "This stem currently supports rhythm playback only when drum hits are detected."
                             : transcription.selected_stem === "vocals"
