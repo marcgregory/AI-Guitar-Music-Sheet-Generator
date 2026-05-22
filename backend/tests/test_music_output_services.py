@@ -1,5 +1,8 @@
 import json
+import importlib.util
 from pathlib import Path
+import sys
+import types
 from unittest.mock import Mock, patch
 
 import pytest
@@ -22,6 +25,46 @@ from app.tasks import (
     reprocess_instrument_track,
     select_analysis_source,
 )
+
+
+def _load_modal_worker_with_stub():
+    existing = sys.modules.get("modal_worker")
+    if existing is not None:
+        return existing
+
+    class _ModalImage:
+        @classmethod
+        def debian_slim(cls, **_kwargs):
+            return cls()
+
+        def apt_install(self, *_args, **_kwargs):
+            return self
+
+        def pip_install(self, *_args, **_kwargs):
+            return self
+
+    class _ModalApp:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def function(self, *_args, **_kwargs):
+            return lambda fn: fn
+
+    modal_stub = types.SimpleNamespace(
+        App=_ModalApp,
+        Image=_ModalImage,
+        Secret=types.SimpleNamespace(from_name=lambda *_args, **_kwargs: object()),
+        fastapi_endpoint=lambda *_args, **_kwargs: (lambda fn: fn),
+    )
+
+    with patch.dict(sys.modules, {"modal": modal_stub}):
+        module_path = Path(__file__).resolve().parents[1] / "modal_worker.py"
+        spec = importlib.util.spec_from_file_location("modal_worker", module_path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["modal_worker"] = module
+        spec.loader.exec_module(module)
+        return module
 
 
 def create_test_session():
@@ -134,6 +177,43 @@ def test_tablature_supports_standard_bass_tuning():
     assert {note["string"] for note in tab["tablature"]}.issubset({1, 2, 3, 4})
     assert ascii_tab.splitlines()[0].startswith("G|")
     assert len(ascii_tab.splitlines()) == 4
+
+
+def test_modal_worker_bass_tablature_uses_four_valid_strings_and_midi_tuning():
+    modal_worker = _load_modal_worker_with_stub()
+    notes_data = {
+        "notes": [
+            {
+                "onset": 0.0,
+                "offset": 0.5,
+                "pitch": 28,
+                "velocity": 80,
+                "confidence": 0.95,
+            },
+            {
+                "onset": 0.5,
+                "offset": 1.0,
+                "pitch": 43,
+                "velocity": 76,
+                "confidence": 0.9,
+            },
+            {
+                "onset": 1.0,
+                "offset": 1.5,
+                "pitch": 51,
+                "velocity": 72,
+                "confidence": 0.88,
+            },
+        ],
+    }
+
+    tab = modal_worker._note_to_tablature(notes_data, "bass")
+
+    assert tab["instrument"] == "bass"
+    assert tab["tuning"] == [28, 33, 38, 43]
+    assert len(tab["tablature"]) == 3
+    assert {note["string"] for note in tab["tablature"]}.issubset({1, 2, 3, 4})
+    assert modal_worker._tablature_to_ascii(tab).splitlines()[0].startswith("G|")
 
 
 def test_has_structured_tablature_requires_non_empty_tablature_list():

@@ -256,9 +256,18 @@ const tuningFromTablature = (tablatureData: unknown): number[] => {
     Array.isArray(parsed.tuning) &&
     parsed.tuning.length > 0
   ) {
-    return parsed.tuning
+    const numericTuning = parsed.tuning
       .map(Number)
       .filter((note: number) => Number.isFinite(note));
+    if (numericTuning.length > 0) return numericTuning;
+
+    const labelTuning = parsed.tuning.map((note) =>
+      String(note ?? "").trim().toUpperCase(),
+    );
+    if (labelTuning.join(" ") === "E A D G") return [28, 33, 38, 43];
+    if (labelTuning.join(" ") === "E A D G B E") {
+      return [40, 45, 50, 55, 59, 64];
+    }
   }
   return [40, 45, 50, 55, 59, 64];
 };
@@ -798,7 +807,6 @@ const buildScoreNotes = (
   const tabNotes = extractTabNotes(tablatureData);
   const noteEvents = extractNoteEvents(notesData);
   const tuning = tuningFromTablature(tablatureData);
-  console.log({ tabNotes, noteEvents, tuning }, "logging line issue");
 
   if (tabNotes.length === 0) {
     return noteEvents
