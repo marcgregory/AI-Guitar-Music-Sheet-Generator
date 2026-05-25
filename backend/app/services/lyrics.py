@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 NO_CLEAR_VOCALS_MESSAGE = "No clear vocals detected for lyrics generation."
 SUPPORTED_LYRICS_LANGUAGES = {"auto", "en", "tl", "ceb", "es", "ja", "ko"}
+WHISPER_FORCED_LANGUAGE_OVERRIDES = {"ceb": None}
 
 _model_lock = Lock()
 _model = None
@@ -58,6 +59,13 @@ def normalize_lyrics_language(language: str | None) -> str:
             "lyrics language must be one of: auto, en, tl, ceb, es, ja, ko"
         )
     return normalized
+
+
+def forced_whisper_language(language: str) -> str | None:
+    return WHISPER_FORCED_LANGUAGE_OVERRIDES.get(
+        language,
+        None if language == "auto" else language,
+    )
 
 
 def _whisper_bool(value: bool | str | None, default: bool) -> bool:
@@ -114,7 +122,7 @@ def transcribe_vocal_stem(
     runtime = resolve_whisper_runtime()
     model = get_whisper_model()
     requested_language = normalize_lyrics_language(language)
-    forced_language = None if requested_language == "auto" else requested_language
+    forced_language = forced_whisper_language(requested_language)
 
     try:
         segments_iter, info = model.transcribe(

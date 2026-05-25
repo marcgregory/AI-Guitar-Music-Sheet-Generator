@@ -2382,6 +2382,32 @@ def test_transcribe_vocal_stem_auto_does_not_force_language(tmp_path, monkeypatc
     assert result["language"] == "tl"
 
 
+def test_transcribe_vocal_stem_cebuano_uses_auto_detection(tmp_path, monkeypatch):
+    stem_path = tmp_path / "cebuano-vocals.wav"
+    stem_path.write_bytes(b"fake wav")
+
+    class FakeWhisperModel:
+        kwargs = None
+
+        def transcribe(self, *_args, **kwargs):
+            self.kwargs = kwargs
+            return iter([]), SimpleNamespace(language="tl")
+
+    fake_model = FakeWhisperModel()
+    monkeypatch.setattr(lyrics, "get_whisper_model", lambda: fake_model)
+    monkeypatch.setattr(
+        lyrics,
+        "resolve_whisper_runtime",
+        lambda: {"model_size": "base", "device": "cpu", "compute_type": "int8"},
+    )
+
+    result = lyrics.transcribe_vocal_stem(stem_path, language="ceb")
+
+    assert fake_model.kwargs["language"] is None
+    assert result["requested_language"] == "ceb"
+    assert result["language"] == "tl"
+
+
 def test_transcribe_vocal_stem_forces_supported_language(tmp_path, monkeypatch):
     stem_path = tmp_path / "tagalog-vocals.wav"
     stem_path.write_bytes(b"fake wav")
