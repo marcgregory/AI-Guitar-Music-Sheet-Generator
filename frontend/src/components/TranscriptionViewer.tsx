@@ -3262,6 +3262,8 @@ const TranscriptionViewer: React.FC = () => {
   );
   const selectedTrackIsDrums =
     scoreSource?.instrumentType.toLowerCase() === "drums";
+  const transcriptionHasDrumHits =
+    extractDrumHits(transcription.notes_data).length > 0;
   const selectedTrackHasDrumHits =
     extractDrumHits(scoreSource?.notesData).length > 0;
   const selectedTrackReprocessSupported = Boolean(
@@ -3367,16 +3369,22 @@ const TranscriptionViewer: React.FC = () => {
         transcription.processing_status === "completed_with_warning") &&
       (tabStemSupported || rhythmStemSupported || transcription.selected_stem === "vocals"),
   );
+  const tabOutputReady = canShowTabView || selectedTrackHasScore;
+  const rhythmOutputReady =
+    transcriptionHasDrumHits || selectedTrackHasDrumHits;
   const canGenerateTabs = Boolean(
     stemReviewAvailable &&
     hasStemPlayback &&
     tabStemSupported &&
+    !(isGenerationCompleteStatus(transcription.tab_generation_status) && tabOutputReady) &&
     !isDemoTranscription,
   );
   const canGenerateRhythm = Boolean(
     stemReviewAvailable &&
     hasStemPlayback &&
     rhythmStemSupported &&
+    !rhythmOutputReady &&
+    !isGenerationCompleteStatus(transcription.rhythm_generation_status) &&
     transcription.can_generate_rhythm !== false &&
     !isDemoTranscription,
   );

@@ -353,7 +353,7 @@ describe("TranscriptionViewer generate tabs polling", () => {
     expect(screen.getAllByText("PLAYBACK ONLY").length).toBeGreaterThan(0);
   });
 
-  it("keeps generate rhythm available after drum reprocess completes", async () => {
+  it("does not show source missing or generate rhythm after drum reprocess completes", async () => {
     const drumHits = JSON.stringify({
       drum_hits: [{ onset: 0.25, offset: 0.37, confidence: 0.9 }],
     });
@@ -395,8 +395,8 @@ describe("TranscriptionViewer generate tabs polling", () => {
     expect(await screen.findByText(/Loaded from upload/i)).toBeInTheDocument();
     expect(screen.queryByText(/Source not attached/i)).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Generate Rhythm/i }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: /Generate Rhythm/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows track reprocessing instead of no-note fallback while selected track is processing", async () => {
