@@ -7,6 +7,7 @@ export type TranscriptionMetadata = {
   instrumentLabel: string;
   sourceBadge: string;
   sourceLabel: string;
+  limitationNotice: string;
   outputLabel: string;
   playbackLabel: string;
   tuningLabel: string | null;
@@ -121,6 +122,20 @@ const instrumentLabelOf = (stem?: string | null, explicitInstrument?: string | n
   }
 };
 
+export const getStemLimitationNotice = (stem?: string | null): string => {
+  switch ((stem || "other").toLowerCase()) {
+    case "vocals":
+      return "Vocal stem playback is available; lyrics can be generated separately, while vocal melody notation remains planned for a future release.";
+    case "drums":
+      return "Drum stems support rhythm playback and drum-hit analysis when clear hits are detected; melodic score exports are not generated for drums.";
+    case "bass":
+      return "Bass stems support playback, bass tab, MIDI, and MusicXML when reliable notes are detected; exports stay unavailable for low-confidence stems.";
+    case "other":
+    default:
+      return "The Other stem may include guitar, piano, synths, melody, or accompaniment; isolated lead/rhythm guitar separation requires future specialist models.";
+  }
+};
+
 const normalizeImportType = (sourceType?: string | null, importType?: string | null): string | null => {
   const value = (importType || sourceType || "").toLowerCase();
   if (value.includes("gp") || value.includes("guitar_pro")) return "gp5";
@@ -175,6 +190,9 @@ export const buildTranscriptionMetadata = (
       : importType === "tab"
         ? "Imported TAB"
         : selectedStem === "other" ? "Guitar/Accompaniment Stem" : `${stemLabel} Stem`;
+  const limitationNotice = isImport
+    ? "Imported projects keep their source track structure; selected-stem separation limits apply only to processed audio jobs."
+    : getStemLimitationNotice(selectedStem);
   const outputBadges = [
     hasTabs ? "TAB READY" : null,
     hasScore ? "SCORE READY" : null,
@@ -247,6 +265,7 @@ export const buildTranscriptionMetadata = (
     instrumentLabel,
     sourceBadge,
     sourceLabel,
+    limitationNotice,
     outputLabel,
     playbackLabel,
     tuningLabel,

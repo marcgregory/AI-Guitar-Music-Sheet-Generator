@@ -97,10 +97,10 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
   const selectedStem = (transcription.selected_stem || "other").toLowerCase();
   const stemReadyDescription =
     selectedStem === "drums"
-      ? "Drum stem is ready. Listen first, then generate rhythm if the stem sounds useful."
+      ? `Drum stem is ready. Listen first, then generate rhythm if the stem sounds useful. ${metadata.limitationNotice}`
       : selectedStem === "vocals"
-        ? "Vocal stem is ready. Listen first, then generate lyrics when you want a timestamped transcription."
-        : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";
+        ? `Vocal stem is ready. Listen first, then generate lyrics when you want a timestamped transcription. ${metadata.limitationNotice}`
+        : `Stem is ready. Listen first, then generate tabs if the stem sounds useful. ${metadata.limitationNotice}`;
   const audioFileName = transcription.youtube_url
     ? "YouTube audio"
     : transcription.is_demo
@@ -134,7 +134,7 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
                     isNonBlockingProcessingWarning(
                       transcription.processing_error,
                     )
-                    ? "Score and exports are ready from the full mix"
+                    ? "Score and exports are ready with a source-separation warning"
                     : metadata.description
                   : "Analysis is running in the background",
     createdAt: transcription.created_at || new Date().toISOString(),

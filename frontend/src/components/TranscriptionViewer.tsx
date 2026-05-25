@@ -3503,9 +3503,9 @@ const TranscriptionViewer: React.FC = () => {
           (_item, index) => 0.32 + ((index * 13) % 42) / 70,
         );
   const transcriptionInfoMessage =
-    transcription.selected_stem === "other"
-      ? "Guitar may be grouped with piano, synths, or accompaniment in the 'other' stem."
-      : transcription.warning_message || transcriptionMetadata.description;
+    transcription.warning_message ||
+    transcriptionMetadata.limitationNotice ||
+    transcriptionMetadata.description;
   return (
     <div className="transcription-viewer-container transcription-premium-page">
       <section
@@ -4265,11 +4265,7 @@ const TranscriptionViewer: React.FC = () => {
                           ? generatingDetails
                           : selectedStemReady
                             ? stemReadyMessage
-                            : transcription.selected_stem === "drums"
-                              ? "This stem currently supports rhythm playback only when drum hits are detected."
-                              : transcription.selected_stem === "vocals"
-                                ? "Vocal stem playback is available. Vocal notation is planned for a future release."
-                                : "No note events were detected for the selected stem."}
+                            : transcriptionMetadata.limitationNotice}
                       </p>
                       <div className="premium-inline-empty-actions">
                         {generateTabAllowed && (
