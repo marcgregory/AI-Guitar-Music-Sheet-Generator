@@ -141,7 +141,15 @@ export const buildTranscriptionMetadata = (
   const isDrums = selectedStem === "drums";
   const hasNotes = Boolean(!isDrums && (transcription.can_generate_score || hasNoteEvents(transcription.notes_data)));
   const hasTabs = Boolean(!isDrums && (transcription.can_generate_tab ?? hasTabData(transcription.tablature_data)));
-  const hasRhythm = Boolean(isDrums && (transcription.can_generate_rhythm ?? hasDrumHits(transcription.notes_data)));
+  const hasRhythm = Boolean(
+    isDrums &&
+      (hasDrumHits(transcription.notes_data) ||
+        tracks.some(
+          (track) =>
+            track.instrument_type.toLowerCase() === "drums" &&
+            hasDrumHits(track.notes_json),
+        )),
+  );
   const hasScore = Boolean(transcription.can_generate_score && (hasNotes || hasText(transcription.notation_data)));
   const hasPlayback = Boolean(
     transcription.can_play_stem ||

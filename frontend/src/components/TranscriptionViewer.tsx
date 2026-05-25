@@ -3359,18 +3359,24 @@ const TranscriptionViewer: React.FC = () => {
     transcription.selected_stem === "other" ||
     transcription.selected_stem === "bass";
   const rhythmStemSupported = transcription.selected_stem === "drums";
+  const stemReviewAvailable = Boolean(
+    !isGeneratingTabsView &&
+      hasStemPlayback &&
+      (selectedStemReady ||
+        transcription.processing_status === "completed" ||
+        transcription.processing_status === "completed_with_warning") &&
+      (tabStemSupported || rhythmStemSupported || transcription.selected_stem === "vocals"),
+  );
   const canGenerateTabs = Boolean(
-    selectedStemReady &&
+    stemReviewAvailable &&
     hasStemPlayback &&
     tabStemSupported &&
     !isDemoTranscription,
   );
   const canGenerateRhythm = Boolean(
-    selectedStemReady &&
+    stemReviewAvailable &&
     hasStemPlayback &&
     rhythmStemSupported &&
-    !isGenerationCompleteStatus(transcription.rhythm_generation_status) &&
-    !selectedTrackHasDrumHits &&
     transcription.can_generate_rhythm !== false &&
     !isDemoTranscription,
   );
@@ -3788,7 +3794,7 @@ const TranscriptionViewer: React.FC = () => {
             </section>
           )}
 
-          {selectedStemReady && (
+          {stemReviewAvailable && (
             <section
               className="premium-stem-review-panel"
               aria-label="Stem review"
