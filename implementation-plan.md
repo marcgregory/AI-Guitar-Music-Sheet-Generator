@@ -65,7 +65,9 @@ Required worker/environment variables:
 - `CLOUDINARY_CLOUD_NAME`
 - `CLOUDINARY_API_KEY`
 - `CLOUDINARY_API_SECRET`
-- `YOUTUBE_COOKIES` or `YOUTUBE_COOKIES_FILE`
+- `YOUTUBE_COOKIES_B64` preferred for hosted deploys, or `YOUTUBE_COOKIES` / `YOUTUBE_COOKIES_FILE`
+- `YOUTUBE_PO_TOKEN` when YouTube rejects valid cookies
+- `YOUTUBE_VISITOR_DATA` and `YOUTUBE_PLAYER_CLIENTS` optional yt-dlp extractor args
 - `WHISPER_MODEL_SIZE`
 - `WHISPER_LANGUAGE`
 - `WHISPER_BEAM_SIZE`
@@ -245,7 +247,7 @@ User Upload / YouTube URL + selected stem
 - [x] Add selected-stem preview endpoint so users can listen to the processed target
 - [x] Run Basic Pitch-style note detection only for selected non-vocal melodic stems when needed
 - [x] Generate drum onset/rhythm data only when `drums` is selected, without Basic Pitch
-- [ ] Allow users to reprocess the selected stem without rerunning unrelated stems
+- [x] Allow users to reprocess the selected stem without rerunning unrelated stems
 
 ## Phase 2: Basic Transcription Output, Storage & Worker Integration
 
@@ -288,7 +290,7 @@ User Upload / YouTube URL + selected stem
 - [x] Create API endpoint to list available instrument tracks for a transcription
 - [x] Create API endpoint to retrieve one instrument track result
 - [x] Create API endpoint to stream/play one separated stem
-- [ ] Create API endpoint or request path to process/reprocess one selected stem
+- [x] Create API endpoint or request path to process/reprocess one selected stem
 - [ ] Create API endpoint to export one selected stem as TXT tab, MIDI, or MusicXML where supported
 - [x] Create `DELETE /transcriptions/{id}` for completed, failed, queued, and processing records
 - [ ] Create `POST /transcriptions/{id}/cancel` if explicit cancellation is needed separately from delete
@@ -381,7 +383,7 @@ Transcription
 - [x] Add confidence indicators per instrument track
 - [x] Add loading/progress state per instrument, not only per full transcription - selected track status and confidence notes are shown in the viewer
 - [ ] Add persistent UX/API copy explaining that `other` may contain guitar, piano, synths, melody, or accompaniment and that isolated lead/rhythm guitar separation requires future models
-- [ ] Preserve selected-stem playback when score/tab generation is unavailable due to low confidence or no detected notes
+- [x] Preserve selected-stem playback when score/tab generation is unavailable due to low confidence or no detected notes
 
 MVP scope recommendation:
 

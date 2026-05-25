@@ -143,7 +143,11 @@ export const buildTranscriptionMetadata = (
   const hasTabs = Boolean(!isDrums && (transcription.can_generate_tab ?? hasTabData(transcription.tablature_data)));
   const hasRhythm = Boolean(isDrums && (transcription.can_generate_rhythm ?? hasDrumHits(transcription.notes_data)));
   const hasScore = Boolean(transcription.can_generate_score && (hasNotes || hasText(transcription.notation_data)));
-  const hasPlayback = Boolean(transcription.can_play_stem || transcription.original_audio_url || transcription.separated_audio_url || transcription.audio_file_path);
+  const hasPlayback = Boolean(
+    transcription.can_play_stem ||
+      transcription.separated_audio_url ||
+      transcription.separated_audio_file_path,
+  );
   const stemLabel = isImport ? "Imported Project" : stemLabelOf(selectedStem);
   const instrumentLabel = instrumentLabelOf(selectedStem, transcription.instrument_type);
   const tuningLabel = transcription.tuning || (selectedStem === "bass" ? "E A D G" : selectedStem === "other" ? "E A D G B E" : null);

@@ -9,6 +9,7 @@ import json
 import csv
 import shutil
 import logging
+import warnings
 
 from app.core.config import settings
 from app.services import storage
@@ -28,7 +29,13 @@ DEMUCS_VENDOR_PATH = Path(os.environ.get("DEMUCS_VENDOR_PATH", r"C:\tmp\demucs_p
 
 
 def _load_librosa():
-    import librosa
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"pkg_resources is deprecated as an API.*",
+            category=UserWarning,
+        )
+        import librosa
 
     return librosa
 
@@ -934,7 +941,17 @@ def _detect_pitch_librosa(
     times = librosa.frames_to_time(np.arange(len(f0)), sr=sr, hop_length=256)
     valid = voiced_flag & ~np.isnan(f0) & (voiced_prob >= confidence_threshold)
     if not np.any(valid):
-        return {"notes": [], "model_outputs": {}, "total_notes_detected": 0}
+        return {
+            "notes": [],
+            "model_outputs": {
+                "backend": "librosa.pyin",
+                "sensitivity": sensitivity,
+                "confidence_threshold": confidence_threshold,
+                "voiced_frame_count": 0,
+            },
+            "confidence_stats": note_confidence_stats([]),
+            "total_notes_detected": 0,
+        }
 
     midi_notes = np.full(len(f0), -1, dtype=int)
     midi_notes[valid] = np.rint(librosa.hz_to_midi(f0[valid])).astype(int)

@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     # or YOUTUBE_COOKIES to the raw cookies.txt contents for hosted deploys.
     YOUTUBE_COOKIES_FILE: str | None = None
     YOUTUBE_COOKIES: str | None = None
+    # Hosted providers sometimes mangle multiline env vars. Base64 keeps the
+    # Netscape cookie file byte-for-byte intact.
+    YOUTUBE_COOKIES_B64: str | None = None
+    # Optional yt-dlp YouTube extractor args for newer bot/attestation checks.
+    # Example token format: web.gvs+TOKEN or mweb.gvs+TOKEN.
+    YOUTUBE_PO_TOKEN: str | None = None
+    YOUTUBE_VISITOR_DATA: str | None = None
+    YOUTUBE_PLAYER_CLIENTS: str | None = None
 
     # Cloudinary durable storage
     CLOUDINARY_URL: str | None = None
@@ -82,6 +90,16 @@ class Settings(BaseSettings):
     WHISPER_MODEL_SIZE: str = "base"
     WHISPER_DEVICE: str = "auto"
     WHISPER_COMPUTE_TYPE: str = "auto"
+    WHISPER_LANGUAGE: str = "auto"
+    WHISPER_BEAM_SIZE: int = 8
+    WHISPER_BEST_OF: int = 5
+    WHISPER_VAD_FILTER: bool = False
+    WHISPER_CONDITION_ON_PREVIOUS_TEXT: bool = False
+    WHISPER_INITIAL_PROMPT: str = (
+        "Transcribe the sung lyrics exactly as heard. Preserve Tagalog, "
+        "Cebuano/Bisaya, English, and mixed-language phrases. Do not translate. "
+        "Keep repeated chorus lines."
+    )
 
     @property
     def get_allowed_origins(self) -> List[str]:

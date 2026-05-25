@@ -270,6 +270,41 @@ def test_basic_pitch_csv_note_events_are_normalized(tmp_path):
     ]
 
 
+def test_librosa_pitch_fallback_reports_metadata_when_no_notes(tmp_path):
+    input_path = tmp_path / "quiet.wav"
+    input_path.write_bytes(b"audio")
+    np = audio.np
+
+    with patch("app.services.audio.librosa.load", return_value=(np.array([0.0, 0.01]), 22050)):
+        with patch(
+            "app.services.audio.librosa.pyin",
+            return_value=(
+                np.array([np.nan, np.nan]),
+                np.array([False, False]),
+                np.array([0.1, 0.2]),
+            ),
+        ):
+            with patch(
+                "app.services.audio.librosa.frames_to_time",
+                return_value=np.array([0.0, 0.01]),
+            ):
+                result = audio._detect_pitch_librosa(
+                    str(input_path),
+                    confidence_threshold=0.35,
+                    sensitivity="normal",
+                )
+
+    assert result["notes"] == []
+    assert result["model_outputs"] == {
+        "backend": "librosa.pyin",
+        "sensitivity": "normal",
+        "confidence_threshold": 0.35,
+        "voiced_frame_count": 0,
+    }
+    assert result["confidence_stats"] == {"count": 0, "min": None, "max": None, "mean": None}
+    assert result["total_notes_detected"] == 0
+
+
 def test_analyze_drum_rhythm_returns_hit_timing_and_confidence(tmp_path):
     drum_path = tmp_path / "drums.wav"
     drum_path.write_bytes(b"drums")

@@ -623,6 +623,7 @@ def generate_tab_outputs_for_transcription(
 def generate_lyrics_output_for_transcription(
     transcription: models.Transcription,
     db_session: Session,
+    lyrics_language: str | None = None,
 ) -> None:
     selected_stem = (transcription.selected_stem or "other").strip().lower()
     if selected_stem != "vocals":
@@ -638,7 +639,10 @@ def generate_lyrics_output_for_transcription(
         runtime["device"],
     )
 
-    lyrics_result = lyrics.transcribe_vocal_stem(separated_path)
+    lyrics_result = lyrics.transcribe_vocal_stem(
+        separated_path,
+        language=lyrics_language,
+    )
     text = str(lyrics_result.get("text") or "").strip()
     segment_count = len(lyrics_result.get("segments") or [])
     transcription.lyrics_data = json.dumps(lyrics_result)
@@ -1879,7 +1883,11 @@ def generate_tab_from_separated_stem(
 
 
 @celery_app.task(bind=True)
-def generate_lyrics_from_vocal_stem(self, transcription_id: int):
+def generate_lyrics_from_vocal_stem(
+    self,
+    transcription_id: int,
+    lyrics_language: str | None = None,
+):
     """Generate lyrics from an already separated vocal stem without changing audio status."""
     if audio_processing_mode() != "local":
         return fail_heavy_celery_task(
@@ -1913,7 +1921,11 @@ def generate_lyrics_from_vocal_stem(self, transcription_id: int):
         db_session.add(transcription)
         db_session.commit()
 
-        generate_lyrics_output_for_transcription(transcription, db_session)
+        generate_lyrics_output_for_transcription(
+            transcription,
+            db_session,
+            lyrics_language=lyrics_language,
+        )
         db_session.refresh(transcription)
 
         return {

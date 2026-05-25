@@ -171,6 +171,7 @@ def _build_worker_job(transcription: models.Transcription, request: Request) -> 
         demucs_stem=selected_stem,
         original_audio_url=original_audio_url,
         separated_audio_url=separated_audio_url,
+        lyrics_language=None,
         source_type=transcription.source_type,
         source_url=(transcription.source_url or transcription.youtube_url) if job_type == "process" else None,
         normalized_source_id=transcription.normalized_source_id,

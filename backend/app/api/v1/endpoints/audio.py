@@ -4,6 +4,8 @@ from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, update
 from dataclasses import dataclass
+import base64
+import binascii
 import os
 import uuid
 import hashlib
@@ -39,8 +41,12 @@ class YouTubeUploadRequest(BaseModel):
 class GenerateTabRequest(BaseModel):
     sensitivity: str | None = None
 
+class GenerateLyricsRequest(BaseModel):
+    language: str | None = "auto"
+
 router = APIRouter()
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
+VALID_LYRICS_LANGUAGES = {"auto", "en", "tl", "ceb", "es", "ja", "ko"}
 ACTIVE_TRANSCRIPTION_STATUSES = ("pending", "queued", "processing")
 QUEUE_WAITING_STATUSES = ("pending", "queued")
 TERMINAL_TRANSCRIPTION_STATUSES = (
@@ -55,7 +61,7 @@ ESTIMATED_SECONDS_PER_SELECTED_STEM_JOB = 300
 DEMO_AUDIO_URL = "/demo/example-guitar-riff.wav"
 STEM_READY_MESSAGE = "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
 YOUTUBE_COOKIE_REJECTED_DETAIL = (
-    "Cookies were loaded, but YouTube rejected them. Re-export fresh cookies or upload audio directly."
+    "Cookies were loaded, but YouTube rejected them. Re-export fresh cookies, add YOUTUBE_PO_TOKEN, or upload audio directly."
 )
 YOUTUBE_COOKIES_MALFORMED_DETAIL = (
     "YOUTUBE_COOKIES is configured but is not valid Netscape cookie format."
@@ -72,6 +78,7 @@ IMPORTANT_YOUTUBE_COOKIE_NAMES = {
     "VISITOR_INFO1_LIVE",
 }
 LOW_YOUTUBE_COOKIE_COUNT_THRESHOLD = 3
+DEFAULT_YOUTUBE_PLAYER_CLIENTS = ("default", "mweb")
 
 # Define the upload directory relative to the backend package so the location is
 # stable whether uvicorn is launched from the repo root or from backend/.
@@ -122,11 +129,14 @@ def _run_tab_generation_locally(
     generate_tab_from_separated_stem.run(transcription_id, detection_sensitivity)
 
 
-def _run_lyrics_generation_locally(transcription_id: int):
+def _run_lyrics_generation_locally(
+    transcription_id: int,
+    lyrics_language: str | None = None,
+):
     """Run local lyrics generation directly for development."""
     from ....tasks import generate_lyrics_from_vocal_stem
 
-    generate_lyrics_from_vocal_stem.run(transcription_id)
+    generate_lyrics_from_vocal_stem.run(transcription_id, lyrics_language)
 
 
 def _start_transcription_processing(
@@ -221,6 +231,8 @@ def _start_tab_generation(
 def _start_lyrics_generation(
     transcription_id: int,
     background_tasks: BackgroundTasks,
+    *,
+    lyrics_language: str | None = None,
 ) -> str | None:
     """Start vocal lyrics generation without changing the main processing state."""
     mode = _processing_mode()
@@ -228,7 +240,7 @@ def _start_lyrics_generation(
         if _celery_has_available_worker():
             result = celery_app.send_task(
                 "app.tasks.generate_lyrics_from_vocal_stem",
-                args=[transcription_id],
+                args=[transcription_id, lyrics_language],
             )
             return result.id
 
@@ -236,7 +248,11 @@ def _start_lyrics_generation(
             "No Celery worker detected; running lyrics generation %s in a local background task.",
             transcription_id,
         )
-        background_tasks.add_task(_run_lyrics_generation_locally, transcription_id)
+        background_tasks.add_task(
+            _run_lyrics_generation_locally,
+            transcription_id,
+            lyrics_language,
+        )
         return "local-background"
 
     if mode == "modal":
@@ -246,6 +262,7 @@ def _start_lyrics_generation(
             "generate_lyrics",
             None,
             None,
+            lyrics_language,
         )
         return None
 
@@ -289,6 +306,7 @@ def _build_worker_payload_for_modal(
     job_type: str = "process",
     detection_sensitivity: str | None = None,
     track_id: int | None = None,
+    lyrics_language: str | None = None,
 ) -> dict[str, str | int | None]:
     selected_stem = transcription.selected_stem or "other"
     original_audio_url = transcription.original_audio_url if job_type == "process" else None
@@ -309,6 +327,7 @@ def _build_worker_payload_for_modal(
         "original_audio_url": original_audio_url,
         "separated_audio_url": separated_audio_url,
         "detection_sensitivity": detection_sensitivity,
+        "lyrics_language": lyrics_language,
         "track_id": track_id,
         "source_type": transcription.source_type,
         "source_url": (
@@ -531,6 +550,7 @@ def _trigger_modal_worker(
     job_type: str = "process",
     detection_sensitivity: str | None = None,
     track_id: int | None = None,
+    lyrics_language: str | None = None,
 ) -> None:
     modal_trigger_url = core.config.settings.MODAL_TRIGGER_URL
     session = db.SessionLocal()
@@ -692,6 +712,7 @@ def _trigger_modal_worker(
                 job_type=job_type,
                 detection_sensitivity=detection_sensitivity,
                 track_id=track_id,
+                lyrics_language=lyrics_language,
             ),
             headers=headers,
             timeout=30.0,
@@ -1151,6 +1172,18 @@ def _validate_selected_stem(selected_stem: str | None) -> str:
                 "selected_stem must be one of: vocals, drums, bass, other. "
                 "Use other for the MVP guitar/piano/melody target."
             ),
+        )
+    return normalized
+
+
+def _validate_lyrics_language(language: str | None) -> str:
+    normalized = (language or "auto").strip().lower()
+    if not normalized:
+        return "auto"
+    if normalized not in VALID_LYRICS_LANGUAGES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="lyrics language must be one of: auto, en, tl, ceb, es, ja, ko",
         )
     return normalized
 
@@ -1742,6 +1775,63 @@ def _repair_playback_only_stem_ready(
     return True
 
 
+def _repair_completed_manual_generation_status(
+    transcription: models.Transcription,
+    db_session: Session,
+) -> bool:
+    """Recover rows where TAB/rhythm generation finished but main status stayed active."""
+    if transcription.processing_status not in {"pending", "queued", "processing"}:
+        return False
+
+    selected_stem = (transcription.selected_stem or "other").strip().lower()
+    if selected_stem == "drums":
+        generation_status = transcription.rhythm_generation_status or "idle"
+        has_output = _has_drum_hits(transcription.notes_data)
+    elif selected_stem in {"bass", "other"}:
+        generation_status = transcription.tab_generation_status or "idle"
+        has_output = bool(
+            _has_note_events(transcription.notes_data)
+            or _has_tablature_events(transcription.tablature_data)
+            or transcription.midi_file_path
+            or transcription.midi_file_url
+            or transcription.tab_file_path
+            or transcription.tab_file_url
+            or transcription.notation_data
+        )
+    else:
+        return False
+
+    if generation_status not in {"completed", "completed_with_warning", "failed"}:
+        return False
+    if not (has_output or _can_play_stem(transcription)):
+        return False
+
+    transcription.processing_status = (
+        "completed"
+        if generation_status == "completed" and has_output
+        else "stem_ready"
+    )
+    transcription.is_processed = True
+    transcription.can_play_stem = _can_play_stem(transcription)
+    if selected_stem in {"bass", "other"}:
+        transcription.can_generate_score = bool(
+            generation_status == "completed"
+            and _has_note_events(transcription.notes_data)
+            and _has_tablature_events(transcription.tablature_data)
+        )
+    else:
+        transcription.can_generate_score = False
+    if generation_status in {"completed", "completed_with_warning"}:
+        transcription.processing_error = None
+    transcription.queue_position = None
+    transcription.estimated_wait_time = None
+    transcription.celery_task_id = None
+    db_session.add(transcription)
+    db_session.commit()
+    db_session.refresh(transcription)
+    return True
+
+
 def _has_drum_hits(value: str | None) -> bool:
     parsed = _json_field(value)
     return bool(
@@ -2286,6 +2376,25 @@ def _prepare_track_reprocess(
     db_session.refresh(track)
 
 
+def _queue_instrument_track_reprocess(
+    transcription: models.Transcription,
+    track: models.InstrumentTrack,
+    background_tasks: BackgroundTasks,
+    db_session: Session,
+) -> models.InstrumentTrack:
+    _prepare_track_reprocess(transcription, track, db_session)
+    # Track reprocessing is scoped to InstrumentTrack. Keep the parent
+    # transcription viewable so the dashboard and result page do not treat this
+    # as a full audio processing job.
+    transcription.modal_request_id = None
+    transcription.modal_dispatch_status = None
+    db_session.add(transcription)
+    db_session.commit()
+    db_session.refresh(track)
+    _start_instrument_track_reprocess(transcription.id, track.id, background_tasks)
+    return track
+
+
 def _track_export_filename(
     transcription_id: int,
     track: models.InstrumentTrack,
@@ -2479,8 +2588,35 @@ def _build_youtube_download_options(
         options['ffmpeg_location'] = ffmpeg_path
     if cookiefile:
         options['cookiefile'] = cookiefile
+    extractor_args = _build_youtube_extractor_args()
+    if extractor_args:
+        options['extractor_args'] = {'youtube': extractor_args}
 
     return options
+
+
+def _split_env_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in re.split(r"[,;\s]+", value) if item.strip()]
+
+
+def _build_youtube_extractor_args() -> dict[str, list[str]]:
+    extractor_args: dict[str, list[str]] = {}
+    po_tokens = _split_env_list(core.config.settings.YOUTUBE_PO_TOKEN)
+    visitor_data = (core.config.settings.YOUTUBE_VISITOR_DATA or "").strip()
+    player_clients = _split_env_list(core.config.settings.YOUTUBE_PLAYER_CLIENTS)
+
+    if po_tokens:
+        extractor_args["po_token"] = po_tokens
+    if visitor_data:
+        extractor_args["visitor_data"] = [visitor_data]
+    if po_tokens or visitor_data:
+        extractor_args["player_client"] = player_clients or list(DEFAULT_YOUTUBE_PLAYER_CLIENTS)
+    elif player_clients:
+        extractor_args["player_client"] = player_clients
+
+    return extractor_args
 
 
 @dataclass(frozen=True)
@@ -2507,6 +2643,17 @@ def _normalize_youtube_cookies_text(cookies_text: str) -> str:
     if "\\n" in cookies_text and "\n" not in cookies_text:
         cookies_text = cookies_text.replace("\\n", "\n")
     return cookies_text
+
+
+def _decode_youtube_cookies_b64(cookies_b64: str) -> str:
+    try:
+        return base64.b64decode(cookies_b64.strip(), validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        logger.warning("YOUTUBE_COOKIES_B64 is configured but could not be decoded.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="YOUTUBE_COOKIES_B64 is configured but is not valid base64-encoded UTF-8 cookies.txt content.",
+        ) from exc
 
 
 def _inspect_youtube_cookies_text(cookies_text: str) -> YouTubeCookieDiagnostics:
@@ -2559,6 +2706,8 @@ def _get_ytdlp_version() -> str:
 def _effective_youtube_cookie_source(cookies_text: str | None, cookies_file: str | None) -> str:
     if cookies_text:
         return "env"
+    if (core.config.settings.YOUTUBE_COOKIES_B64 or "").strip():
+        return "env-b64"
     if cookies_file:
         return "file"
     return "none"
@@ -2567,13 +2716,15 @@ def _effective_youtube_cookie_source(cookies_text: str | None, cookies_file: str
 def _log_youtube_cookie_environment(
     cookies_text: str | None,
     cookies_file: str | None,
+    cookies_b64: str | None,
     effective_source: str,
 ) -> None:
     logger.info(
         "YouTube cookie config: YOUTUBE_COOKIES configured=%s "
-        "YOUTUBE_COOKIES_FILE configured=%s effective cookie source=%s "
-        "yt-dlp version=%s",
+        "YOUTUBE_COOKIES_B64 configured=%s YOUTUBE_COOKIES_FILE configured=%s "
+        "effective cookie source=%s yt-dlp version=%s",
         bool(cookies_text),
+        bool(cookies_b64),
         bool(cookies_file),
         effective_source,
         _get_ytdlp_version(),
@@ -2643,11 +2794,15 @@ def _read_youtube_cookies_file(cookies_file: str) -> str:
 def _get_youtube_cookiefile() -> YouTubeCookiefile:
     cookies_file = (core.config.settings.YOUTUBE_COOKIES_FILE or "").strip()
     cookies_text = core.config.settings.YOUTUBE_COOKIES
+    cookies_b64 = (core.config.settings.YOUTUBE_COOKIES_B64 or "").strip()
     effective_source = _effective_youtube_cookie_source(cookies_text, cookies_file)
-    _log_youtube_cookie_environment(cookies_text, cookies_file, effective_source)
+    _log_youtube_cookie_environment(cookies_text, cookies_file, cookies_b64, effective_source)
 
-    if cookies_text and cookies_file:
-        logger.info("Using YOUTUBE_COOKIES from environment; ignoring YOUTUBE_COOKIES_FILE.")
+    if sum(bool(value) for value in (cookies_text, cookies_b64, cookies_file)) > 1:
+        logger.info(
+            "Multiple YouTube cookie sources configured; using precedence "
+            "YOUTUBE_COOKIES, then YOUTUBE_COOKIES_B64, then YOUTUBE_COOKIES_FILE."
+        )
 
     if cookies_text:
         diagnostics = _inspect_youtube_cookies_text(cookies_text)
@@ -2667,6 +2822,29 @@ def _get_youtube_cookiefile() -> YouTubeCookiefile:
             cleanup=True,
             loaded=True,
             source="YOUTUBE_COOKIES",
+            line_count=diagnostics.line_count,
+            cookie_count=diagnostics.cookie_count,
+        )
+
+    if cookies_b64:
+        decoded_cookies_text = _decode_youtube_cookies_b64(cookies_b64)
+        diagnostics = _inspect_youtube_cookies_text(decoded_cookies_text)
+        _log_youtube_cookie_diagnostics("env-b64", diagnostics)
+        if not diagnostics.valid:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="YOUTUBE_COOKIES_B64 decoded successfully but is not valid Netscape cookie format.",
+            )
+        if not diagnostics.has_youtube_domain:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="YOUTUBE_COOKIES_B64 decoded successfully but does not contain YouTube cookies.",
+            )
+        return YouTubeCookiefile(
+            path=_write_youtube_cookies_tempfile(decoded_cookies_text),
+            cleanup=True,
+            loaded=True,
+            source="YOUTUBE_COOKIES_B64",
             line_count=diagnostics.line_count,
             cookie_count=diagnostics.cookie_count,
         )
@@ -2705,8 +2883,9 @@ def _is_youtube_verification_error(error: Exception) -> bool:
 def _youtube_verification_detail() -> str:
     return (
         "YouTube is requiring sign-in or bot verification for this video. "
-        "For Render, set YOUTUBE_COOKIES to fresh Netscape-format browser cookies, "
-        "or upload the audio file directly."
+        "For Render, set YOUTUBE_COOKIES_B64 to fresh base64-encoded Netscape cookies "
+        "and, if cookies alone are rejected, set YOUTUBE_PO_TOKEN. "
+        "You can also upload the audio file directly."
     )
 
 
@@ -3038,6 +3217,7 @@ async def get_transcription_status(
     db_session.refresh(transcription)
     _repair_playback_only_stem_ready(transcription, db_session)
     _ensure_structured_tablature_repaired(transcription, db_session)
+    _repair_completed_manual_generation_status(transcription, db_session)
 
     selected_stem = transcription.selected_stem or "other"
     if transcription.is_deleted:
@@ -3203,6 +3383,7 @@ async def get_transcription_result(
     _ensure_transcription_access(transcription, db_session, current_user)
     _repair_playback_only_stem_ready(transcription, db_session)
     _ensure_structured_tablature_repaired(transcription, db_session)
+    _repair_completed_manual_generation_status(transcription, db_session)
 
     processing_status_value = transcription.processing_status or "pending"
     if processing_status_value in {"pending", "queued", "processing"}:
@@ -3347,6 +3528,7 @@ async def generate_tab(
 async def generate_lyrics(
     transcription_id: int,
     background_tasks: BackgroundTasks,
+    request: GenerateLyricsRequest | None = Body(default=None),
     db_session: Session = Depends(db.get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
@@ -3385,6 +3567,9 @@ async def generate_lyrics(
             status_code=status.HTTP_409_CONFLICT,
             detail="Lyrics generation is already processing.",
         )
+    lyrics_language = _validate_lyrics_language(
+        request.language if request else None
+    )
 
     runtime = None
     try:
@@ -3397,11 +3582,12 @@ async def generate_lyrics(
             "device": core.config.settings.WHISPER_DEVICE,
         }
     logger.info(
-        "lyrics_generation_requested transcription_id=%s selected_stem=%s whisper_model=%s whisper_device=%s",
+        "lyrics_generation_requested transcription_id=%s selected_stem=%s whisper_model=%s whisper_device=%s lyrics_language=%s",
         transcription.id,
         selected_stem,
         runtime.get("model_size"),
         runtime.get("device"),
+        lyrics_language,
     )
 
     transcription.lyrics_generation_status = "processing"
@@ -3415,7 +3601,11 @@ async def generate_lyrics(
     db_session.commit()
     db_session.refresh(transcription)
 
-    task_id = _start_lyrics_generation(transcription.id, background_tasks)
+    task_id = _start_lyrics_generation(
+        transcription.id,
+        background_tasks,
+        lyrics_language=lyrics_language,
+    )
     if task_id:
         transcription.celery_task_id = task_id
         db_session.add(transcription)
@@ -3432,6 +3622,7 @@ async def generate_lyrics(
         "can_play_stem": _can_play_stem(transcription),
         "separated_audio_url": transcription.separated_audio_url,
         "is_demo": transcription.is_demo,
+        "lyrics_language": lyrics_language,
         "message": "Lyrics generation started.",
     }
 
@@ -3723,20 +3914,12 @@ async def reprocess_instrument_track_endpoint(
         db_session,
         current_user,
     )
-    _prepare_track_reprocess(transcription, track, db_session)
-    transcription.processing_status = "processing"
-    transcription.is_processed = False
-    transcription.processing_error = None
-    transcription.warning_message = None
-    transcription.queue_position = 0
-    transcription.estimated_wait_time = 0
-    transcription.modal_request_id = None
-    transcription.modal_dispatch_status = None
-    db_session.add(transcription)
-    db_session.commit()
-    db_session.refresh(track)
-    _start_instrument_track_reprocess(transcription.id, track.id, background_tasks)
-    return track
+    return _queue_instrument_track_reprocess(
+        transcription,
+        track,
+        background_tasks,
+        db_session,
+    )
 
 
 @router.get("/{transcription_id}/tracks/{track_id}/tab")

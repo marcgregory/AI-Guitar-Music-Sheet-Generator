@@ -51,11 +51,32 @@ secrets = [
 ]
 
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
+VALID_LYRICS_LANGUAGES = {"auto", "en", "tl", "ceb", "es", "ja", "ko"}
 DEFAULT_DEMUCS_MODEL = "htdemucs"
 DEFAULT_TIMEOUT_SECONDS = 1800
 NO_CLEAR_VOCALS_MESSAGE = "No clear vocals detected for lyrics generation."
 _WHISPER_MODEL = None
 _WHISPER_MODEL_CONFIG: dict[str, str] | None = None
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_lyrics_language(language: str | None = None) -> str:
+    normalized = (
+        language
+        or os.environ.get("WHISPER_LANGUAGE")
+        or "auto"
+    ).strip().lower()
+    if not normalized:
+        return "auto"
+    if normalized not in VALID_LYRICS_LANGUAGES:
+        raise ValueError("lyrics language must be one of: auto, en, tl, ceb, es, ja, ko")
+    return normalized
 
 def _worker_headers() -> dict[str, str]:
     token = os.environ.get("WORKER_API_TOKEN")
@@ -160,10 +181,30 @@ def _get_whisper_model():
     return _WHISPER_MODEL
 
 
-def _transcribe_vocal_stem(stem_path: Path) -> dict[str, Any]:
+def _transcribe_vocal_stem(
+    stem_path: Path,
+    lyrics_language: str | None = None,
+) -> dict[str, Any]:
     runtime = _resolve_whisper_runtime()
     model = _get_whisper_model()
-    segments_iter, info = model.transcribe(str(stem_path), vad_filter=True, beam_size=5)
+    requested_language = _normalize_lyrics_language(lyrics_language)
+    forced_language = None if requested_language == "auto" else requested_language
+    segments_iter, info = model.transcribe(
+        str(stem_path),
+        language=forced_language,
+        vad_filter=_env_bool("WHISPER_VAD_FILTER", False),
+        beam_size=max(1, int(os.environ.get("WHISPER_BEAM_SIZE", "8") or "8")),
+        best_of=max(1, int(os.environ.get("WHISPER_BEST_OF", "5") or "5")),
+        condition_on_previous_text=_env_bool(
+            "WHISPER_CONDITION_ON_PREVIOUS_TEXT",
+            False,
+        ),
+        initial_prompt=(os.environ.get("WHISPER_INITIAL_PROMPT") or (
+            "Transcribe the sung lyrics exactly as heard. Preserve Tagalog, "
+            "Cebuano/Bisaya, English, and mixed-language phrases. Do not translate. "
+            "Keep repeated chorus lines."
+        )).strip() or None,
+    )
     segments = [
         {
             "start": round(float(segment.start), 3),
@@ -185,6 +226,7 @@ def _transcribe_vocal_stem(stem_path: Path) -> dict[str, Any]:
     return {
         "text": text,
         "segments": segments,
+        "requested_language": requested_language,
         "language": language,
         "model": "faster-whisper",
         "model_size": runtime["model_size"],
@@ -801,18 +843,20 @@ def _generate_lyrics_from_stem(
     stem_path: Path,
     transcription_id: int,
     selected_stem: str,
+    lyrics_language: str | None = None,
 ) -> dict[str, Any]:
     if selected_stem != "vocals":
         raise ValueError("Lyrics generation is only available for vocal stems.")
     runtime = _resolve_whisper_runtime()
     logger.info(
-        "lyrics_generation_requested transcription_id=%s selected_stem=%s whisper_model=%s whisper_device=%s",
+        "lyrics_generation_requested transcription_id=%s selected_stem=%s whisper_model=%s whisper_device=%s lyrics_language=%s",
         transcription_id,
         selected_stem,
         runtime["model_size"],
         runtime["device"],
+        _normalize_lyrics_language(lyrics_language),
     )
-    return {"lyrics_data": _transcribe_vocal_stem(stem_path)}
+    return {"lyrics_data": _transcribe_vocal_stem(stem_path, lyrics_language)}
 
 
 def _process_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -851,6 +895,7 @@ def _process_job(job: dict[str, Any]) -> dict[str, Any]:
                 selected_stem_path,
                 transcription_id,
                 selected_stem,
+                lyrics_language=job.get("lyrics_language"),
             )
         else:
             analysis_result = _generate_analysis_and_exports(
