@@ -12120,7 +12120,6 @@ pre code {
 .premium-score-stage,
 .premium-lyrics-panel,
 .premium-bottom-bar,
-.studio-confirm-dialog,
 .alert,
 .empty-state,
 .loading-state {
@@ -12306,6 +12305,7 @@ pre code {
 }
 
 .studio-confirm-dialog {
+  width: min(100%, 30rem);
   max-height: min(90svh, 720px);
   overflow-y: auto;
 }

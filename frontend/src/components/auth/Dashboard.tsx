@@ -44,6 +44,15 @@ const getTranscriptionStatus = (
   transcription: Transcription,
 ): Project["status"] => {
   if (
+    transcription.modal_job_type === "reprocess_track" &&
+    ["dispatched", "rate_limited", "retry_queued"].includes(
+      transcription.modal_dispatch_status || "",
+    )
+  ) {
+    return "processing";
+  }
+
+  if (
     transcription.processing_status === "pending" ||
     transcription.processing_status === "queued" ||
     transcription.processing_status === "processing" ||
@@ -86,7 +95,12 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
     ? "YouTube audio"
     : transcription.is_demo
       ? "Bundled demo stem"
-      : filenameFromPath(transcription.audio_file_path);
+      : filenameFromPath(
+          transcription.audio_file_path ||
+            transcription.source_url ||
+            transcription.original_audio_url ||
+            transcription.separated_audio_url,
+        );
 
   return {
     id: transcription.id,
@@ -103,6 +117,8 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
               ? "Queued for Modal processing"
               : status === "pending"
                 ? "Waiting for the selected-stem job to start"
+                : transcription.modal_job_type === "reprocess_track"
+                  ? "Refreshing the selected stem track"
                 : status === "completed"
                   ? transcription.processing_error &&
                     isNonBlockingProcessingWarning(

@@ -316,7 +316,28 @@ async def complete_worker_job(
         transcription.notes_data = json.dumps(
             {"notes": [], "message": warning_message}
         )
-    if is_generate_tab_job:
+    if is_reprocess_track_job:
+        if selected_stem == "drums":
+            _set_manual_generation_status(transcription, "completed")
+            transcription.can_generate_score = False
+            transcription.can_generate_rhythm = True
+            transcription.processing_status = (
+                "completed_with_warning" if warning_message else "completed"
+            )
+        elif selected_stem in {"bass", "other"}:
+            transcription.can_generate_score = bool(has_notes)
+            _set_manual_generation_status(
+                transcription,
+                "completed" if has_notes else "failed",
+            )
+            transcription.processing_status = (
+                "completed_with_warning" if warning_message else "completed"
+            )
+        else:
+            transcription.can_generate_score = False
+            transcription.processing_status = "stem_ready"
+        transcription.processing_error = None
+    elif is_generate_tab_job:
         transcription.can_generate_score = bool(selected_stem in {"bass", "other"} and has_notes)
         has_valid_tablature = tablature.has_structured_tablature(transcription.tablature_data)
         if (

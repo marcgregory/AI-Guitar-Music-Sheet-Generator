@@ -3369,6 +3369,8 @@ const TranscriptionViewer: React.FC = () => {
     selectedStemReady &&
     hasStemPlayback &&
     rhythmStemSupported &&
+    !isGenerationCompleteStatus(transcription.rhythm_generation_status) &&
+    !selectedTrackHasDrumHits &&
     transcription.can_generate_rhythm !== false &&
     !isDemoTranscription,
   );
@@ -3435,13 +3437,26 @@ const TranscriptionViewer: React.FC = () => {
   const completedAt = formatCompletedAt(
     transcription.updated_at ?? transcription.created_at,
   );
-  const sourceFileName = transcription.audio_file_path?.split(/[\\/]/).pop();
+  const sourceFileName = (
+    transcription.audio_file_path ||
+    transcription.source_url ||
+    transcription.original_audio_url ||
+    transcription.separated_audio_url ||
+    ""
+  )
+    .split(/[\\/]/)
+    .pop();
   const sourceLabel = transcription.audio_file_path
     ? isDemoTranscription
       ? "Bundled example stem"
       : "Loaded from upload"
-    : transcription.youtube_url
+    : transcription.youtube_url || transcription.source_type === "youtube"
       ? "Loaded from YouTube"
+      : transcription.source_type === "upload" ||
+          transcription.source_url ||
+          transcription.original_audio_url ||
+          transcription.separated_audio_url
+        ? "Loaded from upload"
       : isDemoTranscription
         ? "Bundled example stem"
         : "Source not attached";
