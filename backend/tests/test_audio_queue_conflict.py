@@ -159,6 +159,41 @@ def test_stale_active_job_is_failed_before_upload_conflict_check():
         session.close()
 
 
+def test_stale_queued_job_is_failed_before_upload_conflict_check():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "stale-queued-owner", "stale-queued@example.com")
+        stale = models.Transcription(
+            title="Stale queued",
+            audio_file_path="uploads/stale-queued.wav",
+            user_id=owner.id,
+            is_processed=False,
+            processing_status="queued",
+            queue_position=1,
+            estimated_wait_time=300,
+            created_at=datetime.utcnow() - timedelta(seconds=8000),
+        )
+        session.add(stale)
+        session.commit()
+        stale_id = stale.id
+    finally:
+        session.close()
+
+    response = upload_sample("stale-queued-owner")
+    assert response.status_code == 200
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(models.Transcription.id == stale_id).one()
+        assert refreshed.processing_status == "failed"
+        assert refreshed.queue_position is None
+        assert refreshed.estimated_wait_time is None
+        assert "timed out" in refreshed.processing_error
+    finally:
+        session.close()
+
+
 def test_upload_allowed_after_deleting_active_transcription():
     reset_database()
     session = TestingSessionLocal()

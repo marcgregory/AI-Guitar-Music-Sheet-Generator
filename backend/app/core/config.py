@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     MODAL_MAX_DISPATCH_RETRIES: int = 5
     MODAL_RETRY_SCAN_INTERVAL_SECONDS: int = 30
     MODAL_RETRY_ADMIN_TOKEN: str | None = None
+    ENABLE_USAGE_LIMITS: bool = True
+    MAX_ACTIVE_JOBS_PER_USER: int = 1
+    DAILY_PROCESSING_JOB_LIMIT: int = 5
 
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"

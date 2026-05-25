@@ -21,6 +21,7 @@ def init_db():
     try:
         _ensure_transcription_phase1_columns()
         _ensure_project_deletion_columns()
+        _ensure_usage_event_schema()
     except Exception as exc:
         logger.warning(
             "Schema compatibility checks failed; continuing startup. Error: %s",
@@ -342,6 +343,29 @@ def _ensure_project_deletion_columns():
             conn.execute(
                 text(f"ALTER TABLE projects ADD COLUMN {column_name} {ddl_type}")
             )
+        conn.commit()
+
+
+def _ensure_usage_event_schema():
+    """Create the usage event table/indexes for deployments without Alembic yet."""
+    inspector = inspect(engine)
+    table_names = inspector.get_table_names()
+    if "usage_events" not in table_names:
+        models.UsageEvent.__table__.create(bind=engine, checkfirst=True)
+
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_usage_events_user_created_at "
+                "ON usage_events (user_id, created_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_usage_events_transcription_id "
+                "ON usage_events (transcription_id)"
+            )
+        )
         conn.commit()
 
 if __name__ == "__main__":

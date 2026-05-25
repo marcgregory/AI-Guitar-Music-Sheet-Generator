@@ -31,6 +31,7 @@ Audio Upload / YouTube URL + selected stem
 Demucs default stems are `vocals`, `drums`, `bass`, and `other`. For guitar/accompaniment transcription, use `other` as the MVP target and clearly tell users that guitar, piano, synths, melody, or accompaniment may be grouped inside `other` depending on the model and mix. Do not market the MVP as isolated lead guitar transcription or promise perfect Songsterr-level accuracy. True separate guitar, rhythm guitar, lead guitar, or piano stems require better specialist models later.
 
 Queue policy:
+
 - New jobs should be queued instead of running heavy AI work in request handlers.
 - Status responses should distinguish `pending`, `queued`, `processing`, `stem_ready`, `completed`, `completed_with_warning`, and `failed`.
 - A no-note result after successful stem separation is `completed_with_warning`/API `completed`, not `failed`.
@@ -39,6 +40,7 @@ Queue policy:
 - Result fetching is status-first: poll `/status`, then call `/result` only after a ready status such as `stem_ready`, `completed`, or `completed_with_warning`.
 
 Cost policy:
+
 - Process one selected stem per job.
 - Upload durable files to Cloudinary and save both `secure_url` and `public_id` references.
 - Treat Railway local storage as temporary scratch space only.
@@ -176,6 +178,7 @@ Modal worker rules:
 - Keep full logs in Modal/backend and sanitize frontend errors.
 
 Deletion policy:
+
 - Users can delete records in `completed`, `completed_with_warning`, `failed`, `queued`, and `processing` states.
 - Queued jobs should be removed/cancelled when possible.
 - Processing jobs should be marked cancelled/deleted in the database and stopped if cancellation is supported.
@@ -378,8 +381,8 @@ Transcription
 ### Selected-Stem Track Interface
 
 - [x] Prioritize a selected-stem result view over historical full multi-stem mixer behavior
-- [ ] Add tab/notation/rhythm viewer that changes based on the selected stem
-- [ ] Add synchronized playback for the selected separated stem
+- [x] Add tab/notation/rhythm viewer that changes based on the selected stem - viewer now resolves the selected-stem track, renders guitar/bass notation, drum rhythm notation, and vocal lyrics/playback states without falling back into full-mix assumptions
+- [x] Add synchronized playback for the selected separated stem - selected stem audio drives shared playback time for waveform, tab/score note highlighting, drum hit highlighting, and timestamped lyric seeking
 - [x] Add confidence indicators per instrument track
 - [x] Add loading/progress state per instrument, not only per full transcription - selected track status and confidence notes are shown in the viewer
 - [x] Add persistent UX/API copy explaining that `other` may contain guitar, piano, synths, melody, or accompaniment and that isolated lead/rhythm guitar separation requires future models
@@ -396,7 +399,7 @@ MVP scope recommendation:
 7. Selected-stem playback/export
 8. Queue-aware processing status
 
-## Phase 4: Enhanced Multi-Instrument Transcription Features
+## Phase 4: Post-MVP / Advanced Features - Enhanced Multi-Instrument Transcription Features
 
 - [x] Add piano note data and staff notation from piano stems
 - [ ] Add vocal melody note data and staff notation from vocal stems
@@ -579,3 +582,17 @@ The notes below document earlier implementation slices. Any previous full multi-
 - Processing persists exactly one selected separated stem, uploads selected-stem/MIDI/MusicXML/TAB artifacts to Cloudinary when configured, clears queue metadata at terminal states, and treats local files as temporary scratch after durable upload.
 - Added `GET /audio/{transcription_id}/tracks/{track_id}/preview`, with Cloudinary redirect for durable stems and HTTP byte-range support for legacy/local stem files.
 - Added best-effort `DELETE /transcriptions/{id}` cleanup/cancellation behavior for completed, failed, queued, and processing records. Active Celery task termination remains best-effort for the MVP.
+
+## Review Notes - 2026-05-25 Selected-Stem Viewer Sync Slice
+
+- Frontend viewer now matches selected-stem tracks through a dedicated stem-to-track helper, including `other`/guitar alias handling, so the selected stem stays centered instead of falling back to legacy full-mix assumptions.
+- Selected-stem workspace mode now distinguishes notation, drum rhythm, lyrics, and playback-only states; vocal-only results avoid the score workspace while timestamped lyrics remain synced to the same audio clock.
+- Selected separated stem playback remains the shared synchronization source for waveform progress, tab/score highlighting, drum hit highlighting, and lyric seeking.
+- Frontend verification: `npm test -- --run src/components/TranscriptionViewer.test.tsx` passed with 19 tests, and `npm run build` passed through `C:\nvm4w\nodejs\npm.cmd`.
+
+## Review Notes - 2026-05-26 Selected-Stem Smoke Path
+
+- Added an API smoke test for upload with `selected_stem`, status polling, `/result` gating before readiness, worker completion to `stem_ready`, result retrieval after readiness, and delete/cancel clearing the active-job upload block.
+- Stabilized backend service tests by returning Demucs-selected stem paths in a portable slash format and treating audio debug stats failures as non-fatal diagnostics during mocked track analysis.
+- Backend verification: `python -m pytest tests` passed with 219 tests and existing warnings.
+- Frontend viewer verification: `npm test -- --run src/components/TranscriptionViewer.test.tsx` passed with 19 tests.

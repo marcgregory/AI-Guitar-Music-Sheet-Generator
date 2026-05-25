@@ -317,13 +317,95 @@ describe("TranscriptionViewer generate tabs polling", () => {
 
     render(<TranscriptionViewer />);
 
-    expect(await screen.findByText("Drum Rhythm")).toBeInTheDocument();
+    expect((await screen.findAllByText("Drum Rhythm")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("RHYTHM READY").length).toBeGreaterThan(0);
     expect(screen.queryByText("TAB READY")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^TAB$/i })).not.toBeInTheDocument();
     expect(screen.getByText("HH|")).toBeInTheDocument();
     expect(screen.getByText("SD|")).toBeInTheDocument();
     expect(screen.getByText("BD|")).toBeInTheDocument();
+  });
+
+  it("uses the selected other stem track for notation and stem playback", async () => {
+    const otherTab = JSON.stringify({
+      tuning: ["E", "A", "D", "G", "B", "E"],
+      tablature: [
+        {
+          string: 1,
+          fret: 3,
+          startTime: 0,
+          duration: 0.5,
+          measure: 1,
+          beat: 1,
+        },
+      ],
+    });
+    const otherNotes = JSON.stringify({
+      notes: [{ pitch: 67, startTime: 0, duration: 0.5 }],
+    });
+
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Other Stem Complete",
+        processing_status: "completed",
+        separated_audio_url: "/demo/selected-stem/other.wav",
+        can_generate_score: true,
+        can_generate_tab: true,
+        available_exports: ["tab"],
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([
+        {
+          id: 9,
+          transcription_id: 42,
+          instrument_type: "other",
+          display_name: "Other Stem",
+          stem_audio_path: null,
+          notes_json: otherNotes,
+          chords_json: JSON.stringify({ chords: [] }),
+          tab_json: otherTab,
+          notation_json: null,
+          confidence_score: 82,
+          processing_status: "completed",
+          created_at: "2026-05-20T00:00:00Z",
+        },
+      ]);
+
+    render(<TranscriptionViewer />);
+
+    expect(
+      await screen.findByLabelText("Selected stem notation viewer"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Guitar Tab + Score").length).toBeGreaterThan(0);
+    expect(audioService.resolvePlayableAudioUrl).toHaveBeenCalledWith(
+      "/demo/selected-stem/other.wav",
+    );
+  });
+
+  it("does not render the score workspace for vocal-only results", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Completed Vocal Result",
+        selected_stem: "vocals",
+        processing_status: "completed",
+        lyrics_generation_status: "completed",
+        lyrics_data: JSON.stringify({
+          text: "hello there",
+          segments: [{ start: 0, end: 1.2, text: "hello there" }],
+        }),
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    expect(await screen.findByRole("heading", { name: "Lyrics" })).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Selected stem notation viewer"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Stem playback viewer")).not.toBeInTheDocument();
   });
 
   it("shows Generate Rhythm for drum stem-ready and never Generate Tabs", async () => {

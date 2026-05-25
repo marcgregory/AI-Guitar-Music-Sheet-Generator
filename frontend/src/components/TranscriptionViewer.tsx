@@ -225,6 +225,8 @@ type AlphaTexBuildResult = {
 
 type SelectedTrackView = "global" | number;
 
+type StemViewerMode = "notation" | "rhythm" | "lyrics" | "playback";
+
 type ActiveScoreSource = {
   id: SelectedTrackView;
   title: string;
@@ -322,7 +324,7 @@ const displayInstrumentName = (instrumentType: string): string => {
   if (!instrumentType) return "Track";
   return (
     instrumentType.charAt(0).toUpperCase() +
-    instrumentType.slice(1).replace("_", " ")
+    instrumentType.slice(1).replaceAll("_", " ")
   );
 };
 
@@ -471,14 +473,57 @@ const selectedStemLabel = (selectedStem: string | null | undefined): string =>
     vocals: "Vocals",
   })[selectedStem || "other"] ?? "Guitar/Accompaniment";
 
+const selectedStemTrackTypes = (
+  selectedStem: string | null | undefined,
+): string[] => {
+  switch ((selectedStem || "other").toLowerCase()) {
+    case "bass":
+      return ["bass"];
+    case "drums":
+      return ["drums"];
+    case "vocals":
+      return ["vocals"];
+    case "other":
+    default:
+      return ["guitar", "other", "guitar_alias_for_other"];
+  }
+};
+
+const trackMatchesSelectedStem = (
+  track: InstrumentTrack | null | undefined,
+  selectedStem: string | null | undefined,
+): boolean => {
+  if (!track) return false;
+  return selectedStemTrackTypes(selectedStem).includes(
+    track.instrument_type.toLowerCase(),
+  );
+};
+
+const viewerModeForSelectedStem = (
+  selectedStem: string | null | undefined,
+  hasScore: boolean,
+  hasRhythm: boolean,
+  hasLyrics: boolean,
+): StemViewerMode => {
+  switch ((selectedStem || "other").toLowerCase()) {
+    case "drums":
+      return hasRhythm ? "rhythm" : "playback";
+    case "vocals":
+      return hasLyrics ? "lyrics" : "playback";
+    case "bass":
+    case "other":
+    default:
+      return hasScore ? "notation" : "playback";
+  }
+};
+
 const trackHasStemAudio = (
   transcription: Transcription | null,
   track: InstrumentTrack,
 ): boolean =>
   hasUsableBlob(track.stem_audio_path) ||
   (hasUsableBlob(transcription?.separated_audio_url) &&
-    track.instrument_type ===
-      selectedStemInstrument(transcription?.selected_stem));
+    trackMatchesSelectedStem(track, transcription?.selected_stem));
 
 const extractNoteEvents = (notesData: unknown): ScoreNote[] => {
   const parsed = parseJsonField(notesData);
@@ -2259,9 +2304,7 @@ const TranscriptionViewer: React.FC = () => {
         setInstrumentTracks(tracks);
         setSelectedTrackView((current) => {
           const selectedStemTrack = tracks.find(
-            (track) =>
-              track.instrument_type ===
-              selectedStemInstrument(result.selected_stem),
+            (track) => trackMatchesSelectedStem(track, result.selected_stem),
           );
           if (selectedStemTrack) return selectedStemTrack.id;
           if (tracks.length > 0 && current === "global") return tracks[0].id;
@@ -2328,8 +2371,7 @@ const TranscriptionViewer: React.FC = () => {
       setSelectedTrackView((current) => {
         const selectedStemTrack = tracks.find(
           (track) =>
-            track.instrument_type ===
-            selectedStemInstrument(transcription?.selected_stem),
+            trackMatchesSelectedStem(track, transcription?.selected_stem),
         );
         if (selectedStemTrack) return selectedStemTrack.id;
         return tracks.some((track) => track.id === current)
@@ -2516,11 +2558,13 @@ const TranscriptionViewer: React.FC = () => {
     if (!shouldResumeTabs && !shouldResumeRhythm) return;
 
     isGeneratingTabRef.current = true;
-    setIsGeneratingTab(true);
-    setGenerationStatus(
-      shouldResumeRhythm ? "Generating rhythm..." : "Generating tabs...",
-    );
-    setGenerationMessage("Generation is still in progress.");
+    queueMicrotask(() => {
+      setIsGeneratingTab(true);
+      setGenerationStatus(
+        shouldResumeRhythm ? "Generating rhythm..." : "Generating tabs...",
+      );
+      setGenerationMessage("Generation is still in progress.");
+    });
     startGenerateTabPolling(
       transcription.id,
       shouldResumeRhythm ? "rhythm" : "tabs",
@@ -2577,8 +2621,7 @@ const TranscriptionViewer: React.FC = () => {
       );
       if (directTrackAudio) return directTrackAudio;
       if (
-        selectedTrack.instrument_type ===
-          selectedStemInstrument(transcription.selected_stem) &&
+        trackMatchesSelectedStem(selectedTrack, transcription.selected_stem) &&
         audioService.resolvePlayableAudioUrl(transcription.separated_audio_url)
       ) {
         return audioService.resolvePlayableAudioUrl(
@@ -2831,7 +2874,7 @@ const TranscriptionViewer: React.FC = () => {
   );
   const lyricsSegments = useMemo(
     () => (Array.isArray(lyricsData?.segments) ? lyricsData.segments : []),
-    [lyricsData?.segments],
+    [lyricsData],
   );
   const activeLyricsSegmentIndex = useMemo(() => {
     if (lyricsSegments.length === 0 || !Number.isFinite(currentPlaybackTime)) {
@@ -3250,13 +3293,13 @@ const TranscriptionViewer: React.FC = () => {
   const availableExports = transcription.available_exports ?? [];
   const selectedTrackMidiXmlExportSupported = Boolean(
     scoreSource?.isGlobal ||
-    ["guitar", "bass"].includes(
+    ["guitar", "bass", "other", "guitar_alias_for_other"].includes(
       scoreSource?.instrumentType.toLowerCase() ?? "",
     ),
   );
   const selectedTrackTabExportSupported = Boolean(
     scoreSource?.isGlobal ||
-    ["guitar", "bass"].includes(
+    ["guitar", "bass", "other", "guitar_alias_for_other"].includes(
       scoreSource?.instrumentType.toLowerCase() ?? "",
     ),
   );
@@ -3266,6 +3309,7 @@ const TranscriptionViewer: React.FC = () => {
     extractDrumHits(transcription.notes_data).length > 0;
   const selectedTrackHasDrumHits =
     extractDrumHits(scoreSource?.notesData).length > 0;
+  const selectedStemIsVocal = transcription.selected_stem === "vocals";
   const selectedTrackReprocessSupported = Boolean(
     selectedTrack &&
     ["guitar", "bass", "drums", "vocals"].includes(
@@ -3333,6 +3377,7 @@ const TranscriptionViewer: React.FC = () => {
   const lyricsGenerationStatus = lyricStatusOf(transcription);
   const hasLyricsData = Boolean(lyricsData);
   const hasLyricsSegments = lyricsSegments.length > 0;
+  const hasLyricsText = hasUsableBlob(lyricsData?.text);
   const lyricsProcessing =
     isGeneratingLyrics || lyricsGenerationStatus === "processing";
   const lyricsCompleted =
@@ -3372,6 +3417,31 @@ const TranscriptionViewer: React.FC = () => {
   const tabOutputReady = canShowTabView || selectedTrackHasScore;
   const rhythmOutputReady =
     transcriptionHasDrumHits || selectedTrackHasDrumHits;
+  const selectedStemViewerMode = viewerModeForSelectedStem(
+    transcription.selected_stem,
+    canGenerateScore,
+    rhythmOutputReady,
+    hasLyricsSegments || hasLyricsText,
+  );
+  const scoreWorkspaceLabel =
+    selectedStemViewerMode === "rhythm"
+      ? "Drum rhythm viewer"
+      : selectedStemViewerMode === "lyrics"
+        ? "Lyrics viewer"
+        : selectedStemViewerMode === "playback"
+          ? "Stem playback viewer"
+          : "Selected stem notation viewer";
+  const scoreWorkspaceTitle =
+    selectedStemViewerMode === "rhythm"
+      ? "Drum Rhythm"
+      : selectedStemViewerMode === "lyrics"
+        ? "Lyrics"
+        : selectedStemViewerMode === "playback"
+          ? "Stem Playback"
+          : transcription.selected_stem === "bass"
+            ? "Bass Tab + Score"
+            : "Guitar Tab + Score";
+  const showScoreWorkspace = !selectedStemReady && !selectedStemIsVocal;
   const canGenerateTabs = Boolean(
     stemReviewAvailable &&
     hasStemPlayback &&
@@ -4067,12 +4137,15 @@ const TranscriptionViewer: React.FC = () => {
             </div>
           )}
 
-          {!selectedStemReady && (
+          {showScoreWorkspace && (
             <section
               className="premium-score-workspace"
-              aria-label="Score viewer"
+              aria-label={scoreWorkspaceLabel}
             >
               <aside className="premium-score-sidebar">
+                <span className="premium-sidebar-label">
+                  {scoreWorkspaceTitle}
+                </span>
                 {scoreControlsAvailable && (
                   <div
                     className="premium-view-tabs"

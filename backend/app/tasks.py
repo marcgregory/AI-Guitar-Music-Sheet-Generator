@@ -306,7 +306,15 @@ def generate_single_track_transcription_output(
                 )
                 normalized_stem_path = track.stem_audio_path
 
-            audio_stats = audio.audio_debug_stats(normalized_stem_path)
+            try:
+                audio_stats = audio.audio_debug_stats(normalized_stem_path)
+            except Exception as stats_error:
+                logger.warning(
+                    "Could not collect audio debug stats for track %s: %s",
+                    track.id,
+                    stats_error,
+                )
+                audio_stats = {"error": str(stats_error)}
             note_detection_attempts = []
 
             logger.info(

@@ -691,3 +691,23 @@ Implement a shared strict resolver so manual `bass`/`other` TAB generation can o
   - `python -m pytest backend/tests/test_music_output_services.py`
   - `python -m pytest backend/tests/test_audio_list_endpoint.py`
   - focused Vitest for `TranscriptionViewer.test.tsx`
+
+#Next is deployment-readiness.
+
+I’d do this slice:
+
+Env validation
+Check production mode fails clearly when required vars are missing:
+AUDIO_PROCESSING_MODE=modal, MODAL_TRIGGER_URL, WORKER_API_TOKEN, Cloudinary vars, and DB URL.
+
+Migration check
+Run/verify migration validation against the current models so deploy does not boot with missing selected-stem/status columns.
+
+Production-mode Modal callback smoke test
+Simulate the hosted path:
+upload queues a Modal job, Modal callback completes it, status becomes stem_ready or completed_with_warning, result unlocks.
+
+Document deploy checklist
+Add a short checklist to implementation-plan.md or a deploy doc so the exact env/migration/callback checks are repeatable.
+
+I would not build POST /transcriptions/{id}/cancel yet unless you want a visible Cancel button separate from Delete. Delete already covers the active-job unblock path.

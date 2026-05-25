@@ -375,7 +375,11 @@ async def complete_worker_job(
                 _cleanup_original_cloudinary_audio_after_tab_completion(transcription)
     else:
         transcription.can_generate_score = False
-        transcription.processing_status = "stem_ready"
+        transcription.processing_status = (
+            "completed_with_warning"
+            if selected_stem in {"bass", "other"} and warning_message
+            else "stem_ready"
+        )
     transcription.is_processed = True
     if not (
         is_generate_tab_job

@@ -110,6 +110,16 @@ class Transcription(Base):
     lyrics_data = Column(Text, nullable=True)  # JSON string of generated lyrics
 
 
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    transcription_id = Column(Integer, ForeignKey("transcriptions.id"), nullable=True, index=True)
+    action_type = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class InstrumentTrack(Base):
     __tablename__ = "instrument_tracks"
 

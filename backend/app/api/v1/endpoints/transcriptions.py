@@ -81,4 +81,5 @@ async def reprocess_selected_transcription_track(
         track,
         background_tasks,
         db_session,
+        current_user,
     )

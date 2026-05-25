@@ -47,6 +47,18 @@ def reset_database():
     config.settings.CLOUDINARY_CLOUD_NAME = None
     config.settings.CLOUDINARY_API_KEY = None
     config.settings.CLOUDINARY_API_SECRET = None
+    config.settings.AUDIO_PROCESSING_MODE = None
+    config.settings.PROCESSING_MODE = None
+    config.settings.MODAL_TRIGGER_URL = None
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = None
+    config.settings.YOUTUBE_COOKIES_B64 = None
+    config.settings.YOUTUBE_PO_TOKEN = None
+    config.settings.YOUTUBE_VISITOR_DATA = None
+    config.settings.YOUTUBE_PLAYER_CLIENTS = None
+    config.settings.ENABLE_USAGE_LIMITS = True
+    config.settings.MAX_ACTIVE_JOBS_PER_USER = 1
+    config.settings.DAILY_PROCESSING_JOB_LIMIT = 5
 
 
 def create_user(session, username: str, email: str):
@@ -491,9 +503,9 @@ def test_upload_audio_rejects_when_active_transcription_exists():
         config.settings.PROCESSING_MODE = original_mode
         config.settings.MODAL_TRIGGER_URL = original_modal_url
 
-    assert response.status_code == 409
+    assert response.status_code == 429
     assert response.json()["detail"] == (
-        "Another transcription is currently processing. Please wait until it finishes before starting a new one."
+        "You already have a transcription job in progress. Please wait for it to finish before starting another."
     )
     modal_trigger_mock.assert_not_called()
     send_task_mock.assert_not_called()
@@ -866,10 +878,10 @@ def test_upload_audio_modal_second_job_is_rejected_while_first_is_processing():
         config.settings.MODAL_TRIGGER_URL = original_modal_url
 
     assert first.status_code == 200
-    assert second.status_code == 409
+    assert second.status_code == 429
     assert first.json()["processing_status"] == "processing"
     assert second.json()["detail"] == (
-        "Another transcription is currently processing. Please wait until it finishes before starting a new one."
+        "You already have a transcription job in progress. Please wait for it to finish before starting another."
     )
     modal_trigger_mock.assert_called_once()
 
@@ -974,7 +986,7 @@ def test_second_modal_upload_does_not_become_processing_while_first_is_active():
         config.settings.PROCESSING_MODE = original_mode
         config.settings.MODAL_TRIGGER_URL = original_modal_url
 
-    assert sorted(response.status_code for response in responses) == [200, 409]
+    assert sorted(response.status_code for response in responses) == [200, 200]
     session = TestingSessionLocal()
     try:
         statuses = [
@@ -985,7 +997,7 @@ def test_second_modal_upload_does_not_become_processing_while_first_is_active():
         session.close()
 
     assert statuses.count("processing") == 1
-    assert statuses.count("queued") == 0
+    assert statuses.count("queued") == 1
     assert modal_trigger_mock.call_count == 1
 
 
@@ -1703,7 +1715,7 @@ def test_worker_complete_persists_empty_notes_warning_for_modal_stem():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["processing_status"] == "stem_ready"
+    assert payload["processing_status"] == "completed_with_warning"
     assert payload["warning_message"] == "No note events detected for this stem."
     assert json.loads(payload["notes_data"]) == {
         "notes": [],
@@ -1716,7 +1728,7 @@ def test_worker_complete_persists_empty_notes_warning_for_modal_stem():
             models.InstrumentTrack.transcription_id == transcription_id
         ).one()
         assert track.instrument_type == "guitar"
-        assert track.processing_status == "stem_ready"
+        assert track.processing_status == "completed_with_warning"
         assert json.loads(track.notes_json) == {
             "notes": [],
             "message": "No note events detected for this stem.",

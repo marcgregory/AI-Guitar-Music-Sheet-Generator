@@ -78,6 +78,11 @@ def create_test_session():
     return testing_session()
 
 
+@pytest.fixture(autouse=True)
+def use_local_processing_mode_for_service_task_tests(monkeypatch):
+    monkeypatch.setattr("app.tasks.audio_processing_mode", lambda: "local")
+
+
 def test_generate_tab_audio_source_resolver_prefers_separated_url(caplog):
     transcription = models.Transcription(
         id=101,
