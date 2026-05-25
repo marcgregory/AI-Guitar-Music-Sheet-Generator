@@ -6,9 +6,8 @@ from ....core.security import get_current_user
 from .. import schemas
 from .audio import (
     _get_accessible_transcription,
-    _prepare_track_reprocess,
+    _queue_instrument_track_reprocess,
     _soft_delete_transcription,
-    _start_instrument_track_reprocess,
     retry_transcription,
 )
 
@@ -77,6 +76,9 @@ async def reprocess_selected_transcription_track(
             detail="Selected stem track is not available for reprocessing.",
         )
 
-    _prepare_track_reprocess(track, db_session)
-    _start_instrument_track_reprocess(track.id, background_tasks)
-    return track
+    return _queue_instrument_track_reprocess(
+        transcription,
+        track,
+        background_tasks,
+        db_session,
+    )

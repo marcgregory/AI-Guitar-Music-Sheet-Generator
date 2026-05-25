@@ -18,6 +18,7 @@ vi.mock("../services/audioService", () => ({
   default: {
     getTranscriptionResult: vi.fn(),
     listInstrumentTracks: vi.fn(),
+    reprocessInstrumentTrack: vi.fn(),
     generateTab: vi.fn(),
     generateLyrics: vi.fn(),
     getInstrumentTrackStem: vi.fn(),
@@ -63,6 +64,7 @@ describe("TranscriptionViewer generate tabs polling", () => {
     const mockedAudioService = audioService as unknown as {
       getTranscriptionResult: ReturnType<typeof vi.fn>;
       listInstrumentTracks: ReturnType<typeof vi.fn>;
+      reprocessInstrumentTrack: ReturnType<typeof vi.fn>;
       generateTab: ReturnType<typeof vi.fn>;
       generateLyrics: ReturnType<typeof vi.fn>;
       getInstrumentTrackStem: ReturnType<typeof vi.fn>;
@@ -72,6 +74,18 @@ describe("TranscriptionViewer generate tabs polling", () => {
       ...stemReadyTranscription,
     });
     mockedAudioService.listInstrumentTracks.mockResolvedValue([]);
+    mockedAudioService.reprocessInstrumentTrack.mockResolvedValue({
+      id: 4,
+      transcription_id: 42,
+      instrument_type: "guitar",
+      display_name: "Other / Guitar / Piano / Melody",
+      notes_json: null,
+      chords_json: null,
+      tab_json: null,
+      notation_json: null,
+      processing_status: "processing",
+      created_at: "2026-05-22T15:32:12",
+    });
     mockedAudioService.generateTab.mockResolvedValue({
       status: "processing",
       transcription_id: 42,
@@ -184,6 +198,45 @@ describe("TranscriptionViewer generate tabs polling", () => {
     expect(audioService.resolvePlayableAudioUrl).not.toHaveBeenCalledWith(
       "/tmp/transcriptions/42/original.mp3",
     );
+  });
+
+  it("keeps separated playback visible for no-note warning results", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        processing_status: "completed_with_warning",
+        separated_audio_url: "/demo/selected-stem/no-notes.wav",
+        notes_data: JSON.stringify({
+          notes: [],
+          message: "No note events detected for this stem.",
+        }),
+        tablature_data: null,
+        notation_data: null,
+        warning_message: "No note events detected for this stem.",
+        can_play_stem: true,
+        can_generate_score: false,
+        available_exports: [],
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([]);
+
+    render(<TranscriptionViewer />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Play stem playback/i }),
+      ).toBeEnabled();
+    });
+    expect(
+      screen.getAllByText(
+        /Stem playback is available, but no reliable notes were detected for this stem\./i,
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/No note events detected for this stem\./i).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /^Score$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Tab$/i })).not.toBeInTheDocument();
   });
 
   it("restores manual tab generation state from backend status on mount", async () => {
@@ -299,6 +352,46 @@ describe("TranscriptionViewer generate tabs polling", () => {
     expect(screen.getAllByText("RHYTHM READY").length).toBeGreaterThan(0);
   });
 
+  it("shows track reprocessing instead of no-note fallback while selected track is processing", async () => {
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        processing_status: "completed_with_warning",
+        can_generate_score: false,
+        warning_message: "No note events detected for this stem.",
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([
+        {
+          id: 4,
+          transcription_id: 42,
+          instrument_type: "guitar",
+          display_name: "Other / Guitar / Piano / Melody",
+          stem_audio_path: "uploads/separated/transcription_42/other.wav",
+          notes_json: null,
+          chords_json: null,
+          tab_json: null,
+          notation_json: null,
+          confidence_score: 90,
+          processing_status: "processing",
+          confidence_notes: null,
+          created_at: "2026-05-22T15:32:12",
+        },
+      ]);
+
+    render(<TranscriptionViewer />);
+
+    expect(await screen.findByText("Reprocessing track...")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Analyzing this stem again. The score will refresh when processing finishes.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("No note events were detected for the selected stem."),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows vocal lyrics generation without switching to audio processing UI", async () => {
     (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
       .mockResolvedValue({
@@ -314,8 +407,12 @@ describe("TranscriptionViewer generate tabs polling", () => {
     render(<TranscriptionViewer />);
 
     const lyricsButton = await screen.findByRole("button", {
-      name: /Generate Lyrics/i,
+      name: /Transcribe Lyrics/i,
     });
+    const languageSelect = screen.getByLabelText(/Lyrics language/i);
+    expect(languageSelect).toHaveValue("auto");
+    expect(screen.getByText("Best for songs with mixed languages.")).toBeInTheDocument();
+    fireEvent.change(languageSelect, { target: { value: "ceb" } });
     expect(
       screen.queryByRole("button", { name: /Generate Tabs/i }),
     ).not.toBeInTheDocument();
@@ -323,7 +420,9 @@ describe("TranscriptionViewer generate tabs polling", () => {
     fireEvent.click(lyricsButton);
 
     await waitFor(() => {
-      expect(audioService.generateLyrics).toHaveBeenCalledWith(42, "test-token");
+      expect(audioService.generateLyrics).toHaveBeenCalledWith(42, "test-token", {
+        language: "ceb",
+      });
       expect(screen.getAllByText(/Generating lyrics\.\.\./i).length).toBeGreaterThan(0);
     });
 
@@ -373,7 +472,7 @@ describe("TranscriptionViewer generate tabs polling", () => {
 
     expect(await screen.findByText("Lyrics generated")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /Generate Lyrics/i }),
+      screen.queryByRole("button", { name: /Transcribe Lyrics/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -395,7 +494,7 @@ describe("TranscriptionViewer generate tabs polling", () => {
     render(<TranscriptionViewer />);
 
     expect(
-      await screen.findByRole("button", { name: /Generate Lyrics/i }),
+      await screen.findByRole("button", { name: /Transcribe Lyrics/i }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Lyrics generated")).not.toBeInTheDocument();
   });
@@ -416,7 +515,7 @@ describe("TranscriptionViewer generate tabs polling", () => {
     render(<TranscriptionViewer />);
 
     expect(
-      await screen.findByRole("button", { name: /Generate Lyrics/i }),
+      await screen.findByRole("button", { name: /Transcribe Lyrics/i }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Lyrics generated")).not.toBeInTheDocument();
   });

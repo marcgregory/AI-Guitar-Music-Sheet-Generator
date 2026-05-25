@@ -113,6 +113,7 @@ export interface TranscriptionStatus {
 }
 
 export type StemSelection = "vocals" | "drums" | "bass" | "other";
+export type LyricsLanguage = "auto" | "en" | "tl" | "ceb" | "es" | "ja" | "ko";
 export type ExportFormat = "midi" | "musicxml" | "tab";
 export type LyricsGenerationStatusValue =
   | "pending"
@@ -432,11 +433,16 @@ const audioService = {
   generateLyrics: async (
     transcriptionId: number,
     token: string,
+    options?: {
+      language?: LyricsLanguage;
+    },
   ): Promise<TranscriptionStatus> => {
     void token;
     const response = await apiClient.post(
       `/audio/${transcriptionId}/generate-lyrics`,
-      {},
+      {
+        language: options?.language ?? "auto",
+      },
     );
 
     return response.data;

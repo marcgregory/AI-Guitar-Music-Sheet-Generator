@@ -8,6 +8,7 @@ import React, {
 import type { AlphaTabApi } from "@coderline/alphatab";
 import audioService from "../services/audioService";
 import type { InstrumentTrack, Transcription } from "../services/audioService";
+import type { LyricsLanguage } from "../services/audioService";
 import { buildTranscriptionMetadata } from "../utils/transcriptionMetadata";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "./auth/AuthContext";
@@ -92,9 +93,25 @@ type LyricsSegment = {
 type LyricsData = {
   text?: string;
   segments?: LyricsSegment[];
+  requested_language?: string | null;
   language?: string | null;
   model?: string;
   message?: string | null;
+};
+
+const lyricsLanguageOptions: Array<{ value: LyricsLanguage; label: string }> = [
+  { value: "auto", label: "Auto detect" },
+  { value: "en", label: "English" },
+  { value: "tl", label: "Tagalog / Filipino" },
+  { value: "ceb", label: "Cebuano / Bisaya" },
+  { value: "es", label: "Spanish" },
+  { value: "ja", label: "Japanese" },
+  { value: "ko", label: "Korean" },
+];
+
+const lyricsLanguageLabel = (value: string | null | undefined): string => {
+  const match = lyricsLanguageOptions.find((option) => option.value === value);
+  return match?.label ?? (value ? value.toUpperCase() : "Auto detect");
 };
 
 const parseLyricsData = (
@@ -2206,6 +2223,8 @@ const TranscriptionViewer: React.FC = () => {
   const [isRetryingTranscription, setIsRetryingTranscription] = useState(false);
   const [isGeneratingTab, setIsGeneratingTab] = useState(false);
   const [isGeneratingLyrics, setIsGeneratingLyrics] = useState(false);
+  const [lyricsLanguage, setLyricsLanguage] =
+    useState<LyricsLanguage>("auto");
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [generationMessage, setGenerationMessage] = useState<string | null>(
     null,
@@ -2216,6 +2235,7 @@ const TranscriptionViewer: React.FC = () => {
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const lyricSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const generateTabPollingRef = useRef<NodeJS.Timeout | null>(null);
+  const trackReprocessPollingRef = useRef<NodeJS.Timeout | null>(null);
   const isGeneratingTabRef = useRef(false);
   const isGeneratingLyricsRef = useRef(false);
   const scoreStageRef = useRef<HTMLDivElement | null>(null);
@@ -2331,6 +2351,62 @@ const TranscriptionViewer: React.FC = () => {
     });
   }, []);
 
+  const stopTrackReprocessPolling = useCallback((reason: string) => {
+    if (trackReprocessPollingRef.current) {
+      clearInterval(trackReprocessPollingRef.current);
+      trackReprocessPollingRef.current = null;
+    }
+    console.log("track reprocess polling enabled/disabled state", {
+      enabled: false,
+      reason,
+    });
+  }, []);
+
+  const startTrackReprocessPolling = useCallback(
+    (transcriptionIdValue: number, trackId: number) => {
+      if (!token) return;
+      stopTrackReprocessPolling("restart track reprocess polling");
+      console.log("track reprocess polling enabled/disabled state", {
+        enabled: true,
+        transcriptionId: transcriptionIdValue,
+        trackId,
+      });
+
+      trackReprocessPollingRef.current = setInterval(async () => {
+        try {
+          const tracks = await audioService.listInstrumentTracks(
+            transcriptionIdValue,
+            token,
+          );
+          setInstrumentTracks(tracks);
+
+          const currentTrack = tracks.find((track) => track.id === trackId);
+          if (!currentTrack || currentTrack.processing_status === "processing") {
+            return;
+          }
+
+          setReprocessingTrackId(null);
+          stopTrackReprocessPolling("track reprocess completed");
+          try {
+            const result = await audioService.getTranscriptionResult(
+              transcriptionIdValue,
+              token,
+            );
+            setTranscription(result);
+          } catch (resultErr) {
+            console.warn(
+              "Could not refresh transcription after track reprocess:",
+              resultErr,
+            );
+          }
+        } catch (pollErr) {
+          console.warn("Track reprocess polling error:", pollErr);
+        }
+      }, 2000);
+    },
+    [stopTrackReprocessPolling, token],
+  );
+
   const startGenerateTabPolling = useCallback(
     (transcriptionIdValue: number, mode: "tabs" | "rhythm" | "lyrics") => {
       if (!token) return;
@@ -2427,8 +2503,9 @@ const TranscriptionViewer: React.FC = () => {
   useEffect(
     () => () => {
       stopGenerateTabPolling("transcription viewer unmounted");
+      stopTrackReprocessPolling("transcription viewer unmounted");
     },
-    [stopGenerateTabPolling],
+    [stopGenerateTabPolling, stopTrackReprocessPolling],
   );
 
   useEffect(() => {
@@ -2930,10 +3007,9 @@ const TranscriptionViewer: React.FC = () => {
           track.id === updatedTrack.id ? updatedTrack : track,
         ),
       );
-      await refreshInstrumentTracks(transcription.id);
+      startTrackReprocessPolling(transcription.id, updatedTrack.id);
     } catch (err: unknown) {
       setError(errorMessageOf(err, "Failed to reprocess instrument track"));
-    } finally {
       setReprocessingTrackId(null);
     }
   };
@@ -3060,6 +3136,7 @@ const TranscriptionViewer: React.FC = () => {
       const response = await audioService.generateLyrics(
         transcription.id,
         token,
+        { language: lyricsLanguage },
       );
       setGenerationMessage(response.message ?? "Lyrics generation started.");
       setTranscription((current) =>
@@ -3246,6 +3323,11 @@ const TranscriptionViewer: React.FC = () => {
   const backendRhythmGenerating = isRhythmGenerating(transcription);
   const isGeneratingTabsView =
     isGeneratingTab || backendTabsGenerating || backendRhythmGenerating;
+  const selectedTrackProcessing =
+    scoreSource?.processingStatus === "processing" ||
+    (selectedTrack !== null && reprocessingTrackId === selectedTrack.id);
+  const isTrackReprocessingView =
+    selectedTrackProcessing && !isGeneratingTabsView;
   const lyricsGenerationStatus = lyricStatusOf(transcription);
   const hasLyricsData = Boolean(lyricsData);
   const hasLyricsSegments = lyricsSegments.length > 0;
@@ -3310,6 +3392,8 @@ const TranscriptionViewer: React.FC = () => {
       : "Stem is ready. Listen first, then generate tabs if the stem sounds useful.";
   const displayedProcessingStatus = isGeneratingTabsView
     ? "processing"
+    : selectedTrackProcessing
+      ? "processing"
     : transcription.processing_status === "completed_with_warning"
       ? "completed_with_warning"
       : transcription.processing_status === "failed" ||
@@ -3318,6 +3402,8 @@ const TranscriptionViewer: React.FC = () => {
         : (scoreSource?.processingStatus ?? "completed");
   const displayedStatusLabel = isGeneratingTabsView
     ? generationStatus || generatingTitle
+    : selectedTrackProcessing
+      ? "Reprocessing track"
     : transcription.processing_status === "completed_with_warning"
       ? "Stem Ready"
       : statusLabel(displayedProcessingStatus);
@@ -3725,7 +3811,7 @@ const TranscriptionViewer: React.FC = () => {
                 </div>
               )}
               {isVocalStemReady && !isDemoTranscription && (
-                <div>
+                <div className="premium-lyrics-generate-controls">
                   {lyricsProcessing && (
                     <button
                       type="button"
@@ -3743,14 +3829,38 @@ const TranscriptionViewer: React.FC = () => {
                     </span>
                   )}
                   {showGenerateLyricsButton && (
-                    <button
-                      type="button"
-                      className="button-primary premium-generate-tab-button"
-                      onClick={handleGenerateLyrics}
-                    >
-                      <Mic aria-hidden="true" />
-                      Generate Lyrics
-                    </button>
+                    <>
+                      <label className="premium-lyrics-language-field">
+                        <span>Lyrics language</span>
+                        <select
+                          value={lyricsLanguage}
+                          onChange={(event) =>
+                            setLyricsLanguage(
+                              event.target.value as LyricsLanguage,
+                            )
+                          }
+                        >
+                          {lyricsLanguageOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {lyricsLanguage === "auto" && (
+                        <p className="premium-lyrics-language-helper">
+                          Best for songs with mixed languages.
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        className="button-primary premium-generate-tab-button"
+                        onClick={handleGenerateLyrics}
+                      >
+                        <Mic aria-hidden="true" />
+                        Transcribe Lyrics
+                      </button>
+                    </>
                   )}
                   {lyricsProcessing && (
                     <p className="generation-status-subtitle">
@@ -3775,6 +3885,19 @@ const TranscriptionViewer: React.FC = () => {
               >
                 <h2 id="lyrics-heading">Lyrics</h2>
                 <div className="premium-lyrics-panel">
+                  {lyricsData && (
+                    <div className="premium-lyrics-meta">
+                      <span>
+                        Requested:{" "}
+                        {lyricsLanguageLabel(lyricsData.requested_language)}
+                      </span>
+                      {lyricsData.language && (
+                        <span>
+                          Detected: {lyricsLanguageLabel(lyricsData.language)}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {lyricsProcessing ? (
                     <p className="premium-lyrics-status">
                       Generating lyrics...
@@ -3836,6 +3959,12 @@ const TranscriptionViewer: React.FC = () => {
                         "No clear vocals detected for lyrics generation."}
                     </p>
                   )}
+                  {lyricsData && (
+                    <p className="premium-lyrics-correction-note">
+                      Lyrics may need correction when vocals are unclear,
+                      layered, or mixed with backing vocals.
+                    </p>
+                  )}
                 </div>
               </section>
             )}
@@ -3879,15 +4008,23 @@ const TranscriptionViewer: React.FC = () => {
             </div>
           </section>
 
-          {((canGenerateScore && scoreSource?.confidenceNotes) ||
+          {(scoreSource?.confidenceNotes ||
+            transcription.warning_message ||
             audioError ||
             (canGenerateScore && notesError)) && (
             <div className="premium-warning-stack">
-              {canGenerateScore && scoreSource?.confidenceNotes && (
+              {scoreSource?.confidenceNotes && (
                 <div className="alert alert-error">
                   {scoreSource.confidenceNotes}
                 </div>
               )}
+              {transcription.warning_message &&
+                transcription.warning_message !==
+                  scoreSource?.confidenceNotes && (
+                  <div className="alert alert-error">
+                    {transcription.warning_message}
+                  </div>
+                )}
               {audioError && (
                 <div className="alert alert-error">{audioError}</div>
               )}
@@ -4082,7 +4219,9 @@ const TranscriptionViewer: React.FC = () => {
                   ) : (
                     <div className="premium-inline-empty-state">
                       <strong>
-                        {isGeneratingTabsView
+                        {isTrackReprocessingView
+                          ? "Reprocessing track..."
+                          : isGeneratingTabsView
                           ? generationStatus || generatingTitle
                           : selectedStemReady
                             ? "Stem playback is ready for review."
@@ -4091,7 +4230,9 @@ const TranscriptionViewer: React.FC = () => {
                               : "No note events detected for this stem."}
                       </strong>
                       <p>
-                        {isGeneratingTabsView
+                        {isTrackReprocessingView
+                          ? "Analyzing this stem again. The score will refresh when processing finishes."
+                          : isGeneratingTabsView
                           ? generatingDetails
                           : selectedStemReady
                             ? stemReadyMessage
@@ -4127,7 +4268,8 @@ const TranscriptionViewer: React.FC = () => {
                         )}
                         {!isDemoTranscription &&
                           !selectedStemReady &&
-                          !isGeneratingTabsView && (
+                          !isGeneratingTabsView &&
+                          !isTrackReprocessingView && (
                             <button
                               type="button"
                               className="button-primary"

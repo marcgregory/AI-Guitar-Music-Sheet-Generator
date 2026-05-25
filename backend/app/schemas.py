@@ -227,6 +227,7 @@ class WorkerJob(BaseModel):
     modal_request_id: Optional[str] = None
     separated_audio_url: Optional[str] = None
     detection_sensitivity: Optional[str] = None
+    lyrics_language: Optional[str] = None
     track_id: Optional[int] = None
     source_type: Optional[str] = None
     source_url: Optional[str] = None

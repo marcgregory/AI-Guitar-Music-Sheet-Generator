@@ -2,6 +2,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -15,7 +16,7 @@ from app import db, models, tasks
 from app.api.v1.endpoints import audio as audio_endpoint
 from app.core import config
 from app.core.security import create_access_token, get_password_hash
-from app.services import storage
+from app.services import lyrics, storage
 from main import app
 
 
@@ -1300,6 +1301,51 @@ def test_status_repair_skips_while_tab_generation_is_processing():
     tab_mock.assert_not_called()
 
 
+def test_result_repairs_completed_tab_generation_stuck_in_processing():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "stuck-tab-owner", "stuck-tab@example.com")
+        transcription = models.Transcription(
+            title="Stuck tab generation",
+            user_id=owner.id,
+            selected_stem="other",
+            separated_audio_file_path="uploads/separated/transcription_1/other.wav",
+            notes_data=sample_notes_json(),
+            tablature_data=sample_tab_json(),
+            is_processed=False,
+            processing_status="processing",
+            tab_generation_status="completed",
+            can_play_stem=True,
+            can_generate_score=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/result",
+        headers=auth_headers("stuck-tab-owner"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processing_status"] == "completed"
+    assert payload["tab_generation_status"] == "completed"
+    assert payload["can_generate_score"] is True
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).get(transcription_id)
+        assert refreshed.processing_status == "completed"
+        assert refreshed.is_processed is True
+        assert refreshed.celery_task_id is None
+    finally:
+        session.close()
+
+
 def test_worker_generate_tab_complete_does_not_mark_completed_when_structured_tab_fails():
     reset_database()
     original_token = config.settings.WORKER_API_TOKEN
@@ -1933,6 +1979,26 @@ def test_modal_generate_tab_payload_uses_only_separated_url():
     assert payload["detection_sensitivity"] == "high"
 
 
+def test_modal_generate_lyrics_payload_includes_requested_language():
+    transcription = models.Transcription(
+        id=206,
+        title="Modal lyrics language",
+        selected_stem="vocals",
+        separated_audio_url="https://res.cloudinary.com/demo/video/upload/vocals.wav",
+        modal_request_id="request-206",
+    )
+
+    payload = audio_endpoint._build_worker_payload_for_modal(
+        transcription,
+        job_type="generate_lyrics",
+        lyrics_language="ceb",
+    )
+
+    assert payload["separated_audio_url"] == transcription.separated_audio_url
+    assert payload["original_audio_url"] is None
+    assert payload["lyrics_language"] == "ceb"
+
+
 def test_modal_generate_tab_payload_requires_separated_url_not_local_path():
     transcription = models.Transcription(
         id=205,
@@ -2024,6 +2090,7 @@ def test_generate_lyrics_endpoint_uses_lyrics_status_without_processing_audio():
         response = client.post(
             f"/api/v1/audio/{transcription_id}/generate-lyrics",
             headers=auth_headers("lyrics-owner"),
+            json={"language": "tl"},
         )
 
     assert response.status_code == 200
@@ -2032,8 +2099,10 @@ def test_generate_lyrics_endpoint_uses_lyrics_status_without_processing_audio():
     assert payload["lyrics_generation_status"] == "processing"
     assert payload["tab_generation_status"] == "idle"
     assert payload["rhythm_generation_status"] == "idle"
+    assert payload["lyrics_language"] == "tl"
     assert payload["message"] == "Lyrics generation started."
     assert start_mock.call_args.args[0] == transcription_id
+    assert start_mock.call_args.kwargs["lyrics_language"] == "tl"
 
     session = TestingSessionLocal()
     try:
@@ -2079,6 +2148,131 @@ def test_generate_lyrics_rejects_non_vocal_stem():
     assert response.json()["detail"] == "Lyrics generation is only available for vocal stems."
 
 
+@pytest.mark.parametrize("language", ["auto", "en", "tl", "ceb", "es", "ja", "ko"])
+def test_generate_lyrics_endpoint_accepts_supported_languages(language):
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        username = f"lyrics-{language}-owner"
+        owner = create_user(session, username, f"{username}@example.com")
+        transcription = models.Transcription(
+            title=f"Vocal stem {language}",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/vocals.wav",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    with patch("app.api.v1.endpoints.audio._start_lyrics_generation", return_value="lyrics-task") as start_mock:
+        response = client.post(
+            f"/api/v1/audio/{transcription_id}/generate-lyrics",
+            headers=auth_headers(username),
+            json={"language": language},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["lyrics_language"] == language
+    assert start_mock.call_args.kwargs["lyrics_language"] == language
+
+
+def test_generate_lyrics_endpoint_rejects_invalid_language():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "lyrics-invalid-owner", "lyrics-invalid@example.com")
+        transcription = models.Transcription(
+            title="Invalid language vocal",
+            user_id=owner.id,
+            selected_stem="vocals",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/vocals.wav",
+            can_play_stem=True,
+            processing_status="stem_ready",
+            is_processed=True,
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+    finally:
+        session.close()
+
+    response = client.post(
+        f"/api/v1/audio/{transcription_id}/generate-lyrics",
+        headers=auth_headers("lyrics-invalid-owner"),
+        json={"language": "xx"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "lyrics language must be one of: auto, en, tl, ceb, es, ja, ko"
+
+
+def test_transcribe_vocal_stem_auto_does_not_force_language(tmp_path, monkeypatch):
+    stem_path = tmp_path / "auto-vocals.wav"
+    stem_path.write_bytes(b"fake wav")
+
+    class FakeWhisperModel:
+        kwargs = None
+
+        def transcribe(self, *_args, **kwargs):
+            self.kwargs = kwargs
+            return iter([]), SimpleNamespace(language="tl")
+
+    fake_model = FakeWhisperModel()
+    monkeypatch.setattr(lyrics, "get_whisper_model", lambda: fake_model)
+    monkeypatch.setattr(
+        lyrics,
+        "resolve_whisper_runtime",
+        lambda: {"model_size": "base", "device": "cpu", "compute_type": "int8"},
+    )
+
+    result = lyrics.transcribe_vocal_stem(stem_path, language="auto")
+
+    assert fake_model.kwargs["language"] is None
+    assert result["requested_language"] == "auto"
+    assert result["language"] == "tl"
+
+
+def test_transcribe_vocal_stem_forces_supported_language(tmp_path, monkeypatch):
+    stem_path = tmp_path / "tagalog-vocals.wav"
+    stem_path.write_bytes(b"fake wav")
+
+    class FakeSegment:
+        start = 0
+        end = 1.2
+        text = "kumusta"
+
+    class FakeWhisperModel:
+        kwargs = None
+
+        def transcribe(self, *_args, **kwargs):
+            self.kwargs = kwargs
+            return iter([FakeSegment()]), SimpleNamespace(language="tl")
+
+    fake_model = FakeWhisperModel()
+    monkeypatch.setattr(lyrics, "get_whisper_model", lambda: fake_model)
+    monkeypatch.setattr(
+        lyrics,
+        "resolve_whisper_runtime",
+        lambda: {"model_size": "base", "device": "cpu", "compute_type": "int8"},
+    )
+
+    result = lyrics.transcribe_vocal_stem(stem_path, language="tl")
+
+    assert fake_model.kwargs["language"] == "tl"
+    assert fake_model.kwargs["vad_filter"] is False
+    assert fake_model.kwargs["beam_size"] == 8
+    assert fake_model.kwargs["best_of"] == 5
+    assert fake_model.kwargs["condition_on_previous_text"] is False
+    assert result["requested_language"] == "tl"
+    assert result["text"] == "kumusta"
+
+
 def test_generate_lyrics_output_returns_after_saving_lyrics_result(tmp_path):
     reset_database()
     stem_path = tmp_path / "vocals.wav"
@@ -2108,6 +2302,7 @@ def test_generate_lyrics_output_returns_after_saving_lyrics_result(tmp_path):
         lyrics_result = {
             "text": "hello there",
             "segments": [{"start": 0, "end": 1.2, "text": "hello there"}],
+            "requested_language": "ceb",
             "language": "en",
             "model": "faster-whisper",
             "model_size": "base",
@@ -2128,10 +2323,14 @@ def test_generate_lyrics_output_returns_after_saving_lyrics_result(tmp_path):
             patch("app.tasks.audio.detect_rhythm") as rhythm_mock,
             patch("app.tasks.audio.detect_chords") as chords_mock,
         ):
-            result = tasks.generate_lyrics_output_for_transcription(transcription, session)
+            result = tasks.generate_lyrics_output_for_transcription(
+                transcription,
+                session,
+                lyrics_language="ceb",
+            )
 
         assert result is None
-        transcribe_mock.assert_called_once_with(str(stem_path))
+        transcribe_mock.assert_called_once_with(str(stem_path), language="ceb")
         track_mock.assert_not_called()
         tempo_mock.assert_not_called()
         key_mock.assert_not_called()
@@ -2142,7 +2341,9 @@ def test_generate_lyrics_output_returns_after_saving_lyrics_result(tmp_path):
             models.Transcription.id == transcription_id
         ).one()
         assert refreshed.lyrics_generation_status == "completed"
-        assert json.loads(refreshed.lyrics_data)["text"] == "hello there"
+        lyrics_payload = json.loads(refreshed.lyrics_data)
+        assert lyrics_payload["text"] == "hello there"
+        assert lyrics_payload["requested_language"] == "ceb"
         assert refreshed.processing_status == "stem_ready"
         assert refreshed.notes_data == '{"notes": [{"pitch": 60}]}'
         assert refreshed.tablature_data == '{"tablature": [{"fret": 3}]}'
@@ -2177,6 +2378,7 @@ def test_generate_lyrics_output_empty_text_completes_with_warning(tmp_path):
         lyrics_result = {
             "text": "",
             "segments": [],
+            "requested_language": "auto",
             "language": None,
             "model": "faster-whisper",
             "model_size": "base",
@@ -2202,6 +2404,7 @@ def test_generate_lyrics_output_empty_text_completes_with_warning(tmp_path):
         payload = json.loads(refreshed.lyrics_data)
         assert refreshed.lyrics_generation_status == "completed_with_warning"
         assert payload["message"] == "No clear vocals detected for lyrics generation."
+        assert payload["requested_language"] == "auto"
         assert refreshed.processing_status == "stem_ready"
         assert refreshed.can_play_stem is True
     finally:
@@ -2293,6 +2496,7 @@ def test_worker_lyrics_complete_only_updates_lyrics_fields():
                 "lyrics_data": {
                     "text": "hello there",
                     "segments": [{"start": 0, "end": 1.2, "text": "hello there"}],
+                    "requested_language": "tl",
                     "language": "en",
                     "model": "faster-whisper",
                 }
@@ -2305,7 +2509,9 @@ def test_worker_lyrics_complete_only_updates_lyrics_fields():
     payload = response.json()
     assert payload["processing_status"] == "stem_ready"
     assert payload["lyrics_generation_status"] == "completed"
-    assert json.loads(payload["lyrics_data"])["text"] == "hello there"
+    lyrics_payload = json.loads(payload["lyrics_data"])
+    assert lyrics_payload["text"] == "hello there"
+    assert lyrics_payload["requested_language"] == "tl"
     assert payload["notes_data"] == '{"notes": [{"pitch": 60}]}'
     assert payload["tablature_data"] == '{"tablature": [{"fret": 3}]}'
     assert payload["midi_file_path"] == "/tmp/original.mid"
@@ -2704,6 +2910,41 @@ def test_extract_audio_from_youtube_rejects_malformed_env_cookies_before_ytdlp()
     youtube_dl.assert_not_called()
 
 
+def test_get_youtube_cookiefile_accepts_base64_env_cookies(tmp_path):
+    from app.api.v1.endpoints.audio import _get_youtube_cookiefile
+
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    original_cookies_b64 = config.settings.YOUTUBE_COOKIES_B64
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = None
+    cookie_payload = (
+        "# Netscape HTTP Cookie File\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfresh-cookie\n"
+    )
+    import base64
+
+    config.settings.YOUTUBE_COOKIES_B64 = base64.b64encode(
+        cookie_payload.encode("utf-8")
+    ).decode("ascii")
+    cookiefile = None
+
+    try:
+        resolved = _get_youtube_cookiefile()
+        cookiefile = Path(resolved.path)
+
+        assert resolved.source == "YOUTUBE_COOKIES_B64"
+        assert resolved.loaded is True
+        assert resolved.cookie_count == 1
+        assert cookiefile.read_text(encoding="utf-8") == cookie_payload
+    finally:
+        if cookiefile and cookiefile.exists():
+            cookiefile.unlink()
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+        config.settings.YOUTUBE_COOKIES_B64 = original_cookies_b64
+
+
 def test_extract_audio_from_youtube_rejects_env_cookies_without_youtube_domain_before_ytdlp():
     reset_database()
     original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
@@ -2785,7 +3026,7 @@ def test_extract_audio_from_youtube_returns_cookie_rejected_detail_when_loaded_c
     assert response.status_code == 503
     assert response.json()["detail"] == (
         "Cookies were loaded, but YouTube rejected them. "
-        "Re-export fresh cookies or upload audio directly."
+        "Re-export fresh cookies, add YOUTUBE_PO_TOKEN, or upload audio directly."
     )
 
 
@@ -2799,6 +3040,35 @@ def test_youtube_download_options_include_cookiefile_when_configured():
     )
 
     assert options["cookiefile"] == "/app/secrets/youtube.cookies.txt"
+
+
+def test_youtube_download_options_include_po_token_extractor_args():
+    from app.api.v1.endpoints.audio import _build_youtube_download_options
+
+    original_po_token = config.settings.YOUTUBE_PO_TOKEN
+    original_visitor_data = config.settings.YOUTUBE_VISITOR_DATA
+    original_player_clients = config.settings.YOUTUBE_PLAYER_CLIENTS
+    config.settings.YOUTUBE_PO_TOKEN = "web.gvs+token-one,mweb.gvs+token-two"
+    config.settings.YOUTUBE_VISITOR_DATA = "visitor-data"
+    config.settings.YOUTUBE_PLAYER_CLIENTS = "web,mweb"
+
+    try:
+        options = _build_youtube_download_options(
+            unique_filename="song",
+            ffmpeg_path="/usr/bin",
+        )
+    finally:
+        config.settings.YOUTUBE_PO_TOKEN = original_po_token
+        config.settings.YOUTUBE_VISITOR_DATA = original_visitor_data
+        config.settings.YOUTUBE_PLAYER_CLIENTS = original_player_clients
+
+    assert options["extractor_args"] == {
+        "youtube": {
+            "po_token": ["web.gvs+token-one", "mweb.gvs+token-two"],
+            "visitor_data": ["visitor-data"],
+            "player_client": ["web", "mweb"],
+        }
+    }
 
 
 def test_list_instrument_tracks_requires_transcription_access():
@@ -3456,6 +3726,15 @@ def test_reprocess_instrument_track_queues_supported_track_and_clears_outputs(tm
         "app.tasks.reprocess_instrument_track",
         args=[track_id],
     )
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status != "processing"
+        assert refreshed.is_processed is True
+    finally:
+        session.close()
 
 
 def test_reprocess_drum_track_queues_and_clears_outputs(tmp_path):
@@ -3512,6 +3791,15 @@ def test_reprocess_drum_track_queues_and_clears_outputs(tmp_path):
         "app.tasks.reprocess_instrument_track",
         args=[track_id],
     )
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.query(models.Transcription).filter(
+            models.Transcription.id == transcription_id
+        ).one()
+        assert refreshed.processing_status != "processing"
+        assert refreshed.is_processed is True
+    finally:
+        session.close()
 
 
 def test_get_instrument_track_stem_returns_404_when_file_is_missing():
