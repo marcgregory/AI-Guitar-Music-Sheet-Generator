@@ -1200,6 +1200,21 @@ def _ensure_structured_tablature_repaired(
 
     transcription.tablature_data = json.dumps(repaired)
     if tablature.has_structured_tablature(transcription.tablature_data):
+        instrument_type = "bass" if selected_stem == "bass" else "guitar"
+        selected_track = (
+            db_session.query(models.InstrumentTrack)
+            .filter(
+                models.InstrumentTrack.transcription_id == transcription.id,
+                models.InstrumentTrack.instrument_type == instrument_type,
+            )
+            .first()
+        )
+        if selected_track and not tablature.has_structured_tablature(selected_track.tab_json):
+            selected_track.tab_json = transcription.tablature_data
+            selected_track.notes_json = selected_track.notes_json or transcription.notes_data
+            if selected_track.processing_status in {None, "completed_with_warning", "failed"}:
+                selected_track.processing_status = "completed"
+            db_session.add(selected_track)
         transcription.can_generate_score = True
         if (transcription.tab_generation_status or "idle") == "completed_with_warning":
             transcription.tab_generation_status = "completed"

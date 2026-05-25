@@ -1180,6 +1180,76 @@ def test_worker_generate_tab_complete_derives_missing_structured_tablature_for_s
     assert result_payload["notes_data"] == payload["notes_data"]
 
 
+def test_worker_reprocess_complete_derives_missing_structured_tablature_for_track():
+    reset_database()
+    original_token = config.settings.WORKER_API_TOKEN
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "reprocess-tab-owner", "reprocess-tab@example.com")
+        transcription = models.Transcription(
+            title="Reprocess tab payload",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            is_processed=True,
+            processing_status="completed",
+            tab_generation_status="completed",
+            modal_job_type="reprocess_track",
+            can_play_stem=True,
+        )
+        session.add(transcription)
+        session.flush()
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="bass",
+            display_name="Bass",
+            processing_status="processing",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+        config.settings.WORKER_API_TOKEN = "test-worker-token"
+    finally:
+        session.close()
+
+    notes_payload = {
+        "notes": [
+            {"pitch": 43, "onset": 0.0, "offset": 0.5, "velocity": 84, "confidence": 0.91}
+        ]
+    }
+
+    try:
+        response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"X-Worker-Token": "test-worker-token"},
+            json={
+                "track_id": track_id,
+                "notes_data": notes_payload,
+                "tablature_data": None,
+            },
+        )
+    finally:
+        config.settings.WORKER_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    parsed_tab = json.loads(payload["tablature_data"])
+    assert parsed_tab["instrument"] == "bass"
+    assert parsed_tab["tablature"]
+
+    session = TestingSessionLocal()
+    try:
+        refreshed_track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.id == track_id
+        ).one()
+        assert refreshed_track.processing_status == "completed"
+        assert refreshed_track.tab_json == payload["tablature_data"]
+        assert refreshed_track.notes_json == payload["notes_data"]
+    finally:
+        session.close()
+
+
 def test_result_endpoint_repairs_and_persists_missing_structured_tablature():
     reset_database()
     session = TestingSessionLocal()
@@ -1226,6 +1296,68 @@ def test_result_endpoint_repairs_and_persists_missing_structured_tablature():
             models.Transcription.id == transcription_id
         ).one()
         assert refreshed.tablature_data == payload["tablature_data"]
+    finally:
+        session.close()
+
+
+def test_result_endpoint_repairs_matching_track_tablature_too():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "repair-track-owner", "repair-track@example.com")
+        notes_payload = {
+            "notes": [
+                {"pitch": 43, "onset": 0.0, "offset": 0.5, "velocity": 84}
+            ]
+        }
+        transcription = models.Transcription(
+            title="Repair track result",
+            user_id=owner.id,
+            selected_stem="bass",
+            separated_audio_url="https://res.cloudinary.com/demo/video/upload/bass.wav",
+            notes_data=json.dumps(notes_payload),
+            tablature_data=None,
+            is_processed=True,
+            processing_status="completed",
+            tab_generation_status="completed",
+            can_play_stem=True,
+            can_generate_score=True,
+        )
+        session.add(transcription)
+        session.flush()
+        track = models.InstrumentTrack(
+            transcription_id=transcription.id,
+            instrument_type="bass",
+            display_name="Bass",
+            notes_json=json.dumps(notes_payload),
+            tab_json=None,
+            processing_status="completed_with_warning",
+        )
+        session.add(track)
+        session.commit()
+        transcription_id = transcription.id
+        track_id = track.id
+    finally:
+        session.close()
+
+    response = client.get(
+        f"/api/v1/audio/{transcription_id}/result",
+        headers=auth_headers("repair-track-owner"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    parsed_tab = json.loads(payload["tablature_data"])
+    assert parsed_tab["instrument"] == "bass"
+    assert parsed_tab["tablature"]
+
+    session = TestingSessionLocal()
+    try:
+        refreshed_track = session.query(models.InstrumentTrack).filter(
+            models.InstrumentTrack.id == track_id
+        ).one()
+        assert refreshed_track.tab_json == payload["tablature_data"]
+        assert refreshed_track.processing_status == "completed"
     finally:
         session.close()
 

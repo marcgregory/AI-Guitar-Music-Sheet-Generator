@@ -40,15 +40,25 @@ const isNonBlockingProcessingWarning = (error?: string | null): boolean =>
     ),
   );
 
+const ACTIVE_MODAL_DISPATCH_STATUSES = [
+  "dispatched",
+  "rate_limited",
+  "retry_queued",
+];
+
+const ACTIVE_PROCESSING_STATUSES = ["pending", "queued", "processing"];
+
+const isActiveTrackReprocess = (transcription: Transcription): boolean =>
+  transcription.modal_job_type === "reprocess_track" &&
+  (ACTIVE_PROCESSING_STATUSES.includes(transcription.processing_status || "") ||
+    ACTIVE_MODAL_DISPATCH_STATUSES.includes(
+      transcription.modal_dispatch_status || "",
+    ));
+
 const getTranscriptionStatus = (
   transcription: Transcription,
 ): Project["status"] => {
-  if (
-    transcription.modal_job_type === "reprocess_track" &&
-    ["dispatched", "rate_limited", "retry_queued"].includes(
-      transcription.modal_dispatch_status || "",
-    )
-  ) {
+  if (isActiveTrackReprocess(transcription)) {
     return "processing";
   }
 
@@ -117,7 +127,7 @@ const mapTranscriptionToProject = (transcription: Transcription): Project => {
               ? "Queued for Modal processing"
               : status === "pending"
                 ? "Waiting for the selected-stem job to start"
-                : transcription.modal_job_type === "reprocess_track"
+                : isActiveTrackReprocess(transcription)
                   ? "Refreshing the selected stem track"
                 : status === "completed"
                   ? transcription.processing_error &&

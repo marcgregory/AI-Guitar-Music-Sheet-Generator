@@ -282,7 +282,7 @@ async def complete_worker_job(
                 payload.notes_data,
                 payload.tablature_data,
             )
-            if is_generate_tab_job
+            if is_generate_tab_job or is_reprocess_track_job
             else payload.tablature_data
         )
         transcription.tablature_data = _json_or_text(structured_tablature_data)
