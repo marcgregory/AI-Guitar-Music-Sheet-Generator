@@ -554,6 +554,14 @@ def _trigger_modal_worker(
 ) -> None:
     modal_trigger_url = core.config.settings.MODAL_TRIGGER_URL
     session = db.SessionLocal()
+
+    def fail_track_reprocess(track: models.InstrumentTrack | None, message: str) -> None:
+        if not track:
+            return
+        track.processing_status = "failed"
+        track.confidence_notes = message
+        session.add(track)
+
     try:
         transcription = session.query(models.Transcription).filter(
             models.Transcription.id == transcription_id
@@ -567,6 +575,34 @@ def _trigger_modal_worker(
 
         is_lyrics_job = job_type == "generate_lyrics"
         is_manual_generation_job = job_type == "generate_tab"
+        is_track_reprocess_job = job_type == "reprocess_track"
+        reprocess_track = None
+        if is_track_reprocess_job:
+            if track_id is None:
+                logger.error(
+                    "Modal track reprocess skipped for transcription %s because track_id is missing.",
+                    transcription_id,
+                )
+                return
+            reprocess_track = session.query(models.InstrumentTrack).filter(
+                models.InstrumentTrack.id == track_id,
+                models.InstrumentTrack.transcription_id == transcription.id,
+            ).first()
+            if not reprocess_track:
+                logger.error(
+                    "Modal track reprocess skipped for transcription %s because track %s was not found.",
+                    transcription_id,
+                    track_id,
+                )
+                return
+            if reprocess_track.processing_status != "processing":
+                logger.info(
+                    "Skipping Modal track reprocess for transcription %s track %s with status %s.",
+                    transcription_id,
+                    track_id,
+                    reprocess_track.processing_status,
+                )
+                return
 
         # Skip if in a terminal state. Lyrics jobs are allowed to run from
         # playback-ready terminal states because they have their own status.
@@ -575,6 +611,7 @@ def _trigger_modal_worker(
         if (
             not is_lyrics_job
             and not is_manual_generation_job
+            and not is_track_reprocess_job
             and transcription.processing_status in {"completed", "completed_with_warning", "failed", "stem_ready"}
         ):
             logger.info(
@@ -595,6 +632,7 @@ def _trigger_modal_worker(
         if (
             not is_lyrics_job
             and not is_manual_generation_job
+            and not is_track_reprocess_job
             and transcription.processing_status != "processing"
         ):
             logger.info(
@@ -671,6 +709,11 @@ def _trigger_modal_worker(
                 )
                 transcription.queue_position = None
                 transcription.estimated_wait_time = None
+            elif is_track_reprocess_job:
+                fail_track_reprocess(
+                    reprocess_track,
+                    "Track reprocessing is not configured. Modal trigger URL is missing.",
+                )
             else:
                 transcription.processing_status = "failed"
                 transcription.processing_error = (
@@ -745,6 +788,22 @@ def _trigger_modal_worker(
                     transcription_id,
                 )
                 return
+            if is_track_reprocess_job:
+                fail_track_reprocess(
+                    reprocess_track,
+                    "Track reprocessing is temporarily unavailable. Please retry later.",
+                )
+                transcription.modal_dispatch_status = "rate_limited"
+                transcription.modal_retry_at = None
+                transcription.celery_task_id = None
+                session.add(transcription)
+                session.commit()
+                logger.warning(
+                    "Modal rate limited track reprocess for transcription %s track %s.",
+                    transcription_id,
+                    track_id,
+                )
+                return
             retry_after_header = response.headers.get("Retry-After")
             try:
                 retry_after = int(retry_after_header) if retry_after_header else None
@@ -792,6 +851,20 @@ def _trigger_modal_worker(
                 transcription.lyrics_generation_status = "failed"
                 transcription.processing_error = (
                     "Lyrics generation could not be started. Please retry later."
+                )
+                transcription.modal_dispatch_status = "failed"
+                session.add(transcription)
+                session.commit()
+            elif transcription and job_type == "reprocess_track":
+                track = None
+                if track_id is not None:
+                    track = session.query(models.InstrumentTrack).filter(
+                        models.InstrumentTrack.id == track_id,
+                        models.InstrumentTrack.transcription_id == transcription.id,
+                    ).first()
+                fail_track_reprocess(
+                    track,
+                    "Track reprocessing could not be started. Please retry later.",
                 )
                 transcription.modal_dispatch_status = "failed"
                 session.add(transcription)
@@ -2388,10 +2461,21 @@ def _queue_instrument_track_reprocess(
     # as a full audio processing job.
     transcription.modal_request_id = None
     transcription.modal_dispatch_status = None
+    transcription.modal_job_type = "reprocess_track"
+    transcription.modal_retry_at = None
+    transcription.modal_dispatched_at = None
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(track)
-    _start_instrument_track_reprocess(transcription.id, track.id, background_tasks)
+    try:
+        _start_instrument_track_reprocess(transcription.id, track.id, background_tasks)
+    except Exception:
+        track.processing_status = "failed"
+        track.confidence_notes = "Track reprocessing could not be started. Please retry later."
+        db_session.add(track)
+        db_session.commit()
+        db_session.refresh(track)
+        raise
     return track
 
 

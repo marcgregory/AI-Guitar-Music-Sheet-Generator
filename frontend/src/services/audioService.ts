@@ -374,12 +374,12 @@ const audioService = {
 
   reprocessInstrumentTrack: async (
     transcriptionId: number,
-    _trackId: number,
+    trackId: number,
     token: string,
   ): Promise<InstrumentTrack> => {
     void token;
     const response = await apiClient.post(
-      `/transcriptions/${transcriptionId}/reprocess`,
+      `/audio/${transcriptionId}/tracks/${trackId}/reprocess`,
       {},
     );
 
