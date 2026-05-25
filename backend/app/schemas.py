@@ -238,6 +238,7 @@ class WorkerJob(BaseModel):
 
 
 class WorkerCompleteRequest(BaseModel):
+    track_id: Optional[int] = None
     separated_audio_url: Optional[str] = None
     separated_audio_public_id: Optional[str] = None
     midi_file_url: Optional[str] = None
@@ -259,6 +260,7 @@ class WorkerCompleteRequest(BaseModel):
 
 
 class WorkerFailedRequest(BaseModel):
+    track_id: Optional[int] = None
     error: Optional[str] = None
     internal_logs: Optional[Any] = None
 

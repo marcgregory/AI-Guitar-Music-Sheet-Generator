@@ -19,6 +19,7 @@ import audioService, {
   type StemSelection,
   type Transcription,
 } from "../services/audioService";
+import { getStemLimitationNotice } from "../utils/transcriptionMetadata";
 import { useAuth } from "./auth/AuthContext";
 
 const AudioUpload: React.FC = () => {
@@ -833,8 +834,7 @@ const StemSelector = ({
       ))}
     </div>
     <p className="stem-selector-note">
-      For guitar transcription, choose Other. Guitar and piano may be grouped
-      there depending on the model and mix.
+      {getStemLimitationNotice(selectedStem || "other")}
     </p>
   </section>
 );

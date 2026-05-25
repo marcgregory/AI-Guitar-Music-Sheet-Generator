@@ -291,7 +291,7 @@ User Upload / YouTube URL + selected stem
 - [x] Create API endpoint to retrieve one instrument track result
 - [x] Create API endpoint to stream/play one separated stem
 - [x] Create API endpoint or request path to process/reprocess one selected stem
-- [ ] Create API endpoint to export one selected stem as TXT tab, MIDI, or MusicXML where supported
+- [x] Create API endpoint to export one selected stem as TXT tab, MIDI, or MusicXML where supported - backend track export routes and frontend track-scoped export URLs are wired
 - [x] Create `DELETE /transcriptions/{id}` for completed, failed, queued, and processing records
 - [ ] Create `POST /transcriptions/{id}/cancel` if explicit cancellation is needed separately from delete
 - [x] Create API endpoint to update/correct track metadata such as display name, instrument type, and confidence notes
@@ -373,7 +373,7 @@ Transcription
 - [x] Add zoom controls for notation viewer
 - [x] Implement dark/light mode toggle
 - [x] Add download buttons for each export format (MIDI, MusicXML, TXT, PDF later) - MIDI, MusicXML, and TAB buttons are wired; PDF remains Phase 6
-- [ ] Responsive stabilization must follow the "Critical Responsive Layout Rules" from `skill.md`; layout fixes should prioritize minimum width constraints, earlier stacking/wrapping, preserving desktop composition integrity instead of overflow masking, mobile hero preview height caps, and compact auth/login/register tablet/mobile layouts.
+- [x] Responsive stabilization must follow the "Critical Responsive Layout Rules" from `skill.md`; layout fixes should prioritize minimum width constraints, earlier stacking/wrapping, preserving desktop composition integrity instead of overflow masking, mobile hero preview height caps, and compact auth/login/register tablet/mobile layouts.
 
 ### Selected-Stem Track Interface
 
@@ -382,7 +382,7 @@ Transcription
 - [ ] Add synchronized playback for the selected separated stem
 - [x] Add confidence indicators per instrument track
 - [x] Add loading/progress state per instrument, not only per full transcription - selected track status and confidence notes are shown in the viewer
-- [ ] Add persistent UX/API copy explaining that `other` may contain guitar, piano, synths, melody, or accompaniment and that isolated lead/rhythm guitar separation requires future models
+- [x] Add persistent UX/API copy explaining that `other` may contain guitar, piano, synths, melody, or accompaniment and that isolated lead/rhythm guitar separation requires future models
 - [x] Preserve selected-stem playback when score/tab generation is unavailable due to low confidence or no detected notes
 
 MVP scope recommendation:

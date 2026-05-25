@@ -268,6 +268,7 @@ async def complete_worker_job(
     transcription.key_confidence = payload.key_confidence
     selected_stem = transcription.selected_stem or "other"
     is_generate_tab_job = transcription.modal_job_type == "generate_tab"
+    is_reprocess_track_job = transcription.modal_job_type == "reprocess_track"
     transcription.notes_data = _json_or_text(payload.notes_data)
     transcription.chords_data = _json_or_text(payload.chords_data)
     transcription.chord_chart_data = _json_or_text(payload.chord_chart_data)
@@ -281,7 +282,7 @@ async def complete_worker_job(
                 payload.notes_data,
                 payload.tablature_data,
             )
-            if is_generate_tab_job
+            if is_generate_tab_job or is_reprocess_track_job
             else payload.tablature_data
         )
         transcription.tablature_data = _json_or_text(structured_tablature_data)
@@ -315,7 +316,28 @@ async def complete_worker_job(
         transcription.notes_data = json.dumps(
             {"notes": [], "message": warning_message}
         )
-    if is_generate_tab_job:
+    if is_reprocess_track_job:
+        if selected_stem == "drums":
+            _set_manual_generation_status(transcription, "completed")
+            transcription.can_generate_score = False
+            transcription.can_generate_rhythm = True
+            transcription.processing_status = (
+                "completed_with_warning" if warning_message else "completed"
+            )
+        elif selected_stem in {"bass", "other"}:
+            transcription.can_generate_score = bool(has_notes)
+            _set_manual_generation_status(
+                transcription,
+                "completed" if has_notes else "failed",
+            )
+            transcription.processing_status = (
+                "completed_with_warning" if warning_message else "completed"
+            )
+        else:
+            transcription.can_generate_score = False
+            transcription.processing_status = "stem_ready"
+        transcription.processing_error = None
+    elif is_generate_tab_job:
         transcription.can_generate_score = bool(selected_stem in {"bass", "other"} and has_notes)
         has_valid_tablature = tablature.has_structured_tablature(transcription.tablature_data)
         if (
@@ -375,12 +397,14 @@ async def complete_worker_job(
     selected_stem = transcription.selected_stem or "other"
     instrument_type = STEM_TO_ANALYSIS_INSTRUMENT.get(selected_stem, selected_stem)
     display_name = INSTRUMENT_DISPLAY_NAMES.get(selected_stem, selected_stem.title())
-    track = (
-        db_session.query(models.InstrumentTrack)
-        .filter(models.InstrumentTrack.transcription_id == transcription.id)
-        .filter(models.InstrumentTrack.instrument_type == instrument_type)
-        .first()
+    track_query = db_session.query(models.InstrumentTrack).filter(
+        models.InstrumentTrack.transcription_id == transcription.id
     )
+    if payload.track_id is not None:
+        track_query = track_query.filter(models.InstrumentTrack.id == payload.track_id)
+    else:
+        track_query = track_query.filter(models.InstrumentTrack.instrument_type == instrument_type)
+    track = track_query.first()
     if not track:
         track = models.InstrumentTrack(
             transcription_id=transcription.id,
@@ -395,7 +419,13 @@ async def complete_worker_job(
     track.tab_json = transcription.tablature_data
     track.notation_json = transcription.notation_data
     track.confidence_score = payload.confidence
-    track.processing_status = transcription.processing_status
+    track.processing_status = (
+        "completed_with_warning"
+        if is_reprocess_track_job and warning_message
+        else "completed"
+        if is_reprocess_track_job
+        else transcription.processing_status
+    )
     if not track.confidence_notes:
         track.confidence_notes = "Selected stem separated by worker."
     db_session.add(track)
@@ -468,6 +498,20 @@ async def fail_worker_job(
             transcription.processing_error = sanitized_error
             transcription.queue_position = None
             transcription.estimated_wait_time = None
+            transcription.celery_task_id = None
+            transcription.modal_dispatch_status = "failed"
+            transcription.modal_retry_at = None
+        elif transcription.modal_job_type == "reprocess_track":
+            track = None
+            if payload.track_id is not None:
+                track = db_session.query(models.InstrumentTrack).filter(
+                    models.InstrumentTrack.id == payload.track_id,
+                    models.InstrumentTrack.transcription_id == transcription.id,
+                ).first()
+            if track:
+                track.processing_status = "failed"
+                track.confidence_notes = sanitized_error or "Track reprocessing failed."
+                db_session.add(track)
             transcription.celery_task_id = None
             transcription.modal_dispatch_status = "failed"
             transcription.modal_retry_at = None

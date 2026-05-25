@@ -3262,6 +3262,8 @@ const TranscriptionViewer: React.FC = () => {
   );
   const selectedTrackIsDrums =
     scoreSource?.instrumentType.toLowerCase() === "drums";
+  const transcriptionHasDrumHits =
+    extractDrumHits(transcription.notes_data).length > 0;
   const selectedTrackHasDrumHits =
     extractDrumHits(scoreSource?.notesData).length > 0;
   const selectedTrackReprocessSupported = Boolean(
@@ -3359,16 +3361,30 @@ const TranscriptionViewer: React.FC = () => {
     transcription.selected_stem === "other" ||
     transcription.selected_stem === "bass";
   const rhythmStemSupported = transcription.selected_stem === "drums";
+  const stemReviewAvailable = Boolean(
+    !isGeneratingTabsView &&
+      hasStemPlayback &&
+      (selectedStemReady ||
+        transcription.processing_status === "completed" ||
+        transcription.processing_status === "completed_with_warning") &&
+      (tabStemSupported || rhythmStemSupported || transcription.selected_stem === "vocals"),
+  );
+  const tabOutputReady = canShowTabView || selectedTrackHasScore;
+  const rhythmOutputReady =
+    transcriptionHasDrumHits || selectedTrackHasDrumHits;
   const canGenerateTabs = Boolean(
-    selectedStemReady &&
+    stemReviewAvailable &&
     hasStemPlayback &&
     tabStemSupported &&
+    !(isGenerationCompleteStatus(transcription.tab_generation_status) && tabOutputReady) &&
     !isDemoTranscription,
   );
   const canGenerateRhythm = Boolean(
-    selectedStemReady &&
+    stemReviewAvailable &&
     hasStemPlayback &&
     rhythmStemSupported &&
+    !rhythmOutputReady &&
+    !isGenerationCompleteStatus(transcription.rhythm_generation_status) &&
     transcription.can_generate_rhythm !== false &&
     !isDemoTranscription,
   );
@@ -3435,13 +3451,26 @@ const TranscriptionViewer: React.FC = () => {
   const completedAt = formatCompletedAt(
     transcription.updated_at ?? transcription.created_at,
   );
-  const sourceFileName = transcription.audio_file_path?.split(/[\\/]/).pop();
+  const sourceFileName = (
+    transcription.audio_file_path ||
+    transcription.source_url ||
+    transcription.original_audio_url ||
+    transcription.separated_audio_url ||
+    ""
+  )
+    .split(/[\\/]/)
+    .pop();
   const sourceLabel = transcription.audio_file_path
     ? isDemoTranscription
       ? "Bundled example stem"
       : "Loaded from upload"
-    : transcription.youtube_url
+    : transcription.youtube_url || transcription.source_type === "youtube"
       ? "Loaded from YouTube"
+      : transcription.source_type === "upload" ||
+          transcription.source_url ||
+          transcription.original_audio_url ||
+          transcription.separated_audio_url
+        ? "Loaded from upload"
       : isDemoTranscription
         ? "Bundled example stem"
         : "Source not attached";
@@ -3474,9 +3503,9 @@ const TranscriptionViewer: React.FC = () => {
           (_item, index) => 0.32 + ((index * 13) % 42) / 70,
         );
   const transcriptionInfoMessage =
-    transcription.selected_stem === "other"
-      ? "Guitar may be grouped with piano, synths, or accompaniment in the 'other' stem."
-      : transcription.warning_message || transcriptionMetadata.description;
+    transcription.warning_message ||
+    transcriptionMetadata.limitationNotice ||
+    transcriptionMetadata.description;
   return (
     <div className="transcription-viewer-container transcription-premium-page">
       <section
@@ -3773,7 +3802,7 @@ const TranscriptionViewer: React.FC = () => {
             </section>
           )}
 
-          {selectedStemReady && (
+          {stemReviewAvailable && (
             <section
               className="premium-stem-review-panel"
               aria-label="Stem review"
@@ -4236,11 +4265,7 @@ const TranscriptionViewer: React.FC = () => {
                           ? generatingDetails
                           : selectedStemReady
                             ? stemReadyMessage
-                            : transcription.selected_stem === "drums"
-                              ? "This stem currently supports rhythm playback only when drum hits are detected."
-                              : transcription.selected_stem === "vocals"
-                                ? "Vocal stem playback is available. Vocal notation is planned for a future release."
-                                : "No note events were detected for the selected stem."}
+                            : transcriptionMetadata.limitationNotice}
                       </p>
                       <div className="premium-inline-empty-actions">
                         {generateTabAllowed && (

@@ -12120,7 +12120,6 @@ pre code {
 .premium-score-stage,
 .premium-lyrics-panel,
 .premium-bottom-bar,
-.studio-confirm-dialog,
 .alert,
 .empty-state,
 .loading-state {
@@ -12306,6 +12305,7 @@ pre code {
 }
 
 .studio-confirm-dialog {
+  width: min(100%, 30rem);
   max-height: min(90svh, 720px);
   overflow-y: auto;
 }
@@ -13229,4 +13229,442 @@ body,
     rgba(165, 125, 86, 0.95),
     rgba(125, 92, 62, 1)
   );
+}
+
+/* Phase 3 responsive stabilization: authenticated MVP surfaces. */
+.app-shell:has(.dashboard-page),
+.app-shell:has(.audio-upload-container),
+.app-shell:has(.processing-status-container),
+.app-shell:has(.transcription-premium-page),
+.app-shell:has(.transcription-viewer-container) {
+  --app-container-inline-size: min(
+    var(--app-container-width),
+    calc(100% - (2 * var(--app-page-padding)))
+  );
+}
+
+.dashboard-page,
+.audio-upload-container,
+.processing-status-container,
+.transcription-premium-page,
+.transcription-viewer-container {
+  display: grid;
+  justify-items: center;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.dashboard-content,
+.dashboard-main,
+.audio-upload-stage,
+.processing-status-container > .processing-status-header,
+.processing-status-container > .processing-status-content,
+.premium-transcription-card,
+.premium-bottom-bar,
+.transcription-viewer-content {
+  width: var(--app-container-inline-size);
+  max-width: var(--app-container-width);
+  min-width: 0;
+}
+
+.premium-transcription-card,
+.premium-project-hero,
+.premium-transcription-body,
+.premium-score-workspace,
+.premium-bottom-bar,
+.audio-upload-stage,
+.transcription-upload-shell,
+.upload-card,
+.processing-status-content,
+.dashboard-content,
+.dashboard-main,
+.cinematic-auth-shell,
+.auth-form-panel {
+  max-inline-size: 100%;
+}
+
+.premium-score-stage,
+.premium-score-viewer,
+.score-sheet-frame,
+.alphatab-score-shell,
+.drum-rhythm-frame,
+.timed-tab-view,
+.tablature-code,
+.notation-code,
+.premium-lyrics-panel,
+.premium-lyrics-text {
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.premium-score-stage {
+  overflow: hidden;
+}
+
+.premium-score-viewer {
+  width: 100%;
+}
+
+.premium-title-block h1,
+.premium-title-block p,
+.dashboard-title,
+.dashboard-subtitle,
+.audio-upload-header h2,
+.audio-upload-header p,
+.processing-status-header h2,
+.processing-status-header p,
+.auth-form-panel h2,
+.auth-form-panel p,
+.project-title,
+.project-description,
+.project-list-title,
+.project-list-description {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.premium-horizontal-card,
+.premium-stem-review-panel,
+.premium-inline-empty-actions,
+.premium-bottom-bar .transcription-actions,
+.processing-actions,
+.studio-dialog-actions,
+.dashboard-page .project-actions,
+.dashboard-page .project-list-actions {
+  min-width: 0;
+}
+
+.premium-bottom-bar .transcription-actions,
+.processing-actions,
+.studio-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.premium-bottom-bar .button-secondary,
+.premium-bottom-bar .premium-download-button,
+.processing-actions button,
+.studio-dialog-actions button,
+.dashboard-page .action-button,
+.upload-card button,
+.auth-form-panel button {
+  min-width: 0;
+  white-space: normal;
+}
+
+@media (max-width: 1180px) {
+  .upload-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .upload-help-column {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
+  }
+
+  .premium-project-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .premium-hero-audio {
+    padding: 0 clamp(1rem, 4vw, 2rem) clamp(1.4rem, 4vw, 2rem);
+  }
+
+  .premium-score-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .premium-score-sidebar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .premium-sidebar-label,
+  .premium-reprocess-link {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 1024px) {
+  .cinematic-auth-shell {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    min-height: auto;
+  }
+
+  .cinematic-auth-hero {
+    min-height: clamp(260px, 34svh, 420px);
+  }
+
+  .auth-form-panel {
+    width: min(100%, 42rem);
+    justify-self: center;
+  }
+
+  .dashboard-header,
+  .dashboard-main,
+  .processing-status-header,
+  .processing-status-content {
+    min-width: 0;
+  }
+
+  .dashboard-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .premium-bottom-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .premium-bottom-bar .transcription-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 768px) {
+  .dashboard-content,
+  .audio-upload-stage,
+  .processing-status-container > .processing-status-header,
+  .processing-status-container > .processing-status-content,
+  .premium-transcription-card,
+  .premium-bottom-bar,
+  .transcription-viewer-content {
+    width: 100%;
+  }
+
+  .dashboard-header,
+  .audio-upload-header,
+  .processing-status-header,
+  .premium-project-hero {
+    border-radius: 14px;
+  }
+
+  .dashboard-header-content,
+  .dashboard-header-actions,
+  .audio-upload-header,
+  .processing-status-header,
+  .premium-title-block {
+    min-width: 0;
+  }
+
+  .audio-upload-stage {
+    gap: 1rem;
+  }
+
+  .upload-help-column {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .premium-transcription-body {
+    padding: clamp(0.9rem, 3.6vw, 1.25rem);
+  }
+
+  .premium-horizontal-card {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .premium-horizontal-card > .premium-light-button,
+  .premium-horizontal-card > .premium-completed-badge,
+  .premium-completed-date {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    text-align: left;
+  }
+
+  .premium-stem-review-panel,
+  .premium-inline-empty-actions,
+  .premium-lyrics-generate-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .premium-hero-audio-controls label,
+  .premium-speed-control,
+  .premium-speed-trigger {
+    width: 100%;
+  }
+
+  .premium-hero-audio-controls input[type="range"] {
+    width: 100%;
+  }
+
+  .premium-bottom-bar .transcription-meta {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .premium-bottom-bar .transcription-actions {
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-page,
+  .audio-upload-container,
+  .processing-status-container,
+  .transcription-premium-page,
+  .transcription-viewer-container {
+    padding-block: 0.75rem;
+  }
+
+  .cinematic-auth-page {
+    padding: 0.75rem;
+  }
+
+  .cinematic-auth-hero {
+    min-height: 0;
+    padding: clamp(1rem, 4vw, 1.5rem);
+  }
+
+  .auth-title {
+    font-size: clamp(2.8rem, 18vw, 4.5rem);
+  }
+
+  .auth-highlight-rail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .auth-form-panel {
+    padding: clamp(1rem, 4vw, 1.35rem);
+  }
+
+  .dashboard-header-actions,
+  .dashboard-header-actions .view-mode-button,
+  .dashboard-header-actions .new-transcription-button,
+  .audio-upload-tabs,
+  .audio-upload-tabs .tab-button,
+  .youtube-input-group input,
+  .youtube-input-group button,
+  .selected-file,
+  .selected-file button,
+  .processing-actions button,
+  .studio-dialog-actions button,
+  .premium-inline-empty-actions button,
+  .premium-bottom-bar .button-secondary,
+  .premium-bottom-bar .premium-download-button {
+    width: 100%;
+  }
+
+  .premium-title-block {
+    padding: clamp(1.2rem, 5vw, 1.6rem);
+  }
+
+  .premium-title-block h1 {
+    max-width: 100%;
+    font-size: clamp(2.45rem, 13vw, 3.6rem);
+    line-height: 0.92;
+  }
+
+  .premium-title-block p {
+    font-size: clamp(1.65rem, 8vw, 2.35rem);
+  }
+
+  .premium-hero-chips,
+  .premium-stem-summary,
+  .premium-playback-metadata,
+  .premium-bottom-bar .transcription-meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .premium-stem-summary span,
+  .premium-playback-metadata span {
+    white-space: normal;
+  }
+
+  .premium-source-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.35rem;
+  }
+
+  .premium-source-filename {
+    max-width: 100%;
+  }
+
+  .premium-score-sidebar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .premium-view-tabs,
+  .premium-track-list {
+    overflow-x: visible;
+  }
+
+  .premium-score-viewer {
+    height: min(62svh, 420px);
+    max-height: min(62svh, 420px);
+    padding: 0.75rem;
+  }
+}
+
+@media (max-width: 390px) {
+  .dashboard-page,
+  .audio-upload-container,
+  .processing-status-container,
+  .transcription-premium-page,
+  .transcription-viewer-container,
+  .cinematic-auth-page {
+    padding-inline: 0.6rem;
+  }
+
+  .premium-transcription-card,
+  .premium-bottom-bar,
+  .upload-card,
+  .processing-status-content,
+  .auth-form-panel,
+  .dashboard-header {
+    border-radius: 12px;
+  }
+
+  .premium-play-button {
+    width: 50px;
+    height: 50px;
+  }
+
+  .premium-waveform {
+    height: 64px;
+  }
+
+  .premium-horizontal-card,
+  .premium-status-card,
+  .premium-bottom-bar {
+    padding-inline: 0.75rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .site-nav-brand,
+  .app-shell .app-site-nav.site-nav .site-nav-brand {
+    font-size: 0.78rem;
+  }
+
+  .brand-copy span:last-child {
+    display: none;
+  }
+
+  .premium-title-block h1 {
+    font-size: clamp(2.15rem, 12vw, 2.8rem);
+  }
+
+  .premium-hero-chips span,
+  .premium-stem-summary span,
+  .premium-playback-metadata span,
+  .premium-completed-badge,
+  .project-stem-badge,
+  .project-output-badge {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .premium-bottom-bar .transcription-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

@@ -5,6 +5,7 @@ import audioService, {
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "./auth/AuthContext";
 import { Icon } from "./Icon";
+import { getStemLimitationNotice } from "../utils/transcriptionMetadata";
 
 const ProcessingStatus: React.FC = () => {
   const { transcriptionId } = useParams<{ transcriptionId: string }>();
@@ -189,23 +190,20 @@ const ProcessingStatus: React.FC = () => {
       return {
         ready:
           "Drum stem is ready. Listen first, then generate rhythm if the stem sounds useful.",
-        followup:
-          "Rhythm generation will only run after you confirm from the preview screen.",
+        followup: getStemLimitationNotice(selectedStem),
       };
     }
     if (selectedStem === "vocals") {
       return {
         ready:
           "Vocal stem is ready. Listen first, then generate lyrics when you want a timestamped transcription.",
-        followup:
-          "Lyrics generation will only run after you confirm from the preview screen.",
+        followup: getStemLimitationNotice(selectedStem),
       };
     }
     return {
       ready:
         "Stem is ready. Listen first, then generate tabs if the stem sounds useful.",
-      followup:
-        "Tab generation will only run after you confirm from the preview screen.",
+      followup: getStemLimitationNotice(selectedStem),
     };
   })();
 

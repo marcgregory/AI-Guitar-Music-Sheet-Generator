@@ -698,6 +698,7 @@ def _complete_job(
         track_metadata.setdefault("confidence_notes", "Selected stem separated by Modal/Demucs.")
     selected_stem = str(job.get("selected_stem") or job.get("demucs_stem") or "other").strip().lower()
     payload = {
+        "track_id": job.get("track_id"),
         "separated_audio_url": upload_result.get("secure_url"),
         "separated_audio_public_id": upload_result.get("public_id"),
         "lyrics_data": analysis_result.get("lyrics_data"),
@@ -725,6 +726,7 @@ def _complete_job(
 
 def _fail_job(job: dict[str, Any], error: str, internal_logs: str | None = None) -> None:
     payload = {
+        "track_id": job.get("track_id"),
         "error": error[:500] or "Modal worker failed.",
         "internal_logs": internal_logs,
     }

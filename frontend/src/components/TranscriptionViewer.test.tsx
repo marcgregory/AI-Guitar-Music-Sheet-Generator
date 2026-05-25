@@ -349,7 +349,54 @@ describe("TranscriptionViewer generate tabs polling", () => {
     expect(
       screen.queryByRole("button", { name: /Generate Tabs/i }),
     ).not.toBeInTheDocument();
-    expect(screen.getAllByText("RHYTHM READY").length).toBeGreaterThan(0);
+    expect(screen.queryByText("RHYTHM READY")).not.toBeInTheDocument();
+    expect(screen.getAllByText("PLAYBACK ONLY").length).toBeGreaterThan(0);
+  });
+
+  it("does not show source missing or generate rhythm after drum reprocess completes", async () => {
+    const drumHits = JSON.stringify({
+      drum_hits: [{ onset: 0.25, offset: 0.37, confidence: 0.9 }],
+    });
+    (audioService.getTranscriptionResult as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        ...stemReadyTranscription,
+        title: "Tahimik na Sandali.mp3",
+        audio_file_path: null,
+        source_type: "upload",
+        source_url: "Tahimik na Sandali.mp3",
+        selected_stem: "drums",
+        processing_status: "completed",
+        rhythm_generation_status: "completed",
+        output_mode: "rhythm",
+        can_generate_rhythm: true,
+        notes_data: drumHits,
+      });
+    (audioService.listInstrumentTracks as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue([
+        {
+          id: 4,
+          transcription_id: 42,
+          instrument_type: "drums",
+          display_name: "Drums",
+          stem_audio_path: null,
+          notes_json: drumHits,
+          chords_json: null,
+          tab_json: null,
+          notation_json: null,
+          confidence_score: 90,
+          processing_status: "completed",
+          confidence_notes: "Selected stem separated by worker.",
+          created_at: "2026-05-22T15:32:12",
+        },
+      ]);
+
+    render(<TranscriptionViewer />);
+
+    expect(await screen.findByText(/Loaded from upload/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Source not attached/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Generate Rhythm/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows track reprocessing instead of no-note fallback while selected track is processing", async () => {
