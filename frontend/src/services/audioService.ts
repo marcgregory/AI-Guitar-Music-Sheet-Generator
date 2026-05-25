@@ -142,6 +142,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const transcriptionListCache = new Map<string, Transcription[]>();
+const TRANSCRIPTION_LIST_TIMEOUT_MS = 15000;
 
 const cloneTranscriptions = (
   transcriptions: Transcription[],
@@ -215,7 +216,9 @@ const audioService = {
    * List the signed-in user's transcriptions.
    */
   listTranscriptions: async (token: string): Promise<Transcription[]> => {
-    const response = await apiClient.get("/audio/");
+    const response = await apiClient.get("/audio/", {
+      timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
+    });
 
     return rememberTranscriptions(token, response.data);
   },

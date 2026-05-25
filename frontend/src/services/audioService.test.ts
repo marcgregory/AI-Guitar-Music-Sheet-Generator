@@ -36,4 +36,15 @@ describe("audioService", () => {
       {},
     );
   });
+
+  it("times out transcription library requests instead of waiting forever", async () => {
+    const getMock = vi.mocked(apiClient.get);
+    getMock.mockResolvedValueOnce({ data: [] });
+
+    await audioService.listTranscriptions("test-token");
+
+    expect(getMock).toHaveBeenCalledWith("/audio/", {
+      timeout: 15000,
+    });
+  });
 });

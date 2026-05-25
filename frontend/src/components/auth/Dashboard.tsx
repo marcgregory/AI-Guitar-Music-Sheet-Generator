@@ -338,6 +338,8 @@ const Dashboard: React.FC = () => {
   const [errorCandidate, setErrorCandidate] = useState<Project | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [toast, setToast] = useState<ToastState>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const dashboardRef = useRef<HTMLDivElement | null>(null);
   const toastTimerRef = useRef<number | undefined>(undefined);
 
@@ -461,12 +463,14 @@ const Dashboard: React.FC = () => {
         if (isMounted) {
           setProjects([]);
           setLoading(false);
+          setLoadError(null);
         }
         return [];
       }
 
       try {
         if (showLoading && isMounted) setLoading(true);
+        if (isMounted) setLoadError(null);
 
         const transcriptions = await audioService.listTranscriptions(token);
         const nextProjects = transcriptions.map(mapTranscriptionToProject);
@@ -474,17 +478,20 @@ const Dashboard: React.FC = () => {
         if (isMounted) {
           setProjects(nextProjects);
           setLoading(false);
+          setLoadError(null);
         }
 
         return nextProjects;
       } catch (error: any) {
         if (isMounted) {
+          const message =
+            error.response?.data?.detail ||
+            "Could not load your transcription library. Please retry.";
           showToast({
             tone: "error",
-            message:
-              error.response?.data?.detail || "Failed to load transcriptions",
+            message,
           });
-          if (showLoading) setProjects([]);
+          setLoadError(message);
           setLoading(false);
         }
         return null;
@@ -518,7 +525,7 @@ const Dashboard: React.FC = () => {
       isMounted = false;
       stopAutoRefresh();
     };
-  }, [showToast, token]);
+  }, [reloadKey, showToast, token]);
 
   useEffect(() => {
     return () => {
@@ -782,6 +789,19 @@ const Dashboard: React.FC = () => {
                 <p className="loading-text">
                   Loading your transcription library...
                 </p>
+              </div>
+            ) : loadError ? (
+              <div className="empty-state">
+                <h3 className="empty-state-title">
+                  Could not load projects
+                </h3>
+                <p className="empty-state-description">{loadError}</p>
+                <button
+                  onClick={() => setReloadKey((currentKey) => currentKey + 1)}
+                  className="primary-action-button"
+                >
+                  Retry loading
+                </button>
               </div>
             ) : projects.length === 0 ? (
               <div className="empty-state">
