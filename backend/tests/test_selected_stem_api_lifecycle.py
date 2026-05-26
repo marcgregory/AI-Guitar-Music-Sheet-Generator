@@ -1,12 +1,14 @@
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from app import models
 from app.core import config
+from app.api.v1.endpoints import audio as audio_endpoint
 from test_audio_list_endpoint import (
     TestingSessionLocal,
     auth_headers,
@@ -355,6 +357,262 @@ def test_selected_stem_upload_ready_result_delete_smoke_path(tmp_path):
             assert retry_after_delete.status_code == 200
 
         assert trigger_mock.call_count == 3
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_processing_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+        config.settings.WORKER_API_TOKEN = original_token
+
+
+def test_production_modal_dispatch_callback_smoke_path(tmp_path):
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_processing_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    original_token = config.settings.WORKER_API_TOKEN
+    config.settings.AUDIO_PROCESSING_MODE = "modal"
+    config.settings.PROCESSING_MODE = "modal"
+    config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    config.settings.WORKER_API_TOKEN = "test-worker-token"
+
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "modal-smoke-owner", "modal-smoke@example.com")
+    finally:
+        session.close()
+
+    modal_response = SimpleNamespace(
+        status_code=200,
+        headers={},
+        raise_for_status=lambda: None,
+    )
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio.UPLOAD_DIR", tmp_path),
+            patch(
+                "app.api.v1.endpoints.audio._upload_original_audio",
+                return_value={
+                    "secure_url": "https://cdn.example.com/modal-original.wav",
+                    "public_id": "modal/original",
+                },
+            ),
+        ):
+            upload_response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("modal-smoke-owner"),
+                data={"selected_stem": "other"},
+                files={"file": ("modal-smoke.wav", b"RIFF modal smoke", "audio/wav")},
+            )
+
+        assert upload_response.status_code == 200
+        upload_payload = upload_response.json()
+        transcription_id = upload_payload["id"]
+        assert upload_payload["processing_status"] == "processing"
+
+        with patch(
+            "app.api.v1.endpoints.audio.httpx.post",
+            return_value=modal_response,
+        ) as modal_post, patch(
+            "app.api.v1.endpoints.audio.db.SessionLocal",
+            TestingSessionLocal,
+        ):
+            audio_endpoint._trigger_modal_worker(transcription_id)
+
+        assert modal_post.call_count == 1
+        modal_call = modal_post.call_args.kwargs
+        assert modal_call["headers"] == {"Authorization": "Bearer test-worker-token"}
+        assert modal_call["json"]["transcription_id"] == transcription_id
+        assert modal_call["json"]["job_type"] == "process"
+        assert modal_call["json"]["selected_stem"] == "other"
+        assert modal_call["json"]["original_audio_url"] == "https://cdn.example.com/modal-original.wav"
+        modal_request_id = modal_call["json"]["modal_request_id"]
+        assert modal_request_id
+
+        dispatched_status = client.get(
+            f"/api/v1/audio/{transcription_id}/status",
+            headers=auth_headers("modal-smoke-owner"),
+        )
+        assert dispatched_status.status_code == 200
+        dispatched_payload = dispatched_status.json()
+        assert dispatched_payload["status"] == "processing"
+        assert dispatched_payload["modal_dispatch_status"] == "dispatched"
+        assert dispatched_payload["modal_status_detail"] == "dispatched"
+        assert dispatched_payload["modal_request_id"] == modal_request_id
+
+        complete_response = client.post(
+            f"/api/v1/worker/jobs/{transcription_id}/complete",
+            headers={"Authorization": "Bearer test-worker-token"},
+            json={
+                "separated_audio_url": "https://cdn.example.com/modal-other.wav",
+                "separated_audio_public_id": "modal/other",
+                "confidence": 88,
+            },
+        )
+
+        assert complete_response.status_code == 200
+        complete_payload = complete_response.json()
+        assert complete_payload["processing_status"] == "completed_with_warning"
+        assert complete_payload["can_play_stem"] is True
+
+        status_response = client.get(
+            f"/api/v1/audio/{transcription_id}/status",
+            headers=auth_headers("modal-smoke-owner"),
+        )
+        assert status_response.status_code == 200
+        status_payload = status_response.json()
+        assert status_payload["status"] == "completed_with_warning"
+        assert status_payload["modal_dispatch_status"] == "completed"
+        assert status_payload["modal_status_detail"] == "callback_completed"
+        assert status_payload["modal_request_id"] == modal_request_id
+
+        result_response = client.get(
+            f"/api/v1/audio/{transcription_id}/result",
+            headers=auth_headers("modal-smoke-owner"),
+        )
+        assert result_response.status_code == 200
+        assert result_response.json()["processing_status"] == "completed_with_warning"
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_processing_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+        config.settings.WORKER_API_TOKEN = original_token
+
+
+def test_modal_status_observability_reports_queued_behind_active_job(tmp_path):
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_processing_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    config.settings.AUDIO_PROCESSING_MODE = "modal"
+    config.settings.PROCESSING_MODE = "modal"
+    config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "modal-active-owner", "modal-active@example.com")
+        create_user(session, "modal-queued-owner", "modal-queued@example.com")
+        session.add(models.Transcription(
+            title="Already active",
+            audio_file_path="uploads/active.wav",
+            selected_stem="other",
+            user_id=session.query(models.User).filter_by(username="modal-active-owner").one().id,
+            is_processed=False,
+            processing_status="processing",
+            created_at=datetime.now(timezone.utc),
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio.UPLOAD_DIR", tmp_path),
+            patch(
+                "app.api.v1.endpoints.audio._upload_original_audio",
+                return_value={
+                    "secure_url": "https://cdn.example.com/queued-original.wav",
+                    "public_id": "modal/queued-original",
+                },
+            ),
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker") as trigger_mock,
+        ):
+            upload_response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("modal-queued-owner"),
+                data={"selected_stem": "bass"},
+                files={"file": ("queued.wav", b"RIFF queued behind active", "audio/wav")},
+            )
+
+        assert upload_response.status_code == 200
+        upload_payload = upload_response.json()
+        assert upload_payload["processing_status"] == "queued"
+        trigger_mock.assert_not_called()
+
+        status_response = client.get(
+            f"/api/v1/audio/{upload_payload['id']}/status",
+            headers=auth_headers("modal-queued-owner"),
+        )
+        assert status_response.status_code == 200
+        status_payload = status_response.json()
+        assert status_payload["status"] == "queued"
+        assert status_payload["modal_dispatch_status"] is None
+        assert status_payload["modal_status_detail"] == "queued_waiting_for_active_job"
+        assert status_payload["queue_position"] == 2
+        assert status_payload["estimated_wait_time"] == 300
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.PROCESSING_MODE = original_processing_mode
+        config.settings.MODAL_TRIGGER_URL = original_modal_url
+
+
+def test_modal_status_observability_reports_rate_limited_retry(tmp_path):
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_processing_mode = config.settings.PROCESSING_MODE
+    original_modal_url = config.settings.MODAL_TRIGGER_URL
+    original_token = config.settings.WORKER_API_TOKEN
+    config.settings.AUDIO_PROCESSING_MODE = "modal"
+    config.settings.PROCESSING_MODE = "modal"
+    config.settings.MODAL_TRIGGER_URL = "https://modal.test/trigger"
+    config.settings.WORKER_API_TOKEN = "test-worker-token"
+
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "modal-rate-owner", "modal-rate@example.com")
+    finally:
+        session.close()
+
+    rate_limited_response = SimpleNamespace(
+        status_code=429,
+        headers={"Retry-After": "42"},
+        raise_for_status=lambda: None,
+    )
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio.UPLOAD_DIR", tmp_path),
+            patch(
+                "app.api.v1.endpoints.audio._upload_original_audio",
+                return_value={
+                    "secure_url": "https://cdn.example.com/rate-original.wav",
+                    "public_id": "modal/rate-original",
+                },
+            ),
+            patch("app.api.v1.endpoints.audio._trigger_modal_worker"),
+        ):
+            upload_response = client.post(
+                "/api/v1/audio/upload",
+                headers=auth_headers("modal-rate-owner"),
+                data={"selected_stem": "other"},
+                files={"file": ("rate.wav", b"RIFF modal rate limited", "audio/wav")},
+            )
+
+        assert upload_response.status_code == 200
+        transcription_id = upload_response.json()["id"]
+
+        with patch(
+            "app.api.v1.endpoints.audio.httpx.post",
+            return_value=rate_limited_response,
+        ), patch(
+            "app.api.v1.endpoints.audio.db.SessionLocal",
+            TestingSessionLocal,
+        ):
+            audio_endpoint._trigger_modal_worker(transcription_id)
+
+        status_response = client.get(
+            f"/api/v1/audio/{transcription_id}/status",
+            headers=auth_headers("modal-rate-owner"),
+        )
+        assert status_response.status_code == 200
+        status_payload = status_response.json()
+        assert status_payload["status"] == "queued"
+        assert status_payload["modal_dispatch_status"] == "rate_limited"
+        assert status_payload["modal_status_detail"] == "rate_limited_retry"
+        assert status_payload["modal_request_id"]
+        assert status_payload["modal_retry_count"] == 1
+        assert status_payload["modal_retry_at"] is not None
+        assert status_payload["message"] == "Waiting for Modal capacity. Retry scheduled."
     finally:
         config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
         config.settings.PROCESSING_MODE = original_processing_mode

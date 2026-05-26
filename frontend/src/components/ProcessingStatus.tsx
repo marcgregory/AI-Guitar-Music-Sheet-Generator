@@ -7,6 +7,75 @@ import { useAuth } from "./auth/AuthContext";
 import { Icon } from "./Icon";
 import { getStemLimitationNotice } from "../utils/transcriptionMetadata";
 
+type ModalDiagnostics = {
+  modal_status_detail?: string | null;
+  modal_dispatch_status?: string | null;
+  modal_request_id?: string | null;
+  modal_retry_count?: number | null;
+  modal_retry_at?: string | null;
+};
+
+const MODAL_STATUS_LABELS: Record<string, string> = {
+  queued_waiting_for_active_job: "Queued behind another active job",
+  dispatched: "Dispatched to Modal",
+  rate_limited_retry: "Modal rate-limited; retry scheduled",
+  callback_completed: "Worker callback received",
+  dispatch_failed: "Modal dispatch failed",
+  rate_limited: "Modal rate-limited",
+  retry_queued: "Modal retry queued",
+  completed: "Worker callback received",
+  failed: "Modal dispatch failed",
+};
+
+const formatModalState = (value: string | null | undefined): string | null => {
+  if (!value) return null;
+  return (
+    MODAL_STATUS_LABELS[value] ??
+    value
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
+  );
+};
+
+const formatRetryAt = (value: string | null | undefined): string | null => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+};
+
+const hasModalDiagnostics = (diagnostics: ModalDiagnostics): boolean =>
+  Boolean(
+    diagnostics.modal_status_detail ||
+      diagnostics.modal_dispatch_status ||
+      diagnostics.modal_request_id ||
+      diagnostics.modal_retry_count ||
+      diagnostics.modal_retry_at,
+  );
+
+const getErrorDetail = (error: unknown, fallback: string): string => {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "response" in error &&
+    typeof error.response === "object" &&
+    error.response !== null &&
+    "data" in error.response &&
+    typeof error.response.data === "object" &&
+    error.response.data !== null &&
+    "detail" in error.response.data &&
+    typeof error.response.data.detail === "string"
+  ) {
+    return error.response.data.detail;
+  }
+  return fallback;
+};
+
 const ProcessingStatus: React.FC = () => {
   const { transcriptionId } = useParams<{ transcriptionId: string }>();
   const [status, setStatus] = useState<"idle" | ProcessingStatusValue>("idle");
@@ -14,6 +83,9 @@ const ProcessingStatus: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [modalDiagnostics, setModalDiagnostics] = useState<ModalDiagnostics>(
+    {},
+  );
   const [canPlayStem, setCanPlayStem] = useState(false);
   const [canGenerateScore, setCanGenerateScore] = useState(true);
   const [isDemo, setIsDemo] = useState(false);
@@ -47,6 +119,13 @@ const ProcessingStatus: React.FC = () => {
       setCanPlayStem(Boolean(response.can_play_stem));
       setCanGenerateScore(response.can_generate_score !== false);
       setIsDemo(Boolean(response.is_demo));
+      setModalDiagnostics({
+        modal_status_detail: response.modal_status_detail ?? null,
+        modal_dispatch_status: response.modal_dispatch_status ?? null,
+        modal_request_id: response.modal_request_id ?? null,
+        modal_retry_count: response.modal_retry_count ?? null,
+        modal_retry_at: response.modal_retry_at ?? null,
+      });
 
       // Check if we've reached a terminal state and stop polling if so
       const isTerminalState =
@@ -82,11 +161,9 @@ const ProcessingStatus: React.FC = () => {
           typeof response.progress === "number" ? response.progress : null,
         );
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setStatus("failed");
-      setError(
-        err.response?.data?.detail || "Failed to check transcription status",
-      );
+      setError(getErrorDetail(err, "Failed to check transcription status"));
       // Also clear polling interval on error to prevent unnecessary polling
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
@@ -133,10 +210,10 @@ const ProcessingStatus: React.FC = () => {
       showToast("success", "Transcription deleted.");
       setShowDeleteDialog(false);
       window.setTimeout(() => navigate("/dashboard"), 450);
-    } catch (err: any) {
+    } catch (err: unknown) {
       showToast(
         "error",
-        err.response?.data?.detail || "Could not delete transcription.",
+        getErrorDetail(err, "Could not delete transcription."),
       );
     } finally {
       setIsDeleting(false);
@@ -159,10 +236,10 @@ const ProcessingStatus: React.FC = () => {
       setStatusMessage(response.message ?? null);
       setError(null);
       showToast("success", "Retry queued with lower note threshold.");
-    } catch (err: any) {
+    } catch (err: unknown) {
       showToast(
         "error",
-        err.response?.data?.detail || "Could not retry transcription.",
+        getErrorDetail(err, "Could not retry transcription."),
       );
     } finally {
       setIsRetrying(false);
@@ -174,16 +251,42 @@ const ProcessingStatus: React.FC = () => {
     try {
       const demo = await audioService.getDemoTranscription(token);
       navigate(`/transcription/${demo.id}`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       showToast(
         "error",
-        err.response?.data?.detail || "Demo transcription is not available.",
+        getErrorDetail(err, "Demo transcription is not available."),
       );
     }
   };
 
   const isWaitingForModalCapacity =
     status === "queued" && statusMessage === WAITING_FOR_MODAL_CAPACITY_MESSAGE;
+
+  const modalDiagnosticItems = [
+    {
+      label: "Status detail",
+      value: formatModalState(modalDiagnostics.modal_status_detail),
+    },
+    {
+      label: "Dispatch status",
+      value: formatModalState(modalDiagnostics.modal_dispatch_status),
+    },
+    { label: "Request ID", value: modalDiagnostics.modal_request_id },
+    {
+      label: "Retry count",
+      value:
+        typeof modalDiagnostics.modal_retry_count === "number"
+          ? modalDiagnostics.modal_retry_count.toString()
+          : null,
+    },
+    {
+      label: "Retry at",
+      value: formatRetryAt(modalDiagnostics.modal_retry_at),
+    },
+  ].filter(
+    (item): item is { label: string; value: string } =>
+      typeof item.value === "string" && item.value.length > 0,
+  );
 
   const stemReadyCopy = (() => {
     if (selectedStem === "drums") {
@@ -404,6 +507,25 @@ const ProcessingStatus: React.FC = () => {
             </button>
           </div>
         </div>
+      )}
+
+      {hasModalDiagnostics(modalDiagnostics) && (
+        <section
+          className="modal-diagnostics-panel"
+          aria-label="Modal diagnostics"
+        >
+          <div className="modal-diagnostics-heading">
+            <span>Modal diagnostics</span>
+          </div>
+          <dl className="modal-diagnostics-grid">
+            {modalDiagnosticItems.map((item) => (
+              <div className="modal-diagnostics-row" key={item.label}>
+                <dt>{item.label}</dt>
+                <dd>{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
       )}
 
       {showDeleteDialog && (

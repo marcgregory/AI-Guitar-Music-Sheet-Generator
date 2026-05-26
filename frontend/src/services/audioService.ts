@@ -46,7 +46,10 @@ export interface Transcription {
   tab_generation_status?: GenerationStatusValue | null;
   rhythm_generation_status?: GenerationStatusValue | null;
   modal_dispatch_status?: string | null;
+  modal_status_detail?: string | null;
   modal_job_type?: string | null;
+  modal_request_id?: string | null;
+  modal_retry_count?: number | null;
   modal_retry_at?: string | null;
   instrument_type?: string | null;
   output_mode?: string | null;
@@ -107,9 +110,44 @@ export interface TranscriptionStatus {
   tab_generation_status?: GenerationStatusValue | null;
   rhythm_generation_status?: GenerationStatusValue | null;
   modal_dispatch_status?: string | null;
+  modal_status_detail?: string | null;
   modal_job_type?: string | null;
+  modal_request_id?: string | null;
+  modal_retry_count?: number | null;
   modal_retry_at?: string | null;
   lyrics_data?: string | null;
+}
+
+export interface AdminJob {
+  id: number;
+  title: string;
+  user_id?: number | null;
+  user_email?: string | null;
+  selected_stem?: StemSelection | string | null;
+  processing_status?: ProcessingStatusValue | string | null;
+  queue_position?: number | null;
+  estimated_wait_time?: number | null;
+  modal_job_type?: string | null;
+  modal_dispatch_status?: string | null;
+  modal_status_detail?: string | null;
+  modal_request_id?: string | null;
+  modal_retry_count?: number | null;
+  modal_retry_at?: string | null;
+  modal_dispatched_at?: string | null;
+  last_error?: string | null;
+  warning_message?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AdminJobsResponse {
+  jobs: AdminJob[];
+  counts: {
+    active: number;
+    queued: number;
+    processing: number;
+    rate_limited: number;
+  };
 }
 
 export type StemSelection = "vocals" | "drums" | "bass" | "other";
@@ -447,6 +485,15 @@ const audioService = {
         language: options?.language ?? "auto",
       },
     );
+
+    return response.data;
+  },
+
+  listAdminJobs: async (adminToken: string): Promise<AdminJobsResponse> => {
+    const response = await apiClient.get("/admin/jobs", {
+      headers: { "X-Admin-Token": adminToken },
+      timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
+    });
 
     return response.data;
   },

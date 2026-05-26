@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from app.api.v1 import api
 from app.database_init import init_db
 from app.core import config
+from app.services.deployment_health import build_deployment_health
 
 logger = logging.getLogger(__name__)
 settings = config.settings
@@ -27,6 +28,7 @@ async def _modal_retry_scheduler() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.validate_deployment_readiness()
     processing_mode = settings.audio_processing_mode
     app.state.processing_backend = processing_mode
     logger.info("AUDIO_PROCESSING_MODE=%s", processing_mode)
@@ -99,3 +101,8 @@ async def health_check():
         "status": "healthy",
         "processing_backend": getattr(app.state, "processing_backend", "local"),
     }
+
+
+@app.get("/health/deployment")
+async def deployment_health_check():
+    return build_deployment_health()

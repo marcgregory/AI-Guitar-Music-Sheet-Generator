@@ -102,6 +102,56 @@ logger = logging.getLogger(__name__)
 _queue_promotion_lock = Lock()
 
 
+def _log_modal_dispatch_event(
+    event: str,
+    transcription: models.Transcription | None = None,
+    *,
+    transcription_id: int | None = None,
+    selected_stem: str | None = None,
+    job_type: str | None = None,
+    modal_request_id: str | None = None,
+    dispatch_status: str | None = None,
+    retry_count: int | None = None,
+    extra: dict | None = None,
+) -> None:
+    if transcription is not None:
+        transcription_id = transcription.id
+        selected_stem = selected_stem or transcription.selected_stem
+        job_type = job_type or transcription.modal_job_type
+        modal_request_id = modal_request_id or transcription.modal_request_id
+        dispatch_status = dispatch_status or transcription.modal_dispatch_status
+        retry_count = retry_count if retry_count is not None else transcription.modal_retry_count
+
+    logger.info(
+        "modal_dispatch_event event=%s transcription_id=%s selected_stem=%s "
+        "job_type=%s modal_request_id=%s dispatch_status=%s retry_count=%s extra=%s",
+        event,
+        transcription_id,
+        selected_stem,
+        job_type,
+        modal_request_id,
+        dispatch_status,
+        retry_count,
+        extra or {},
+    )
+
+
+def _modal_status_detail(transcription: models.Transcription) -> str | None:
+    dispatch_status = transcription.modal_dispatch_status
+    processing_status = transcription.processing_status
+    if processing_status == "queued" and dispatch_status in {"rate_limited", "retry_queued"}:
+        return "rate_limited_retry"
+    if processing_status == "queued":
+        return "queued_waiting_for_active_job"
+    if processing_status == "processing" and dispatch_status == "dispatched":
+        return "dispatched"
+    if dispatch_status == "completed":
+        return "callback_completed"
+    if dispatch_status == "failed":
+        return "dispatch_failed"
+    return dispatch_status
+
+
 def _run_transcription_locally(
     transcription_id: int,
     detection_sensitivity: str | None = None,
@@ -458,6 +508,12 @@ def _mark_modal_retry(
             f"retry_at={transcription.modal_retry_at}, "
             f"modal_dispatch_status={transcription.modal_dispatch_status}"
         )
+        _log_modal_dispatch_event(
+            "retry_scheduled",
+            transcription,
+            job_type=transcription.modal_job_type,
+            extra={"retry_at": transcription.modal_retry_at.isoformat()},
+        )
     transcription.celery_task_id = None
     session.add(transcription)
     session.commit()
@@ -572,6 +628,11 @@ def _trigger_modal_worker(
             models.Transcription.id == transcription_id
         ).first()
         if not transcription or transcription.is_deleted:
+            _log_modal_dispatch_event(
+                "skipped_missing_or_deleted",
+                transcription_id=transcription_id,
+                job_type=job_type,
+            )
             logger.info(
                 "Modal dispatch skipped because transcription %s is missing or deleted.",
                 transcription_id,
@@ -748,6 +809,7 @@ def _trigger_modal_worker(
         session.add(transcription)
         session.commit()
         session.refresh(transcription)
+        _log_modal_dispatch_event("dispatch_started", transcription, job_type=job_type)
 
         headers = {}
         if core.config.settings.WORKER_API_TOKEN:
@@ -833,6 +895,13 @@ def _trigger_modal_worker(
 
         response.raise_for_status()
         logger.info("Triggered Modal worker for transcription %s", transcription_id)
+        _log_modal_dispatch_event(
+            "dispatch_completed",
+            transcription,
+            job_type=job_type,
+            dispatch_status="dispatched",
+            extra={"status_code": response.status_code},
+        )
         # Metrics: successful dispatch
         logger.info(
             "METRICS: modal_successful_dispatches_total +1"
@@ -2081,6 +2150,10 @@ def _status_payload(
         "queue_position": transcription.queue_position,
         "estimated_wait_time": transcription.estimated_wait_time,
         "modal_dispatch_status": transcription.modal_dispatch_status,
+        "modal_status_detail": _modal_status_detail(transcription),
+        "modal_job_type": transcription.modal_job_type,
+        "modal_request_id": transcription.modal_request_id,
+        "modal_retry_count": transcription.modal_retry_count,
         "modal_retry_at": transcription.modal_retry_at,
         "notes_data": transcription.notes_data,
         "tablature_data": transcription.tablature_data,
@@ -3464,6 +3537,10 @@ async def get_transcription_status(
             "queue_position": None,
             "estimated_wait_time": None,
             "modal_dispatch_status": transcription.modal_dispatch_status,
+            "modal_status_detail": _modal_status_detail(transcription),
+            "modal_job_type": transcription.modal_job_type,
+            "modal_request_id": transcription.modal_request_id,
+            "modal_retry_count": transcription.modal_retry_count,
             "modal_retry_at": transcription.modal_retry_at,
         })
 
@@ -3482,6 +3559,10 @@ async def get_transcription_status(
             "queue_position": None,
             "estimated_wait_time": None,
             "modal_dispatch_status": transcription.modal_dispatch_status,
+            "modal_status_detail": _modal_status_detail(transcription),
+            "modal_job_type": transcription.modal_job_type,
+            "modal_request_id": transcription.modal_request_id,
+            "modal_retry_count": transcription.modal_retry_count,
             "modal_retry_at": transcription.modal_retry_at,
         })
 
@@ -3511,7 +3592,9 @@ async def get_transcription_status(
         db_session.commit()
         message = None
         if current_status == "queued":
-            if _processing_mode() == "local":
+            if transcription.modal_dispatch_status in {"rate_limited", "retry_queued"}:
+                message = "Waiting for Modal capacity. Retry scheduled."
+            elif _processing_mode() == "local":
                 message = "Queued for local processing."
             else:
                 message = (
@@ -3532,6 +3615,10 @@ async def get_transcription_status(
             "queue_position": transcription.queue_position,
             "estimated_wait_time": transcription.estimated_wait_time,
             "modal_dispatch_status": transcription.modal_dispatch_status,
+            "modal_status_detail": _modal_status_detail(transcription),
+            "modal_job_type": transcription.modal_job_type,
+            "modal_request_id": transcription.modal_request_id,
+            "modal_retry_count": transcription.modal_retry_count,
             "modal_retry_at": transcription.modal_retry_at,
         })
 

@@ -466,6 +466,23 @@ MVP scope recommendation:
 
 ## Phase 8: Deployment & Production Readiness
 
+- [x] Add deployment-readiness guardrails for the hosted selected-stem path:
+  - Set `ENVIRONMENT=production` and verify startup fails clearly unless `AUDIO_PROCESSING_MODE=modal`, `MODAL_TRIGGER_URL`, `WORKER_API_TOKEN`, Cloudinary credentials, and a real `DATABASE_URL` are configured.
+  - Run `python run_migrations.py` from `backend/`; it applies SQL/Alembic migrations and validates the live database schema against SQLAlchemy models so missing selected-stem/status columns block deploy.
+  - Run the Modal callback smoke coverage with `python -m pytest tests/test_selected_stem_api_lifecycle.py::test_production_modal_dispatch_callback_smoke_path`.
+  - Confirm the smoke path queues an upload, dispatches a Modal job payload with `original_audio_url`, accepts the worker callback, reaches `stem_ready` or `completed_with_warning`, and unlocks `/result`.
+  - Keep using Delete for queued/processing active-job unblock unless a separate visible Cancel action is added later.
+- [x] Add repeatable hosted smoke tooling for the Modal path:
+  - `python scripts/deploy_smoke.py --base-url https://your-backend.example` verifies `/health/deployment`.
+  - `python scripts/deploy_smoke.py --base-url https://your-backend.example --run-upload --username smoke@example.com --password "..." --selected-stem other` generates a tiny WAV, uploads it, polls `/api/v1/audio/{id}/status`, and reports `processing`, `modal_dispatch_status`, `modal_request_id`, retry count/time, and ready terminal states.
+  - If Modal returns capacity/rate limiting, the smoke accepts the retry path when `modal_dispatch_status` is `rate_limited` or `retry_queued` and `modal_retry_at` / `modal_retry_count` are present.
+- [x] Add first admin visibility slice:
+  - Backend `GET /api/v1/admin/jobs` lists active `pending` / `queued` / `processing` jobs and Modal retry jobs with selected stem, Modal request id, dispatch/status detail, retry count, retry time, owner, and last error.
+  - Endpoint is protected by `ADMIN_API_TOKEN` via `X-Admin-Token` and requires no schema migration.
+  - Frontend `/admin/jobs` adds a compact operations dashboard with token entry, active/processing/queued/rate-limited counters, refresh, and active job table.
+- [ ] Run real hosted Modal smoke after deploying current env vars:
+  - Blocked in this workspace on 2026-05-26 because local env files are development-only (`AUDIO_PROCESSING_MODE=local`, SQLite, localhost API), no Railway/Render link is present, and no deployed backend URL was available to verify.
+  - Required deploy vars remain `ENVIRONMENT=production`, `AUDIO_PROCESSING_MODE=modal`, `MODAL_TRIGGER_URL`, `WORKER_API_TOKEN`, Cloudinary credentials, real `DATABASE_URL`, and optional `ADMIN_API_TOKEN`.
 - [ ] Set up production Docker images (multi-stage builds)
 - [ ] Configure Kubernetes deployment manifests (or Docker Swarm)
 - [ ] Set up monitoring (Prometheus metrics, Grafana dashboards)

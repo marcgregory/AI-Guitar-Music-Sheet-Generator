@@ -8,6 +8,8 @@ from sqlalchemy import String
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import run_migrations
+from app import models
+from app.database_init import validate_schema_against_models
 from run_migrations import _ensure_alembic_version_table, _execute_sql_statement
 
 
@@ -100,3 +102,33 @@ def test_postgresql_short_alembic_version_column_is_widened(monkeypatch):
     assert executed == [
         "ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)"
     ]
+
+
+def test_schema_validation_reports_model_columns_missing_from_database():
+    engine = create_engine("sqlite:///:memory:")
+
+    with engine.begin() as conn:
+        models.User.__table__.create(bind=conn)
+        models.Project.__table__.create(bind=conn)
+        conn.execute(
+            text(
+                "CREATE TABLE transcriptions ("
+                "id INTEGER PRIMARY KEY, "
+                "title VARCHAR NOT NULL, "
+                "user_id INTEGER"
+                ")"
+            )
+        )
+        models.InstrumentTrack.__table__.create(bind=conn)
+        models.UsageEvent.__table__.create(bind=conn)
+
+    try:
+        validate_schema_against_models(engine)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("Schema validation should fail for missing model columns")
+
+    assert "Database schema is missing model columns" in message
+    assert "transcriptions.selected_stem" in message
+    assert "transcriptions.processing_status" in message
