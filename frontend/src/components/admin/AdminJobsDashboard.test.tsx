@@ -95,6 +95,21 @@ describe("AdminJobsDashboard", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows an actionable message when the backend admin API is disabled", async () => {
+    mockedAudioService.listAdminJobs.mockRejectedValue({
+      response: { data: { detail: "Admin API is not configured." } },
+    });
+
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
+    render(<AdminJobsDashboard />);
+
+    expect(
+      await screen.findByText(
+        "Admin API is disabled on this backend. Set ADMIN_API_TOKEN to enable it.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("calls listAdminJobHistory with the selected history status", async () => {
     await renderWithSavedToken();
 

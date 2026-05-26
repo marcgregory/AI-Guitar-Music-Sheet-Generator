@@ -76,6 +76,15 @@ const formatDateTime = (value?: string | null): string => {
   return date ? date.toLocaleString() : "Not set";
 };
 
+const formatAdminJobsError = (detail: unknown, fallback: string): string => {
+  if (detail === "Admin API is not configured.") {
+    return "Admin API is disabled on this backend. Set ADMIN_API_TOKEN to enable it.";
+  }
+  return typeof detail === "string" && detail.trim().length > 0
+    ? detail
+    : fallback;
+};
+
 const formatRetryWindow = (value?: string | null): string => {
   const date = parseApiDate(value);
   if (!date) return "Not scheduled";
@@ -300,8 +309,10 @@ const AdminJobsDashboard: React.FC = () => {
       setLastLoadedAt(new Date());
     } catch (err: any) {
       setError(
-        err.response?.data?.detail ||
+        formatAdminJobsError(
+          err.response?.data?.detail,
           "Could not load admin jobs. Check the token and backend configuration.",
+        ),
       );
     } finally {
       setIsLoading(false);
@@ -328,8 +339,10 @@ const AdminJobsDashboard: React.FC = () => {
       setLastLoadedAt(new Date());
     } catch (err: any) {
       setError(
-        err.response?.data?.detail ||
+        formatAdminJobsError(
+          err.response?.data?.detail,
           "Could not load job history. Check the token and backend configuration.",
+        ),
       );
     } finally {
       setIsHistoryLoading(false);
