@@ -23,6 +23,7 @@ def test_startup_health_uses_local_processing_by_default(caplog):
     }
     assert "AUDIO_PROCESSING_MODE=local" in caplog.text
     assert "MODAL_TRIGGER_URL configured=False" in caplog.text
+    assert "Admin API configured=False" in caplog.text
     assert "Redis configured=True" in caplog.text
     assert "Celery enabled=True" in caplog.text
 
@@ -41,12 +42,14 @@ def test_deployment_health_reports_safe_readiness_details():
     assert checks["processing_backend"]["value"] == "local"
     assert checks["processing_backend"]["expected"] == "modal"
     assert checks["modal"]["configured"] is False
+    assert checks["admin_api"]["admin_api_configured"] is False
     assert checks["cloudinary"]["configured"] is False
     assert checks["database"]["ok"] is True
     assert "schema" in checks
     assert "alembic" in checks
     assert "SECRET_KEY" not in str(payload)
     assert "WORKER_API_TOKEN" not in str(payload)
+    assert "ADMIN_API_TOKEN" not in str(payload)
 
 
 def test_production_startup_fails_when_required_deploy_settings_are_missing():

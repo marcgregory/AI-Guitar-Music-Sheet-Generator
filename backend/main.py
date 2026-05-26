@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
         "MODAL_TRIGGER_URL configured=%s",
         settings.modal_trigger_url_configured,
     )
+    logger.info(
+        "Admin API configured=%s",
+        bool((settings.ADMIN_API_TOKEN or "").strip()),
+    )
     logger.info("Redis configured=%s", settings.redis_configured)
     logger.info("Celery enabled=%s", settings.celery_enabled)
     if (

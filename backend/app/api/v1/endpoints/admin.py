@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from .... import db, models
@@ -13,6 +13,8 @@ router = APIRouter()
 
 ACTIVE_JOB_STATUSES = {"pending", "queued", "processing"}
 ACTIVE_MODAL_DISPATCH_STATUSES = {"dispatched", "rate_limited", "retry_queued"}
+TERMINAL_JOB_STATUSES = {"completed", "completed_with_warning", "failed"}
+TERMINAL_MODAL_DISPATCH_STATUSES = {"completed", "failed"}
 
 
 def _modal_status_detail(transcription: models.Transcription) -> str | None:
@@ -33,6 +35,14 @@ def _modal_status_detail(transcription: models.Transcription) -> str | None:
 
 def _isoformat(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _duration_seconds(transcription: models.Transcription) -> int | None:
+    started_at = transcription.modal_dispatched_at or transcription.created_at
+    finished_at = transcription.updated_at
+    if not started_at or not finished_at or finished_at < started_at:
+        return None
+    return int((finished_at - started_at).total_seconds())
 
 
 def _require_admin_token(
@@ -69,6 +79,7 @@ def _job_payload(transcription: models.Transcription) -> dict[str, Any]:
         "modal_retry_count": transcription.modal_retry_count,
         "modal_retry_at": _isoformat(transcription.modal_retry_at),
         "modal_dispatched_at": _isoformat(transcription.modal_dispatched_at),
+        "duration_seconds": _duration_seconds(transcription),
         "last_error": transcription.processing_error,
         "warning_message": transcription.warning_message,
         "created_at": _isoformat(transcription.created_at),
@@ -110,4 +121,47 @@ def list_active_jobs(
                 if job.modal_dispatch_status in {"rate_limited", "retry_queued"}
             ),
         },
+    }
+
+
+@router.get("/jobs/history")
+def list_job_history(
+    _: None = Depends(_require_admin_token),
+    db_session: Session = Depends(db.get_db),
+    status: Optional[Literal["completed", "completed_with_warning", "failed"]] = Query(
+        default=None
+    ),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> dict[str, Any]:
+    query = (
+        db_session.query(models.Transcription)
+        .join(models.User, models.Transcription.user_id == models.User.id, isouter=True)
+        .filter(models.Transcription.is_deleted == False)
+        .filter(models.Transcription.modal_request_id.isnot(None))
+        .filter(
+            (models.Transcription.processing_status.in_(TERMINAL_JOB_STATUSES))
+            | (
+                models.Transcription.modal_dispatch_status.in_(
+                    TERMINAL_MODAL_DISPATCH_STATUSES
+                )
+            )
+        )
+    )
+
+    if status:
+        query = query.filter(models.Transcription.processing_status == status)
+
+    jobs = (
+        query.order_by(
+            models.Transcription.updated_at.desc().nullslast(),
+            models.Transcription.created_at.desc(),
+            models.Transcription.id.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "jobs": [_job_payload(job) for job in jobs],
+        "count": len(jobs),
     }

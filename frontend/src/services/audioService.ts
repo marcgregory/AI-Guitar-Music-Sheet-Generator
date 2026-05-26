@@ -134,6 +134,7 @@ export interface AdminJob {
   modal_retry_count?: number | null;
   modal_retry_at?: string | null;
   modal_dispatched_at?: string | null;
+  duration_seconds?: number | null;
   last_error?: string | null;
   warning_message?: string | null;
   created_at?: string | null;
@@ -149,6 +150,16 @@ export interface AdminJobsResponse {
     rate_limited: number;
   };
 }
+
+export interface AdminJobHistoryResponse {
+  jobs: AdminJob[];
+  count: number;
+}
+
+export type AdminJobHistoryStatus =
+  | "completed"
+  | "completed_with_warning"
+  | "failed";
 
 export type StemSelection = "vocals" | "drums" | "bass" | "other";
 export type LyricsLanguage = "auto" | "en" | "tl" | "ceb" | "es" | "ja" | "ko";
@@ -492,6 +503,26 @@ const audioService = {
   listAdminJobs: async (adminToken: string): Promise<AdminJobsResponse> => {
     const response = await apiClient.get("/admin/jobs", {
       headers: { "X-Admin-Token": adminToken },
+      timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
+    });
+
+    return response.data;
+  },
+
+  listAdminJobHistory: async (
+    adminToken: string,
+    options?: {
+      status?: AdminJobHistoryStatus;
+      limit?: number;
+    },
+  ): Promise<AdminJobHistoryResponse> => {
+    const params: Record<string, string | number> = {};
+    if (options?.status) params.status = options.status;
+    if (options?.limit !== undefined) params.limit = options.limit;
+
+    const response = await apiClient.get("/admin/jobs/history", {
+      headers: { "X-Admin-Token": adminToken },
+      ...(Object.keys(params).length > 0 ? { params } : {}),
       timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
     });
 

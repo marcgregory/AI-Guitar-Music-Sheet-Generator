@@ -13992,14 +13992,13 @@ body,
 .app-shell:has(.admin-jobs-page) .app-shell-main {
   position: relative;
   z-index: 1;
+  overflow-x: hidden;
   padding: 0;
 }
 
 .admin-jobs-page {
   position: relative;
-  display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 0;
+  display: block;
   width: 100%;
   max-width: none;
   min-height: 100vh;
@@ -14009,16 +14008,20 @@ body,
 }
 
 .admin-ops-sidebar {
-  position: sticky;
+  position: fixed;
+  left: 0;
   top: 0;
+  z-index: 10;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  width: 280px;
+  height: 100vh;
+  overflow-y: auto;
   border-right: 1px solid rgba(73, 54, 40, 0.13);
   background:
     linear-gradient(180deg, rgba(255, 252, 246, 0.86), rgba(248, 238, 223, 0.74)),
     rgba(255, 250, 242, 0.78);
-  padding: 28px 22px;
+  padding: 26px 20px;
   box-shadow: 18px 0 70px rgba(74, 51, 31, 0.08);
   backdrop-filter: blur(28px);
 }
@@ -14066,7 +14069,7 @@ body,
 .admin-ops-nav {
   display: grid;
   gap: 0.56rem;
-  margin-top: 2.65rem;
+  margin-top: 2.1rem;
 }
 
 .admin-ops-nav-item {
@@ -14075,7 +14078,7 @@ body,
   grid-template-columns: 24px minmax(0, 1fr);
   align-items: center;
   gap: 0.72rem;
-  min-height: 56px;
+  min-height: 54px;
   border: 1px solid transparent;
   border-radius: 16px;
   background: transparent;
@@ -14124,7 +14127,7 @@ body,
   background:
     linear-gradient(140deg, rgba(255, 255, 255, 0.56), transparent 45%),
     linear-gradient(180deg, rgba(255, 247, 233, 0.88), rgba(238, 220, 195, 0.62));
-  padding: 1.08rem;
+  padding: 1rem;
   box-shadow:
     0 22px 54px rgba(82, 55, 34, 0.1),
     0 1px 0 rgba(255, 255, 255, 0.84) inset;
@@ -14177,7 +14180,7 @@ body,
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.8rem;
-  margin-top: 2rem;
+  margin-top: 1.6rem;
 }
 
 .admin-profile-card > span {
@@ -14196,20 +14199,24 @@ body,
   display: grid;
   gap: clamp(1.05rem, 1.6vw, 1.55rem);
   min-width: 0;
-  padding: clamp(1.1rem, 3vw, 3.5rem);
+  width: calc(100% - 280px);
+  min-height: 100vh;
+  margin-left: 280px;
+  overflow-x: hidden;
+  padding: clamp(1.25rem, 2.4vw, 2.4rem);
 }
 
 .admin-jobs-header {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 576px);
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
   align-items: center;
-  gap: clamp(1.25rem, 4vw, 5rem);
+  gap: clamp(1rem, 3vw, 3.5rem);
   overflow: hidden;
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 1.4rem 0 2.35rem;
+  padding: 0.65rem 0 1.35rem;
   box-shadow: none;
   backdrop-filter: none;
 }
@@ -14230,7 +14237,7 @@ body,
   position: relative;
   z-index: 1;
   display: grid;
-  gap: 0.9rem;
+  gap: 0.72rem;
 }
 
 .admin-kicker {
@@ -14245,15 +14252,15 @@ body,
   max-width: none;
   color: #120e0c;
   font-family: "Instrument Serif", Georgia, serif;
-  font-size: clamp(4.8rem, 8.4vw, 8.75rem);
+  font-size: clamp(4.1rem, 6.5vw, 7rem);
   letter-spacing: 0;
   line-height: 0.78;
 }
 
 .admin-hero-copy > p:last-child {
-  max-width: 38rem;
+  max-width: 34rem;
   color: rgba(43, 33, 28, 0.68);
-  font-size: clamp(1.03rem, 1.35vw, 1.24rem);
+  font-size: clamp(1rem, 1.1vw, 1.14rem);
   line-height: 1.55;
 }
 
@@ -14264,11 +14271,11 @@ body,
   gap: 1.05rem;
   min-width: 0;
   border: 1px solid rgba(77, 55, 41, 0.15);
-  border-radius: 24px;
+  border-radius: 22px;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.62), transparent 42%),
     rgba(255, 250, 243, 0.72);
-  padding: clamp(1rem, 2vw, 1.55rem);
+  padding: clamp(0.95rem, 1.55vw, 1.25rem);
   box-shadow:
     0 28px 80px rgba(76, 52, 31, 0.11),
     0 1px 0 rgba(255, 255, 255, 0.8) inset;
@@ -14301,7 +14308,7 @@ body,
 
 .admin-token-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 44px auto;
+  grid-template-columns: minmax(0, 1fr) 44px auto auto;
   align-items: center;
   gap: 0.8rem;
   min-width: 0;
@@ -14362,10 +14369,40 @@ body,
   padding: 0 1.2rem;
 }
 
+.admin-forget-token-button {
+  min-height: 44px;
+  border: 1px solid rgba(126, 47, 47, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.46);
+  color: #8f3c36;
+  padding: 0 1rem;
+  font-size: 0.82rem;
+  font-weight: 900;
+  white-space: nowrap;
+  transition:
+    transform var(--motion-medium) var(--ease-premium),
+    background var(--motion-fast) var(--ease-soft),
+    color var(--motion-fast) var(--ease-soft);
+}
+
+.admin-forget-token-button:hover {
+  background: #fff5f1;
+  color: #67231f;
+  transform: translateY(-1px);
+}
+
+.admin-token-hint {
+  margin: -0.35rem 0 0;
+  color: rgba(55, 41, 32, 0.62);
+  font-size: 0.83rem;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
 .admin-job-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: clamp(0.85rem, 1.6vw, 1.45rem);
+  gap: clamp(0.8rem, 1.35vw, 1.15rem);
 }
 
 .admin-job-stat {
@@ -14373,14 +14410,15 @@ body,
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  min-height: 156px;
+  gap: 0.48rem 0.9rem;
+  min-height: 144px;
   overflow: hidden;
   border: 1px solid rgba(76, 54, 39, 0.12);
-  border-radius: 24px;
+  border-radius: 22px;
   background:
     linear-gradient(140deg, rgba(255, 255, 255, 0.62), transparent 44%),
     rgba(255, 251, 244, 0.72);
-  padding: 1.45rem;
+  padding: 1.25rem;
   box-shadow:
     0 24px 62px rgba(72, 49, 30, 0.08),
     0 1px 0 rgba(255, 255, 255, 0.86) inset;
@@ -14401,10 +14439,11 @@ body,
 
 .admin-stat-icon {
   grid-row: span 3;
-  width: 56px;
-  height: 56px;
+  position: relative;
+  z-index: 3;
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
-  margin-right: 0.7rem;
   background: rgba(86, 129, 106, 0.16);
   color: var(--ops-olive);
 }
@@ -14425,6 +14464,10 @@ body,
 }
 
 .admin-job-stat > span:not(.admin-stat-icon) {
+  position: relative;
+  z-index: 3;
+  min-width: 0;
+  padding-right: 4.75rem;
   color: rgba(46, 36, 30, 0.72);
   font-size: 0.9rem;
   font-weight: 800;
@@ -14433,26 +14476,36 @@ body,
 }
 
 .admin-job-stat strong {
+  position: relative;
+  z-index: 4;
+  min-width: 0;
+  padding-right: 4.75rem;
   color: #120e0c;
   font-family: "Instrument Serif", Georgia, serif;
-  font-size: clamp(2.55rem, 4vw, 3.5rem);
+  font-size: clamp(2.35rem, 3.2vw, 3.2rem);
   font-weight: 400;
   line-height: 0.92;
 }
 
 .admin-job-stat p {
+  position: relative;
+  z-index: 3;
+  min-width: 0;
+  padding-right: 4.75rem;
   color: rgba(50, 39, 32, 0.6);
   font-size: 0.82rem;
 }
 
 .admin-stat-sparkline {
   position: absolute;
-  right: 1.1rem;
-  bottom: 1rem;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 1;
   width: 58px;
   height: 42px;
   color: currentColor;
   opacity: 0.78;
+  pointer-events: none;
 }
 
 .admin-stat-sparkline path {
@@ -14484,13 +14537,13 @@ body,
   gap: 1rem;
   min-width: 0;
   min-height: 406px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid rgba(76, 54, 39, 0.12);
-  border-radius: 24px;
+  border-radius: 22px;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.6), transparent 44%),
     rgba(255, 251, 244, 0.7);
-  padding: clamp(1.05rem, 2vw, 1.75rem);
+  padding: clamp(1rem, 1.65vw, 1.45rem);
   box-shadow:
     0 28px 82px rgba(73, 50, 30, 0.1),
     0 1px 0 rgba(255, 255, 255, 0.84) inset;
@@ -14536,15 +14589,170 @@ body,
   gap: 0.7rem;
 }
 
-.admin-job-toolbar select {
-  min-height: 44px;
-  border: 1px solid rgba(81, 58, 43, 0.13);
-  border-radius: 12px;
+.admin-filter-select-shell {
+  position: relative;
+  min-width: 156px;
+}
+
+.admin-filter-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.admin-job-toolbar .admin-filter-select {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 52px;
+  border: 1px solid rgba(120, 98, 72, 0.16);
+  border-radius: 18px;
   outline: 0;
-  background: rgba(255, 255, 255, 0.58);
-  color: #5b4032;
-  padding: 0 2.1rem 0 0.9rem;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 248, 237, 0.64)),
+    rgba(255, 255, 255, 0.72);
+  color: #5f4633;
+  padding: 0 3.25rem 0 1.125rem;
+  font-size: 0.9rem;
   font-weight: 700;
+  letter-spacing: 0;
+  text-align: left;
+  text-rendering: geometricPrecision;
+  box-shadow:
+    0 8px 24px rgba(89, 64, 38, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+  backdrop-filter: blur(10px);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease,
+    background 180ms ease;
+}
+
+.admin-job-toolbar .admin-filter-select:hover {
+  transform: translateY(-1px);
+  border-color: rgba(120, 98, 72, 0.28);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(255, 247, 234, 0.72)),
+    rgba(255, 255, 255, 0.8);
+  box-shadow:
+    0 12px 30px rgba(89, 64, 38, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.admin-job-toolbar .admin-filter-select:focus-visible {
+  border-color: rgba(166, 111, 52, 0.45);
+  box-shadow:
+    0 0 0 4px rgba(166, 111, 52, 0.12),
+    0 12px 30px rgba(89, 64, 38, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.admin-job-toolbar .admin-filter-select span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-filter-chevron {
+  position: absolute;
+  top: 50%;
+  right: 1rem;
+  width: 1.12rem;
+  height: 1.12rem;
+  color: rgba(95, 70, 51, 0.72);
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition:
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.admin-filter-select-shell.is-open .admin-filter-chevron {
+  color: rgba(126, 75, 34, 0.84);
+  transform: translateY(-50%) rotate(180deg);
+}
+
+.admin-filter-menu {
+  position: absolute;
+  top: calc(100% + 0.48rem);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 0.2rem;
+  width: max(100%, 222px);
+  max-width: min(82vw, 280px);
+  max-height: 18rem;
+  overflow: auto;
+  border: 1px solid rgba(120, 98, 72, 0.15);
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(255, 248, 237, 0.78)),
+    rgba(255, 251, 244, 0.86);
+  padding: 0.4rem;
+  box-shadow:
+    0 24px 54px rgba(74, 48, 27, 0.18),
+    0 1px 0 rgba(255, 255, 255, 0.88) inset;
+  backdrop-filter: blur(18px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top right;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.admin-filter-select-shell.is-open .admin-filter-menu {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.admin-job-toolbar .admin-filter-option {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 42px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: rgba(71, 50, 35, 0.78);
+  padding: 0.72rem 0.86rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
+}
+
+.admin-job-toolbar .admin-filter-option:hover,
+.admin-job-toolbar .admin-filter-option:focus-visible,
+.admin-job-toolbar .admin-filter-option.is-active {
+  outline: 0;
+  background: rgba(166, 111, 52, 0.12);
+  color: #5f3920;
+  transform: none;
+}
+
+.admin-job-toolbar .admin-filter-option.is-selected {
+  background:
+    linear-gradient(135deg, rgba(166, 111, 52, 0.16), rgba(255, 247, 232, 0.58));
+  color: #6a3d1d;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.78) inset;
 }
 
 .admin-job-toolbar span {
@@ -14561,7 +14769,7 @@ body,
   place-items: center;
   align-content: center;
   gap: 0.72rem;
-  min-height: 282px;
+  min-height: 258px;
   overflow: hidden;
   border: 0;
   border-radius: 18px;
@@ -14607,8 +14815,8 @@ body,
 .admin-empty-illustration {
   position: relative;
   z-index: 1;
-  width: 86px;
-  height: 72px;
+  width: 82px;
+  height: 70px;
   border: 1px solid rgba(185, 104, 45, 0.16);
   border-radius: 24px 24px 18px 18px;
   background:
@@ -14754,6 +14962,11 @@ body,
   color: #7559b0;
 }
 
+.admin-job-failed .admin-status-pill {
+  background: rgba(201, 80, 69, 0.14);
+  color: #a73f35;
+}
+
 @keyframes admin-skeleton {
   from {
     background-position: 120% 0;
@@ -14783,15 +14996,62 @@ body,
 }
 
 @media (max-width: 1180px) {
-  .admin-jobs-page {
-    grid-template-columns: 1fr;
+  .admin-jobs-header,
+  .admin-job-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
+  .admin-jobs-header {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: clamp(1rem, 2vw, 1.6rem);
+    padding-bottom: 1.1rem;
   }
 
+  .admin-hero-copy {
+    max-width: 42rem;
+  }
+
+  .admin-jobs-header h1 {
+    font-size: clamp(4.2rem, 9vw, 6.2rem);
+  }
+
+  .admin-token-panel {
+    width: 100%;
+  }
+
+  .admin-token-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 0.55rem 0.8rem;
+  }
+
+  .admin-token-row {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+
+  .admin-refresh-button,
+  .admin-forget-token-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}
+
+@media (max-width: 900px) {
   .admin-ops-sidebar {
-    position: relative;
-    min-height: auto;
+    position: static;
+    width: 100%;
+    height: auto;
+    overflow-y: visible;
     border-right: 0;
     border-bottom: 1px solid rgba(73, 54, 40, 0.13);
+  }
+
+  .admin-ops-main {
+    width: 100%;
+    margin-left: 0;
   }
 
   .admin-ops-nav {
@@ -14801,11 +15061,6 @@ body,
   .admin-upgrade-card,
   .admin-profile-card {
     display: none;
-  }
-
-  .admin-jobs-header,
-  .admin-job-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -14829,7 +15084,8 @@ body,
     grid-template-columns: minmax(0, 1fr) 44px;
   }
 
-  .admin-refresh-button {
+  .admin-refresh-button,
+  .admin-forget-token-button {
     grid-column: 1 / -1;
     width: 100%;
   }
@@ -14840,8 +15096,16 @@ body,
     flex-direction: column;
   }
 
-  .admin-job-toolbar select,
+  .admin-filter-select-shell,
   .admin-job-toolbar button {
     width: 100%;
+  }
+
+  .admin-filter-menu {
+    right: auto;
+    left: 0;
+    width: 100%;
+    max-width: 100%;
+    transform-origin: top left;
   }
 }
