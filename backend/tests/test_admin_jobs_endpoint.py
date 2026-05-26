@@ -113,3 +113,58 @@ def test_admin_jobs_lists_active_modal_observability_fields():
     assert job["modal_retry_count"] == 2
     assert job["modal_retry_at"] is not None
     assert job["last_error"] == "Modal dispatch failed. This job will retry automatically."
+
+
+def test_admin_job_history_lists_recent_terminal_modal_jobs():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    started_at = datetime.now(timezone.utc) - timedelta(minutes=4)
+    finished_at = started_at + timedelta(seconds=145)
+    failed_id = _create_job(
+        "admin-history-owner",
+        title="Failed Modal job",
+        processing_status="failed",
+        modal_dispatch_status="failed",
+        modal_request_id="modal-failed-123",
+        modal_retry_count=3,
+        modal_dispatched_at=started_at,
+        updated_at=finished_at,
+        processing_error="Worker processing failed.",
+    )
+    completed_id = _create_job(
+        "admin-history-complete",
+        title="Completed Modal job",
+        processing_status="completed",
+        modal_dispatch_status="completed",
+        modal_request_id="modal-completed-123",
+        modal_dispatched_at=started_at,
+        updated_at=finished_at + timedelta(seconds=5),
+    )
+    _create_job(
+        "admin-history-active",
+        title="Still running",
+        processing_status="processing",
+        modal_dispatch_status="dispatched",
+        modal_request_id="modal-active-123",
+    )
+
+    try:
+        response = client.get(
+            "/api/v1/admin/jobs/history",
+            headers={"X-Admin-Token": "admin-secret"},
+        )
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 2
+    ids = [job["id"] for job in payload["jobs"]]
+    assert ids == [completed_id, failed_id]
+    failed_job = next(job for job in payload["jobs"] if job["id"] == failed_id)
+    assert failed_job["modal_request_id"] == "modal-failed-123"
+    assert failed_job["duration_seconds"] == 145
+    assert failed_job["processing_status"] == "failed"
+    assert failed_job["modal_retry_count"] == 3
+    assert failed_job["last_error"] == "Worker processing failed."

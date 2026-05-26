@@ -13992,14 +13992,13 @@ body,
 .app-shell:has(.admin-jobs-page) .app-shell-main {
   position: relative;
   z-index: 1;
+  overflow-x: hidden;
   padding: 0;
 }
 
 .admin-jobs-page {
   position: relative;
-  display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 0;
+  display: block;
   width: 100%;
   max-width: none;
   min-height: 100vh;
@@ -14009,16 +14008,20 @@ body,
 }
 
 .admin-ops-sidebar {
-  position: sticky;
+  position: fixed;
+  left: 0;
   top: 0;
+  z-index: 10;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  width: 280px;
+  height: 100vh;
+  overflow-y: auto;
   border-right: 1px solid rgba(73, 54, 40, 0.13);
   background:
     linear-gradient(180deg, rgba(255, 252, 246, 0.86), rgba(248, 238, 223, 0.74)),
     rgba(255, 250, 242, 0.78);
-  padding: 28px 22px;
+  padding: 26px 20px;
   box-shadow: 18px 0 70px rgba(74, 51, 31, 0.08);
   backdrop-filter: blur(28px);
 }
@@ -14066,7 +14069,7 @@ body,
 .admin-ops-nav {
   display: grid;
   gap: 0.56rem;
-  margin-top: 2.65rem;
+  margin-top: 2.1rem;
 }
 
 .admin-ops-nav-item {
@@ -14075,7 +14078,7 @@ body,
   grid-template-columns: 24px minmax(0, 1fr);
   align-items: center;
   gap: 0.72rem;
-  min-height: 56px;
+  min-height: 54px;
   border: 1px solid transparent;
   border-radius: 16px;
   background: transparent;
@@ -14124,7 +14127,7 @@ body,
   background:
     linear-gradient(140deg, rgba(255, 255, 255, 0.56), transparent 45%),
     linear-gradient(180deg, rgba(255, 247, 233, 0.88), rgba(238, 220, 195, 0.62));
-  padding: 1.08rem;
+  padding: 1rem;
   box-shadow:
     0 22px 54px rgba(82, 55, 34, 0.1),
     0 1px 0 rgba(255, 255, 255, 0.84) inset;
@@ -14177,7 +14180,7 @@ body,
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.8rem;
-  margin-top: 2rem;
+  margin-top: 1.6rem;
 }
 
 .admin-profile-card > span {
@@ -14196,20 +14199,24 @@ body,
   display: grid;
   gap: clamp(1.05rem, 1.6vw, 1.55rem);
   min-width: 0;
-  padding: clamp(1.1rem, 3vw, 3.5rem);
+  width: calc(100% - 280px);
+  min-height: 100vh;
+  margin-left: 280px;
+  overflow-x: hidden;
+  padding: clamp(1.25rem, 2.4vw, 2.4rem);
 }
 
 .admin-jobs-header {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 576px);
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
   align-items: center;
-  gap: clamp(1.25rem, 4vw, 5rem);
+  gap: clamp(1rem, 3vw, 3.5rem);
   overflow: hidden;
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 1.4rem 0 2.35rem;
+  padding: 0.65rem 0 1.35rem;
   box-shadow: none;
   backdrop-filter: none;
 }
@@ -14230,7 +14237,7 @@ body,
   position: relative;
   z-index: 1;
   display: grid;
-  gap: 0.9rem;
+  gap: 0.72rem;
 }
 
 .admin-kicker {
@@ -14245,15 +14252,15 @@ body,
   max-width: none;
   color: #120e0c;
   font-family: "Instrument Serif", Georgia, serif;
-  font-size: clamp(4.8rem, 8.4vw, 8.75rem);
+  font-size: clamp(4.1rem, 6.5vw, 7rem);
   letter-spacing: 0;
   line-height: 0.78;
 }
 
 .admin-hero-copy > p:last-child {
-  max-width: 38rem;
+  max-width: 34rem;
   color: rgba(43, 33, 28, 0.68);
-  font-size: clamp(1.03rem, 1.35vw, 1.24rem);
+  font-size: clamp(1rem, 1.1vw, 1.14rem);
   line-height: 1.55;
 }
 
@@ -14264,11 +14271,11 @@ body,
   gap: 1.05rem;
   min-width: 0;
   border: 1px solid rgba(77, 55, 41, 0.15);
-  border-radius: 24px;
+  border-radius: 22px;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.62), transparent 42%),
     rgba(255, 250, 243, 0.72);
-  padding: clamp(1rem, 2vw, 1.55rem);
+  padding: clamp(0.95rem, 1.55vw, 1.25rem);
   box-shadow:
     0 28px 80px rgba(76, 52, 31, 0.11),
     0 1px 0 rgba(255, 255, 255, 0.8) inset;
@@ -14365,7 +14372,7 @@ body,
 .admin-job-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: clamp(0.85rem, 1.6vw, 1.45rem);
+  gap: clamp(0.8rem, 1.35vw, 1.15rem);
 }
 
 .admin-job-stat {
@@ -14373,14 +14380,14 @@ body,
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  min-height: 156px;
+  min-height: 144px;
   overflow: hidden;
   border: 1px solid rgba(76, 54, 39, 0.12);
-  border-radius: 24px;
+  border-radius: 22px;
   background:
     linear-gradient(140deg, rgba(255, 255, 255, 0.62), transparent 44%),
     rgba(255, 251, 244, 0.72);
-  padding: 1.45rem;
+  padding: 1.25rem;
   box-shadow:
     0 24px 62px rgba(72, 49, 30, 0.08),
     0 1px 0 rgba(255, 255, 255, 0.86) inset;
@@ -14401,8 +14408,8 @@ body,
 
 .admin-stat-icon {
   grid-row: span 3;
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
   margin-right: 0.7rem;
   background: rgba(86, 129, 106, 0.16);
@@ -14435,7 +14442,7 @@ body,
 .admin-job-stat strong {
   color: #120e0c;
   font-family: "Instrument Serif", Georgia, serif;
-  font-size: clamp(2.55rem, 4vw, 3.5rem);
+  font-size: clamp(2.35rem, 3.2vw, 3.2rem);
   font-weight: 400;
   line-height: 0.92;
 }
@@ -14486,11 +14493,11 @@ body,
   min-height: 406px;
   overflow: hidden;
   border: 1px solid rgba(76, 54, 39, 0.12);
-  border-radius: 24px;
+  border-radius: 22px;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.6), transparent 44%),
     rgba(255, 251, 244, 0.7);
-  padding: clamp(1.05rem, 2vw, 1.75rem);
+  padding: clamp(1rem, 1.65vw, 1.45rem);
   box-shadow:
     0 28px 82px rgba(73, 50, 30, 0.1),
     0 1px 0 rgba(255, 255, 255, 0.84) inset;
@@ -14561,7 +14568,7 @@ body,
   place-items: center;
   align-content: center;
   gap: 0.72rem;
-  min-height: 282px;
+  min-height: 258px;
   overflow: hidden;
   border: 0;
   border-radius: 18px;
@@ -14607,8 +14614,8 @@ body,
 .admin-empty-illustration {
   position: relative;
   z-index: 1;
-  width: 86px;
-  height: 72px;
+  width: 82px;
+  height: 70px;
   border: 1px solid rgba(185, 104, 45, 0.16);
   border-radius: 24px 24px 18px 18px;
   background:
@@ -14754,6 +14761,11 @@ body,
   color: #7559b0;
 }
 
+.admin-job-failed .admin-status-pill {
+  background: rgba(201, 80, 69, 0.14);
+  color: #a73f35;
+}
+
 @keyframes admin-skeleton {
   from {
     background-position: 120% 0;
@@ -14783,15 +14795,25 @@ body,
 }
 
 @media (max-width: 1180px) {
-  .admin-jobs-page {
-    grid-template-columns: 1fr;
+  .admin-jobs-header,
+  .admin-job-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
 
+@media (max-width: 900px) {
   .admin-ops-sidebar {
-    position: relative;
-    min-height: auto;
+    position: static;
+    width: 100%;
+    height: auto;
+    overflow-y: visible;
     border-right: 0;
     border-bottom: 1px solid rgba(73, 54, 40, 0.13);
+  }
+
+  .admin-ops-main {
+    width: 100%;
+    margin-left: 0;
   }
 
   .admin-ops-nav {
@@ -14801,11 +14823,6 @@ body,
   .admin-upgrade-card,
   .admin-profile-card {
     display: none;
-  }
-
-  .admin-jobs-header,
-  .admin-job-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

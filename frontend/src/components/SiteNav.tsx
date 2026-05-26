@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import { AudioWaveform, LogOut, Menu, X } from "lucide-react";
 import { Icon } from "./Icon";
 import { useAuth } from "./auth/AuthContext";
+import { hasSavedAdminAccess } from "../utils/adminAccess";
 
 export const PublicNav = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -84,6 +85,7 @@ export const AppNav = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [showAdminJobsLink] = useState(() => hasSavedAdminAccess());
   const isNewTranscriptionFlow =
     location.pathname.startsWith("/upload") ||
     location.pathname.startsWith("/processing");
@@ -143,15 +145,17 @@ export const AppNav = () => {
           >
             New transcription
           </NavLink>
-          <NavLink
-            to="/admin/jobs"
-            onClick={closeMobileMenu}
-            className={({ isActive }) =>
-              `site-nav-link ${isActive ? "active" : ""}`
-            }
-          >
-            Jobs
-          </NavLink>
+          {showAdminJobsLink && (
+            <NavLink
+              to="/admin/jobs"
+              onClick={closeMobileMenu}
+              className={({ isActive }) =>
+                `site-nav-link ${isActive ? "active" : ""}`
+              }
+            >
+              Jobs
+            </NavLink>
+          )}
         </nav>
         <div className="site-nav-actions">
           <button

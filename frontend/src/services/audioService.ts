@@ -134,6 +134,7 @@ export interface AdminJob {
   modal_retry_count?: number | null;
   modal_retry_at?: string | null;
   modal_dispatched_at?: string | null;
+  duration_seconds?: number | null;
   last_error?: string | null;
   warning_message?: string | null;
   created_at?: string | null;
@@ -148,6 +149,11 @@ export interface AdminJobsResponse {
     processing: number;
     rate_limited: number;
   };
+}
+
+export interface AdminJobHistoryResponse {
+  jobs: AdminJob[];
+  count: number;
 }
 
 export type StemSelection = "vocals" | "drums" | "bass" | "other";
@@ -491,6 +497,17 @@ const audioService = {
 
   listAdminJobs: async (adminToken: string): Promise<AdminJobsResponse> => {
     const response = await apiClient.get("/admin/jobs", {
+      headers: { "X-Admin-Token": adminToken },
+      timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
+    });
+
+    return response.data;
+  },
+
+  listAdminJobHistory: async (
+    adminToken: string,
+  ): Promise<AdminJobHistoryResponse> => {
+    const response = await apiClient.get("/admin/jobs/history", {
       headers: { "X-Admin-Token": adminToken },
       timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
     });
