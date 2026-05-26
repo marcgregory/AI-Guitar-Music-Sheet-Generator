@@ -72,6 +72,60 @@ describe("App routing", () => {
     expect(screen.queryByText("Login page")).not.toBeInTheDocument();
   });
 
+  it("keeps authenticated users out of the register page", async () => {
+    storeValidAuth();
+    window.history.replaceState({}, "", "/register");
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Dashboard page")).toBeInTheDocument());
+    expect(screen.queryByText("Register page")).not.toBeInTheDocument();
+  });
+
+  it("sends authenticated users from the public home to the dashboard", async () => {
+    storeValidAuth();
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Dashboard page")).toBeInTheDocument());
+    expect(screen.queryByText("Landing page")).not.toBeInTheDocument();
+  });
+
+  it("keeps the public home accessible when users are logged out", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Landing page")).toBeInTheDocument());
+    expect(screen.queryByText("Dashboard page")).not.toBeInTheDocument();
+  });
+
+  it("keeps the login page accessible when users are logged out", async () => {
+    window.history.replaceState({}, "", "/login");
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Login page")).toBeInTheDocument());
+    expect(screen.queryByText("Dashboard page")).not.toBeInTheDocument();
+  });
+
+  it("keeps admin jobs protected for unauthenticated users", async () => {
+    window.history.replaceState({}, "", "/admin/jobs");
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Login page")).toBeInTheDocument());
+    expect(screen.queryByText("Admin jobs page")).not.toBeInTheDocument();
+  });
+
+  it("allows authenticated users through to admin jobs", async () => {
+    storeValidAuth();
+    window.history.replaceState({}, "", "/admin/jobs");
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Admin jobs page")).toBeInTheDocument());
+    expect(screen.queryByText("Login page")).not.toBeInTheDocument();
+  });
+
   it("sends authenticated users from unknown paths back to the dashboard", async () => {
     storeValidAuth();
     window.history.replaceState({}, "", "/made-up-path");

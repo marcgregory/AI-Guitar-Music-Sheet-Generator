@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -128,9 +128,12 @@ def list_active_jobs(
 def list_job_history(
     _: None = Depends(_require_admin_token),
     db_session: Session = Depends(db.get_db),
+    status: Optional[Literal["completed", "completed_with_warning", "failed"]] = Query(
+        default=None
+    ),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> dict[str, Any]:
-    jobs = (
+    query = (
         db_session.query(models.Transcription)
         .join(models.User, models.Transcription.user_id == models.User.id, isouter=True)
         .filter(models.Transcription.is_deleted == False)
@@ -143,7 +146,13 @@ def list_job_history(
                 )
             )
         )
-        .order_by(
+    )
+
+    if status:
+        query = query.filter(models.Transcription.processing_status == status)
+
+    jobs = (
+        query.order_by(
             models.Transcription.updated_at.desc().nullslast(),
             models.Transcription.created_at.desc(),
             models.Transcription.id.desc(),

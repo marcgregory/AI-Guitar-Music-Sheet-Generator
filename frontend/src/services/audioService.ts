@@ -156,6 +156,11 @@ export interface AdminJobHistoryResponse {
   count: number;
 }
 
+export type AdminJobHistoryStatus =
+  | "completed"
+  | "completed_with_warning"
+  | "failed";
+
 export type StemSelection = "vocals" | "drums" | "bass" | "other";
 export type LyricsLanguage = "auto" | "en" | "tl" | "ceb" | "es" | "ja" | "ko";
 export type ExportFormat = "midi" | "musicxml" | "tab";
@@ -506,9 +511,18 @@ const audioService = {
 
   listAdminJobHistory: async (
     adminToken: string,
+    options?: {
+      status?: AdminJobHistoryStatus;
+      limit?: number;
+    },
   ): Promise<AdminJobHistoryResponse> => {
+    const params: Record<string, string | number> = {};
+    if (options?.status) params.status = options.status;
+    if (options?.limit !== undefined) params.limit = options.limit;
+
     const response = await apiClient.get("/admin/jobs/history", {
       headers: { "X-Admin-Token": adminToken },
+      ...(Object.keys(params).length > 0 ? { params } : {}),
       timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
     });
 

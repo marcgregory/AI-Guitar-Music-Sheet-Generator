@@ -21,11 +21,14 @@ import {
 import audioService, {
   type AdminJob,
   type AdminJobHistoryResponse,
+  type AdminJobHistoryStatus,
   type AdminJobsResponse,
 } from "../../services/audioService";
 import { ADMIN_TOKEN_STORAGE_KEY } from "../../utils/adminAccess";
 type JobFilter = "all" | "queued" | "processing" | "rate_limited";
 type AdminJobsView = "active" | "history";
+type HistoryStatusFilter = "all" | AdminJobHistoryStatus;
+type HistoryLimit = 25 | 50 | 100;
 
 const emptyJobsResponse: AdminJobsResponse = {
   jobs: [],
@@ -106,6 +109,9 @@ const AdminJobsDashboard: React.FC = () => {
   const [isTokenVisible, setIsTokenVisible] = useState(false);
   const [jobFilter, setJobFilter] = useState<JobFilter>("all");
   const [activeView, setActiveView] = useState<AdminJobsView>("active");
+  const [historyStatusFilter, setHistoryStatusFilter] =
+    useState<HistoryStatusFilter>("all");
+  const [historyLimit, setHistoryLimit] = useState<HistoryLimit>(50);
 
   const tokenReady = adminToken.trim().length > 0;
 
@@ -144,7 +150,11 @@ const AdminJobsDashboard: React.FC = () => {
     setError(null);
     try {
       window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmedToken);
-      const response = await audioService.listAdminJobHistory(trimmedToken);
+      const response = await audioService.listAdminJobHistory(trimmedToken, {
+        status:
+          historyStatusFilter === "all" ? undefined : historyStatusFilter,
+        limit: historyLimit,
+      });
       setJobHistoryResponse(response);
       setLastLoadedAt(new Date());
     } catch (err: any) {
@@ -155,17 +165,30 @@ const AdminJobsDashboard: React.FC = () => {
     } finally {
       setIsHistoryLoading(false);
     }
-  }, [adminToken]);
+  }, [adminToken, historyLimit, historyStatusFilter]);
+
+  const forgetAdminToken = useCallback(() => {
+    window.localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+    setAdminToken("");
+    setError(null);
+    setJobsResponse(emptyJobsResponse);
+    setJobHistoryResponse(emptyJobHistoryResponse);
+    setLastLoadedAt(null);
+  }, []);
 
   useEffect(() => {
     if (!tokenReady) return;
     void loadJobs();
-    void loadJobHistory();
     const intervalId = window.setInterval(() => {
       void loadJobs();
     }, 10000);
     return () => window.clearInterval(intervalId);
-  }, [loadJobHistory, loadJobs, tokenReady]);
+  }, [loadJobs, tokenReady]);
+
+  useEffect(() => {
+    if (!tokenReady || activeView !== "history") return;
+    void loadJobHistory();
+  }, [activeView, loadJobHistory, tokenReady]);
 
   const statCards = useMemo(
     () => [
@@ -255,7 +278,6 @@ const AdminJobsDashboard: React.FC = () => {
                 onClick={() => {
                   if (!item.view) return;
                   setActiveView(item.view);
-                  if (item.view === "history") void loadJobHistory();
                 }}
               >
                 <NavIcon aria-hidden="true" />
@@ -343,6 +365,13 @@ const AdminJobsDashboard: React.FC = () => {
                       : "Refresh"}
                 </span>
               </button>
+              <button
+                type="button"
+                className="admin-forget-token-button"
+                onClick={forgetAdminToken}
+              >
+                Forget admin token
+              </button>
             </div>
           </div>
         </section>
@@ -390,7 +419,36 @@ const AdminJobsDashboard: React.FC = () => {
             </div>
             <div className="admin-job-toolbar">
               {isViewingHistory ? (
-                <span>{jobHistoryResponse.count} jobs</span>
+                <>
+                  <select
+                    value={historyStatusFilter}
+                    onChange={(event) =>
+                      setHistoryStatusFilter(
+                        event.target.value as HistoryStatusFilter,
+                      )
+                    }
+                    aria-label="Filter history by status"
+                  >
+                    <option value="all">All</option>
+                    <option value="completed">Completed</option>
+                    <option value="completed_with_warning">
+                      Completed with warning
+                    </option>
+                    <option value="failed">Failed</option>
+                  </select>
+                  <select
+                    value={historyLimit}
+                    onChange={(event) =>
+                      setHistoryLimit(Number(event.target.value) as HistoryLimit)
+                    }
+                    aria-label="Limit history jobs"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                  <span>{jobHistoryResponse.count} jobs</span>
+                </>
               ) : (
                 <>
                   <select

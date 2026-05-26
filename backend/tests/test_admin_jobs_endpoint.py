@@ -168,3 +168,107 @@ def test_admin_job_history_lists_recent_terminal_modal_jobs():
     assert failed_job["processing_status"] == "failed"
     assert failed_job["modal_retry_count"] == 3
     assert failed_job["last_error"] == "Worker processing failed."
+
+
+def test_admin_job_history_filters_by_processing_status():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    now = datetime.now(timezone.utc)
+    failed_id = _create_job(
+        "admin-history-filter-failed",
+        title="Failed history job",
+        processing_status="failed",
+        modal_dispatch_status="failed",
+        modal_request_id="modal-filter-failed",
+        updated_at=now,
+    )
+    _create_job(
+        "admin-history-filter-complete",
+        title="Completed history job",
+        processing_status="completed",
+        modal_dispatch_status="completed",
+        modal_request_id="modal-filter-completed",
+        updated_at=now + timedelta(seconds=1),
+    )
+    _create_job(
+        "admin-history-filter-warning",
+        title="Warning history job",
+        processing_status="completed_with_warning",
+        modal_dispatch_status="completed",
+        modal_request_id="modal-filter-warning",
+        updated_at=now + timedelta(seconds=2),
+    )
+
+    try:
+        response = client.get(
+            "/api/v1/admin/jobs/history?status=failed",
+            headers={"X-Admin-Token": "admin-secret"},
+        )
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["jobs"][0]["id"] == failed_id
+    assert payload["jobs"][0]["processing_status"] == "failed"
+
+
+def test_admin_job_history_limit_still_limits_results():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    now = datetime.now(timezone.utc)
+    newest_id = _create_job(
+        "admin-history-limit-newest",
+        title="Newest history job",
+        processing_status="completed",
+        modal_dispatch_status="completed",
+        modal_request_id="modal-limit-newest",
+        updated_at=now + timedelta(seconds=2),
+    )
+    _create_job(
+        "admin-history-limit-middle",
+        title="Middle history job",
+        processing_status="completed",
+        modal_dispatch_status="completed",
+        modal_request_id="modal-limit-middle",
+        updated_at=now + timedelta(seconds=1),
+    )
+    _create_job(
+        "admin-history-limit-oldest",
+        title="Oldest history job",
+        processing_status="completed",
+        modal_dispatch_status="completed",
+        modal_request_id="modal-limit-oldest",
+        updated_at=now,
+    )
+
+    try:
+        response = client.get(
+            "/api/v1/admin/jobs/history?limit=1",
+            headers={"X-Admin-Token": "admin-secret"},
+        )
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert [job["id"] for job in payload["jobs"]] == [newest_id]
+
+
+def test_admin_job_history_rejects_invalid_status_filter():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    try:
+        response = client.get(
+            "/api/v1/admin/jobs/history?status=processing",
+            headers={"X-Admin-Token": "admin-secret"},
+        )
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+
+    assert response.status_code == 422

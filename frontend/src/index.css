@@ -14308,7 +14308,7 @@ body,
 
 .admin-token-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 44px auto;
+  grid-template-columns: minmax(0, 1fr) 44px auto auto;
   align-items: center;
   gap: 0.8rem;
   min-width: 0;
@@ -14369,6 +14369,28 @@ body,
   padding: 0 1.2rem;
 }
 
+.admin-forget-token-button {
+  min-height: 44px;
+  border: 1px solid rgba(126, 47, 47, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.46);
+  color: #8f3c36;
+  padding: 0 1rem;
+  font-size: 0.82rem;
+  font-weight: 900;
+  white-space: nowrap;
+  transition:
+    transform var(--motion-medium) var(--ease-premium),
+    background var(--motion-fast) var(--ease-soft),
+    color var(--motion-fast) var(--ease-soft);
+}
+
+.admin-forget-token-button:hover {
+  background: #fff5f1;
+  color: #67231f;
+  transform: translateY(-1px);
+}
+
 .admin-job-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -14380,6 +14402,7 @@ body,
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
+  gap: 0.48rem 0.9rem;
   min-height: 144px;
   overflow: hidden;
   border: 1px solid rgba(76, 54, 39, 0.12);
@@ -14408,10 +14431,11 @@ body,
 
 .admin-stat-icon {
   grid-row: span 3;
+  position: relative;
+  z-index: 3;
   width: 52px;
   height: 52px;
   border-radius: 50%;
-  margin-right: 0.7rem;
   background: rgba(86, 129, 106, 0.16);
   color: var(--ops-olive);
 }
@@ -14432,6 +14456,10 @@ body,
 }
 
 .admin-job-stat > span:not(.admin-stat-icon) {
+  position: relative;
+  z-index: 3;
+  min-width: 0;
+  padding-right: 4.75rem;
   color: rgba(46, 36, 30, 0.72);
   font-size: 0.9rem;
   font-weight: 800;
@@ -14440,6 +14468,10 @@ body,
 }
 
 .admin-job-stat strong {
+  position: relative;
+  z-index: 4;
+  min-width: 0;
+  padding-right: 4.75rem;
   color: #120e0c;
   font-family: "Instrument Serif", Georgia, serif;
   font-size: clamp(2.35rem, 3.2vw, 3.2rem);
@@ -14448,18 +14480,24 @@ body,
 }
 
 .admin-job-stat p {
+  position: relative;
+  z-index: 3;
+  min-width: 0;
+  padding-right: 4.75rem;
   color: rgba(50, 39, 32, 0.6);
   font-size: 0.82rem;
 }
 
 .admin-stat-sparkline {
   position: absolute;
-  right: 1.1rem;
-  bottom: 1rem;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 1;
   width: 58px;
   height: 42px;
   color: currentColor;
   opacity: 0.78;
+  pointer-events: none;
 }
 
 .admin-stat-sparkline path {
@@ -14544,13 +14582,18 @@ body,
 }
 
 .admin-job-toolbar select {
+  appearance: none;
   min-height: 44px;
   border: 1px solid rgba(81, 58, 43, 0.13);
   border-radius: 12px;
   outline: 0;
-  background: rgba(255, 255, 255, 0.58);
+  background-color: rgba(255, 255, 255, 0.58);
+  background-image: url("data:image/svg+xml,%3Csvg width='14' height='14' viewBox='0 0 14 14' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3.5 5.25L7 8.75L10.5 5.25' stroke='%235b4032' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 1rem center;
+  background-repeat: no-repeat;
+  background-size: 0.875rem;
   color: #5b4032;
-  padding: 0 2.1rem 0 0.9rem;
+  padding: 0 3rem 0 0.9rem;
   font-weight: 700;
 }
 
@@ -14801,6 +14844,43 @@ body,
   }
 }
 
+@media (max-width: 1100px) {
+  .admin-jobs-header {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: clamp(1rem, 2vw, 1.6rem);
+    padding-bottom: 1.1rem;
+  }
+
+  .admin-hero-copy {
+    max-width: 42rem;
+  }
+
+  .admin-jobs-header h1 {
+    font-size: clamp(4.2rem, 9vw, 6.2rem);
+  }
+
+  .admin-token-panel {
+    width: 100%;
+  }
+
+  .admin-token-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 0.55rem 0.8rem;
+  }
+
+  .admin-token-row {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+
+  .admin-refresh-button,
+  .admin-forget-token-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}
+
 @media (max-width: 900px) {
   .admin-ops-sidebar {
     position: static;
@@ -14846,7 +14926,8 @@ body,
     grid-template-columns: minmax(0, 1fr) 44px;
   }
 
-  .admin-refresh-button {
+  .admin-refresh-button,
+  .admin-forget-token-button {
     grid-column: 1 / -1;
     width: 100%;
   }

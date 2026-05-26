@@ -23,6 +23,17 @@ const PublicOnlyRoute = ({ children }: { children: ReactNode }) => {
   return isAuthenticated ? <Navigate to="/dashboard" replace /> : children;
 };
 
+const HomeRoute = () => {
+  const { isAuthenticated } = useAuth();
+  return isAuthenticated ? (
+    <Navigate to="/dashboard" replace />
+  ) : (
+    <PublicShell>
+      <LandingPage />
+    </PublicShell>
+  );
+};
+
 const UnknownRoute = () => {
   const { isAuthenticated } = useAuth();
   return <Navigate to={isAuthenticated ? "/dashboard" : "/login"} replace />;
@@ -34,7 +45,7 @@ function App() {
       <BrowserRouter>
         <MotionDirector />
         <Routes>
-          <Route path="/" element={<PublicShell><LandingPage /></PublicShell>} />
+          <Route path="/" element={<HomeRoute />} />
           <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
           <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
           <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
