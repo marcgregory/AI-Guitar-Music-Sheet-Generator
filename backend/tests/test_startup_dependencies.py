@@ -23,6 +23,7 @@ def test_startup_health_uses_local_processing_by_default(caplog):
     }
     assert "AUDIO_PROCESSING_MODE=local" in caplog.text
     assert "MODAL_TRIGGER_URL configured=False" in caplog.text
+    assert "Admin API configured=False" in caplog.text
     assert "Redis configured=True" in caplog.text
     assert "Celery enabled=True" in caplog.text
 
