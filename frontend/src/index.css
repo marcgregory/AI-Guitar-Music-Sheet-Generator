@@ -14529,7 +14529,7 @@ body,
   gap: 1rem;
   min-width: 0;
   min-height: 406px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid rgba(76, 54, 39, 0.12);
   border-radius: 22px;
   background:
@@ -14581,20 +14581,170 @@ body,
   gap: 0.7rem;
 }
 
-.admin-job-toolbar select {
+.admin-filter-select-shell {
+  position: relative;
+  min-width: 156px;
+}
+
+.admin-filter-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   appearance: none;
-  min-height: 44px;
-  border: 1px solid rgba(81, 58, 43, 0.13);
-  border-radius: 12px;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.admin-job-toolbar .admin-filter-select {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 52px;
+  border: 1px solid rgba(120, 98, 72, 0.16);
+  border-radius: 18px;
   outline: 0;
-  background-color: rgba(255, 255, 255, 0.58);
-  background-image: url("data:image/svg+xml,%3Csvg width='14' height='14' viewBox='0 0 14 14' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3.5 5.25L7 8.75L10.5 5.25' stroke='%235b4032' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-position: right 1rem center;
-  background-repeat: no-repeat;
-  background-size: 0.875rem;
-  color: #5b4032;
-  padding: 0 3rem 0 0.9rem;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 248, 237, 0.64)),
+    rgba(255, 255, 255, 0.72);
+  color: #5f4633;
+  padding: 0 3.25rem 0 1.125rem;
+  font-size: 0.9rem;
   font-weight: 700;
+  letter-spacing: 0;
+  text-align: left;
+  text-rendering: geometricPrecision;
+  box-shadow:
+    0 8px 24px rgba(89, 64, 38, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+  backdrop-filter: blur(10px);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease,
+    background 180ms ease;
+}
+
+.admin-job-toolbar .admin-filter-select:hover {
+  transform: translateY(-1px);
+  border-color: rgba(120, 98, 72, 0.28);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(255, 247, 234, 0.72)),
+    rgba(255, 255, 255, 0.8);
+  box-shadow:
+    0 12px 30px rgba(89, 64, 38, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.admin-job-toolbar .admin-filter-select:focus-visible {
+  border-color: rgba(166, 111, 52, 0.45);
+  box-shadow:
+    0 0 0 4px rgba(166, 111, 52, 0.12),
+    0 12px 30px rgba(89, 64, 38, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.admin-job-toolbar .admin-filter-select span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-filter-chevron {
+  position: absolute;
+  top: 50%;
+  right: 1rem;
+  width: 1.12rem;
+  height: 1.12rem;
+  color: rgba(95, 70, 51, 0.72);
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition:
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.admin-filter-select-shell.is-open .admin-filter-chevron {
+  color: rgba(126, 75, 34, 0.84);
+  transform: translateY(-50%) rotate(180deg);
+}
+
+.admin-filter-menu {
+  position: absolute;
+  top: calc(100% + 0.48rem);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 0.2rem;
+  width: max(100%, 222px);
+  max-width: min(82vw, 280px);
+  max-height: 18rem;
+  overflow: auto;
+  border: 1px solid rgba(120, 98, 72, 0.15);
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(255, 248, 237, 0.78)),
+    rgba(255, 251, 244, 0.86);
+  padding: 0.4rem;
+  box-shadow:
+    0 24px 54px rgba(74, 48, 27, 0.18),
+    0 1px 0 rgba(255, 255, 255, 0.88) inset;
+  backdrop-filter: blur(18px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top right;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.admin-filter-select-shell.is-open .admin-filter-menu {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.admin-job-toolbar .admin-filter-option {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 42px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: rgba(71, 50, 35, 0.78);
+  padding: 0.72rem 0.86rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
+}
+
+.admin-job-toolbar .admin-filter-option:hover,
+.admin-job-toolbar .admin-filter-option:focus-visible,
+.admin-job-toolbar .admin-filter-option.is-active {
+  outline: 0;
+  background: rgba(166, 111, 52, 0.12);
+  color: #5f3920;
+  transform: none;
+}
+
+.admin-job-toolbar .admin-filter-option.is-selected {
+  background:
+    linear-gradient(135deg, rgba(166, 111, 52, 0.16), rgba(255, 247, 232, 0.58));
+  color: #6a3d1d;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.78) inset;
 }
 
 .admin-job-toolbar span {
@@ -14938,8 +15088,16 @@ body,
     flex-direction: column;
   }
 
-  .admin-job-toolbar select,
+  .admin-filter-select-shell,
   .admin-job-toolbar button {
     width: 100%;
+  }
+
+  .admin-filter-menu {
+    right: auto;
+    left: 0;
+    width: 100%;
+    max-width: 100%;
+    transform-origin: top left;
   }
 }

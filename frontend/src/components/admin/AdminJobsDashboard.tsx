@@ -1,10 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AlertTriangle,
   Activity,
   AudioLines,
   BarChart3,
   BriefcaseBusiness,
+  ChevronDown,
   Clock3,
   ClipboardCheck,
   Crown,
@@ -29,6 +36,18 @@ type JobFilter = "all" | "queued" | "processing" | "rate_limited";
 type AdminJobsView = "active" | "history";
 type HistoryStatusFilter = "all" | AdminJobHistoryStatus;
 type HistoryLimit = 25 | 50 | 100;
+
+type AdminFilterOption<T extends string | number> = {
+  label: string;
+  value: T;
+};
+
+type AdminFilterSelectProps<T extends string | number> = {
+  "aria-label": string;
+  options: AdminFilterOption<T>[];
+  value: T;
+  onChange: (value: T) => void;
+};
 
 const emptyJobsResponse: AdminJobsResponse = {
   jobs: [],
@@ -93,6 +112,156 @@ const getJobTone = (job: AdminJob): string => {
 
 const statusLabel = (value?: string | null): string =>
   value ? value.replaceAll("_", " ") : "unknown";
+
+const AdminFilterSelect = <T extends string | number>({
+  "aria-label": ariaLabel,
+  options,
+  value,
+  onChange,
+}: AdminFilterSelectProps<T>) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(() =>
+    Math.max(
+      0,
+      options.findIndex((option) => option.value === value),
+    ),
+  );
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const selectedOption =
+    options.find((option) => option.value === value) ?? options[0];
+  const listboxId = `admin-filter-${ariaLabel
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")}`;
+
+  useEffect(() => {
+    setActiveIndex(
+      Math.max(
+        0,
+        options.findIndex((option) => option.value === value),
+      ),
+    );
+  }, [options, value]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [isOpen]);
+
+  const commitValue = (nextIndex: number) => {
+    const nextOption = options[nextIndex];
+    if (!nextOption) return;
+    onChange(nextOption.value);
+    setIsOpen(false);
+    buttonRef.current?.focus();
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = (activeIndex + direction + options.length) % options.length;
+      setActiveIndex(nextIndex);
+      setIsOpen(true);
+      return;
+    }
+
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      setActiveIndex(event.key === "Home" ? 0 : options.length - 1);
+      setIsOpen(true);
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (isOpen) {
+        commitValue(activeIndex);
+      } else {
+        setIsOpen(true);
+      }
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setIsOpen(false);
+    }
+  };
+
+  return (
+    <div
+      className={`admin-filter-select-shell ${isOpen ? "is-open" : ""}`}
+      ref={rootRef}
+    >
+      <select
+        className="admin-filter-native"
+        value={value}
+        onChange={(event) => onChange(event.target.value as T)}
+        aria-label={ariaLabel}
+        tabIndex={-1}
+      >
+        {options.map((option) => (
+          <option key={String(option.value)} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="admin-filter-select"
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-label={`${ariaLabel}: ${selectedOption.label}`}
+        aria-controls={listboxId}
+        aria-activedescendant={`${listboxId}-${activeIndex}`}
+        onClick={() => setIsOpen((current) => !current)}
+        onKeyDown={handleKeyDown}
+      >
+        <span>{selectedOption.label}</span>
+        <ChevronDown className="admin-filter-chevron" aria-hidden="true" />
+      </button>
+      <div
+        id={listboxId}
+        className="admin-filter-menu"
+        role="listbox"
+        aria-label={`${ariaLabel} options`}
+        aria-hidden={!isOpen}
+      >
+        {options.map((option, index) => {
+          const isSelected = option.value === value;
+          const isActive = index === activeIndex;
+          return (
+            <button
+              key={String(option.value)}
+              id={`${listboxId}-${index}`}
+              type="button"
+              className={`admin-filter-option ${isSelected ? "is-selected" : ""} ${
+                isActive ? "is-active" : ""
+              }`}
+              role="option"
+              aria-selected={isSelected}
+              tabIndex={isOpen ? 0 : -1}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => commitValue(index)}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 
 const AdminJobsDashboard: React.FC = () => {
   const [adminToken, setAdminToken] = useState(
@@ -420,49 +589,53 @@ const AdminJobsDashboard: React.FC = () => {
             <div className="admin-job-toolbar">
               {isViewingHistory ? (
                 <>
-                  <select
+                  <AdminFilterSelect
                     value={historyStatusFilter}
-                    onChange={(event) =>
+                    onChange={(value) =>
                       setHistoryStatusFilter(
-                        event.target.value as HistoryStatusFilter,
+                        value as HistoryStatusFilter,
                       )
                     }
                     aria-label="Filter history by status"
-                  >
-                    <option value="all">All</option>
-                    <option value="completed">Completed</option>
-                    <option value="completed_with_warning">
-                      Completed with warning
-                    </option>
-                    <option value="failed">Failed</option>
-                  </select>
-                  <select
+                    options={[
+                      { value: "all", label: "All" },
+                      { value: "completed", label: "Completed" },
+                      {
+                        value: "completed_with_warning",
+                        label: "Completed with warning",
+                      },
+                      { value: "failed", label: "Failed" },
+                    ]}
+                  />
+                  <AdminFilterSelect
                     value={historyLimit}
-                    onChange={(event) =>
-                      setHistoryLimit(Number(event.target.value) as HistoryLimit)
+                    onChange={(value) =>
+                      setHistoryLimit(Number(value) as HistoryLimit)
                     }
                     aria-label="Limit history jobs"
-                  >
-                    <option value={25}>25</option>
-                    <option value={50}>50</option>
-                    <option value={100}>100</option>
-                  </select>
+                    options={[
+                      { value: 25, label: "25" },
+                      { value: 50, label: "50" },
+                      { value: 100, label: "100" },
+                    ]}
+                  />
                   <span>{jobHistoryResponse.count} jobs</span>
                 </>
               ) : (
                 <>
-                  <select
+                  <AdminFilterSelect
                     value={jobFilter}
-                    onChange={(event) =>
-                      setJobFilter(event.target.value as JobFilter)
+                    onChange={(value) =>
+                      setJobFilter(value as JobFilter)
                     }
                     aria-label="Filter jobs by status"
-                  >
-                    <option value="all">All Status</option>
-                    <option value="queued">Queued</option>
-                    <option value="processing">Processing</option>
-                    <option value="rate_limited">Rate Limited</option>
-                  </select>
+                    options={[
+                      { value: "all", label: "All Status" },
+                      { value: "queued", label: "Queued" },
+                      { value: "processing", label: "Processing" },
+                      { value: "rate_limited", label: "Rate Limited" },
+                    ]}
+                  />
                   <span>{visibleJobs.length} jobs</span>
                 </>
               )}
