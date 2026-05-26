@@ -31,6 +31,7 @@ import audioService, {
   type AdminJobHistoryStatus,
   type AdminJobsResponse,
 } from "../../services/audioService";
+import { API_BASE_URL } from "../../services/apiClient";
 import { ADMIN_TOKEN_STORAGE_KEY } from "../../utils/adminAccess";
 type JobFilter = "all" | "queued" | "processing" | "rate_limited";
 type AdminJobsView = "active" | "history";
@@ -76,13 +77,62 @@ const formatDateTime = (value?: string | null): string => {
   return date ? date.toLocaleString() : "Not set";
 };
 
-const formatAdminJobsError = (detail: unknown, fallback: string): string => {
-  if (detail === "Admin API is not configured.") {
-    return "Admin API is disabled on this backend. Set ADMIN_API_TOKEN to enable it.";
+const formatAdminJobsError = (error: unknown, fallback: string): string => {
+  const err = error as {
+    code?: string;
+    message?: string;
+    request?: unknown;
+    response?: {
+      status?: number;
+      data?: {
+        detail?: unknown;
+      };
+    };
+  };
+  const status = err.response?.status;
+  const detail = err.response?.data?.detail;
+
+  if (status === 403) {
+    return "Invalid admin token (403). Use Forget admin token, then paste the current backend ADMIN_API_TOKEN.";
   }
+
+  if (detail === "Admin API is not configured.") {
+    return "Admin API is disabled on this backend (503). Set ADMIN_API_TOKEN and restart the backend so startup logs show Admin API configured=True.";
+  }
+
+  if (status === 503) {
+    return "Admin API is unavailable on this backend (503). Check ADMIN_API_TOKEN and restart the backend.";
+  }
+
+  if (
+    err.code === "ECONNABORTED" ||
+    /timeout/i.test(err.message ?? "")
+  ) {
+    return `Admin jobs request timed out. Confirm the backend is running at ${API_BASE_URL} and try again.`;
+  }
+
+  if (err.request && !err.response) {
+    return `Could not reach the admin API at ${API_BASE_URL}. Check that the backend is running and CORS allows this frontend.`;
+  }
+
   return typeof detail === "string" && detail.trim().length > 0
-    ? detail
+    ? `${detail}${status ? ` (${status})` : ""}`
     : fallback;
+};
+
+const isTransientAdminJobsError = (error: unknown): boolean => {
+  const err = error as {
+    code?: string;
+    message?: string;
+    request?: unknown;
+    response?: unknown;
+  };
+
+  return Boolean(
+    err.code === "ECONNABORTED" ||
+      /timeout/i.test(err.message ?? "") ||
+      (err.request && !err.response),
+  );
 };
 
 const formatRetryWindow = (value?: string | null): string => {
@@ -290,31 +340,49 @@ const AdminJobsDashboard: React.FC = () => {
   const [historyStatusFilter, setHistoryStatusFilter] =
     useState<HistoryStatusFilter>("all");
   const [historyLimit, setHistoryLimit] = useState<HistoryLimit>(50);
+  const isJobsRequestInFlightRef = useRef(false);
+  const lastSuccessfulJobsLoadRef = useRef<Date | null>(null);
 
   const tokenReady = adminToken.trim().length > 0;
 
-  const loadJobs = useCallback(async () => {
+  const loadJobs = useCallback(async (options?: { background?: boolean }) => {
     const trimmedToken = adminToken.trim();
     if (!trimmedToken) {
       setError("Enter the admin token configured on the backend.");
       return;
     }
+    if (isJobsRequestInFlightRef.current) return;
 
+    const isBackground = Boolean(options?.background);
+    isJobsRequestInFlightRef.current = true;
     setIsLoading(true);
-    setError(null);
+    if (!isBackground) {
+      setError(null);
+    }
     try {
       window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmedToken);
       const response = await audioService.listAdminJobs(trimmedToken);
+      const loadedAt = new Date();
       setJobsResponse(response);
-      setLastLoadedAt(new Date());
+      setLastLoadedAt(loadedAt);
+      lastSuccessfulJobsLoadRef.current = loadedAt;
+      setError(null);
     } catch (err: any) {
+      if (
+        isBackground &&
+        lastSuccessfulJobsLoadRef.current &&
+        isTransientAdminJobsError(err)
+      ) {
+        return;
+      }
       setError(
         formatAdminJobsError(
-          err.response?.data?.detail,
+          err,
           "Could not load admin jobs. Check the token and backend configuration.",
         ),
       );
     } finally {
+      isJobsRequestInFlightRef.current = false;
       setIsLoading(false);
     }
   }, [adminToken]);
@@ -340,7 +408,7 @@ const AdminJobsDashboard: React.FC = () => {
     } catch (err: any) {
       setError(
         formatAdminJobsError(
-          err.response?.data?.detail,
+          err,
           "Could not load job history. Check the token and backend configuration.",
         ),
       );
@@ -362,8 +430,8 @@ const AdminJobsDashboard: React.FC = () => {
     if (!tokenReady) return;
     void loadJobs();
     const intervalId = window.setInterval(() => {
-      void loadJobs();
-    }, 10000);
+      void loadJobs({ background: true });
+    }, 30000);
     return () => window.clearInterval(intervalId);
   }, [loadJobs, tokenReady]);
 
@@ -533,7 +601,9 @@ const AdminJobsDashboard: React.FC = () => {
               <button
                 type="button"
                 className="admin-refresh-button"
-                onClick={isViewingHistory ? loadJobHistory : loadJobs}
+                onClick={() => {
+                  void (isViewingHistory ? loadJobHistory() : loadJobs());
+                }}
                 disabled={isViewingHistory ? isHistoryLoading : isLoading}
               >
                 <RefreshCw aria-hidden="true" />
@@ -659,7 +729,9 @@ const AdminJobsDashboard: React.FC = () => {
               )}
               <button
                 type="button"
-                onClick={isViewingHistory ? loadJobHistory : loadJobs}
+                onClick={() => {
+                  void (isViewingHistory ? loadJobHistory() : loadJobs());
+                }}
                 disabled={isViewingHistory ? isHistoryLoading : isLoading}
                 aria-label={isViewingHistory ? "Refresh job history" : "Refresh jobs"}
               >

@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel
 from urllib.parse import parse_qs, urlsplit
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 import random
 
 from .... import db, core, models
@@ -60,6 +61,8 @@ TERMINAL_TRANSCRIPTION_STATUSES = (
 )
 ESTIMATED_SECONDS_PER_SELECTED_STEM_JOB = 300
 DEMO_AUDIO_URL = "/demo/example-guitar-riff.wav"
+CELERY_INSPECT_FAILURE_LOG_COOLDOWN_SECONDS = 30.0
+_last_celery_inspect_failure_log_at: float | None = None
 STEM_READY_MESSAGE = "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
 YOUTUBE_COOKIE_REJECTED_DETAIL = (
     "Cookies were loaded, but YouTube rejected them. Re-export fresh cookies, add YOUTUBE_PO_TOKEN, or upload audio directly."
@@ -1035,12 +1038,21 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
 
 
 def _active_celery_task_ids() -> set[str] | None:
+    global _last_celery_inspect_failure_log_at
     try:
         active = celery_app.control.inspect(timeout=1.0).active() or {}
     except Exception as exc:
-        logger.info("Could not inspect active Celery tasks during stale cleanup: %s", exc)
+        now = monotonic()
+        if (
+            _last_celery_inspect_failure_log_at is None
+            or now - _last_celery_inspect_failure_log_at
+            >= CELERY_INSPECT_FAILURE_LOG_COOLDOWN_SECONDS
+        ):
+            logger.info("Could not inspect active Celery tasks during stale cleanup: %s", exc)
+            _last_celery_inspect_failure_log_at = now
         return None
 
+    _last_celery_inspect_failure_log_at = None
     task_ids: set[str] = set()
     for tasks in active.values():
         for task in tasks or []:
@@ -1052,27 +1064,14 @@ def _active_celery_task_ids() -> set[str] | None:
 
 def _cleanup_stale_active_transcription_jobs(db_session: Session) -> int:
     cutoff = _stale_active_cutoff()
-    active_task_ids = set() if _processing_mode() == "modal" else _active_celery_task_ids()
     active_jobs = (
         db_session.query(models.Transcription)
         .filter(models.Transcription.is_deleted == False)
         .filter(models.Transcription.processing_status.in_(ACTIVE_TRANSCRIPTION_STATUSES))
         .all()
     )
-    stale_jobs = []
+    stale_candidates = []
     for transcription in active_jobs:
-        if (
-            active_task_ids is not None
-            and transcription.celery_task_id
-            and str(transcription.celery_task_id) in active_task_ids
-        ):
-            logger.info(
-                "Skipping stale cleanup for transcription %s because Celery task %s is active",
-                transcription.id,
-                transcription.celery_task_id,
-            )
-            continue
-
         last_activity = (
             _as_aware_utc(transcription.modal_dispatched_at)
             or _as_aware_utc(transcription.updated_at)
@@ -1086,7 +1085,40 @@ def _cleanup_stale_active_transcription_jobs(db_session: Session) -> int:
             continue
         if last_activity >= cutoff:
             continue
+        stale_candidates.append(transcription)
+    if not stale_candidates:
+        return 0
+
+    processing_mode = _processing_mode()
+    active_task_ids: set[str] | None = set()
+    if processing_mode != "modal" and any(job.celery_task_id for job in stale_candidates):
+        active_task_ids = _active_celery_task_ids()
+
+    stale_jobs = []
+    for transcription in stale_candidates:
+        if not transcription.celery_task_id:
+            stale_jobs.append(transcription)
+            continue
+
+        task_id = str(transcription.celery_task_id)
+        if active_task_ids is None:
+            logger.info(
+                "Skipping stale cleanup for transcription %s because Celery task %s could not be inspected",
+                transcription.id,
+                transcription.celery_task_id,
+            )
+            continue
+
+        if task_id in active_task_ids:
+            logger.info(
+                "Skipping stale cleanup for transcription %s because Celery task %s is active",
+                transcription.id,
+                transcription.celery_task_id,
+            )
+            continue
+
         stale_jobs.append(transcription)
+
     if not stale_jobs:
         return 0
 

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -746,6 +747,102 @@ def test_local_status_response_masks_stale_modal_required_without_mutating_row()
         assert stored.modal_retry_at is not None
     finally:
         session.close()
+
+
+def test_status_cleanup_skips_celery_inspect_when_no_active_job_is_stale():
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_timeout = config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "fresh-active-owner", "fresh-active@example.com")
+        transcription = models.Transcription(
+            title="Fresh active row",
+            user_id=owner.id,
+            selected_stem="other",
+            is_processed=False,
+            processing_status="processing",
+            celery_task_id="fresh-task-id",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS = 1800
+    finally:
+        session.close()
+
+    try:
+        with patch(
+            "app.api.v1.endpoints.audio._active_celery_task_ids"
+        ) as active_task_ids_mock:
+            response = client.get(
+                f"/api/v1/audio/{transcription_id}/status",
+                headers=auth_headers("fresh-active-owner"),
+            )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS = original_timeout
+
+    assert response.status_code == 200
+    active_task_ids_mock.assert_not_called()
+
+
+def test_stale_cleanup_throttles_repeated_celery_inspect_failure_logs(caplog):
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_timeout = config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS
+    original_last_log = audio_endpoint._last_celery_inspect_failure_log_at
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "stale-celery-owner", "stale-celery@example.com")
+        transcription = models.Transcription(
+            title="Stale celery row",
+            user_id=owner.id,
+            selected_stem="other",
+            is_processed=False,
+            processing_status="processing",
+            celery_task_id="stale-task-id",
+            created_at=datetime.utcnow() - timedelta(hours=2),
+            updated_at=datetime.utcnow() - timedelta(hours=2),
+        )
+        session.add(transcription)
+        session.commit()
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS = 1
+        audio_endpoint._last_celery_inspect_failure_log_at = None
+
+        with patch(
+            "app.api.v1.endpoints.audio.celery_app.control.inspect",
+            side_effect=RuntimeError("redis refused"),
+        ):
+            with caplog.at_level(logging.INFO, logger="app.api.v1.endpoints.audio"):
+                first_cleanup_count = (
+                    audio_endpoint._cleanup_stale_active_transcription_jobs(session)
+                )
+                second_cleanup_count = (
+                    audio_endpoint._cleanup_stale_active_transcription_jobs(session)
+                )
+
+        assert first_cleanup_count == 0
+        assert second_cleanup_count == 0
+
+        session.refresh(transcription)
+        assert transcription.processing_status == "processing"
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS = original_timeout
+        audio_endpoint._last_celery_inspect_failure_log_at = original_last_log
+        session.close()
+
+    inspect_failure_logs = [
+        record
+        for record in caplog.records
+        if "Could not inspect active Celery tasks during stale cleanup" in record.message
+    ]
+    assert len(inspect_failure_logs) == 1
 
 
 def test_modal_status_response_preserves_modal_required_fields():

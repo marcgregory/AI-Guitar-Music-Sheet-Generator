@@ -480,6 +480,19 @@ MVP scope recommendation:
   - Backend `GET /api/v1/admin/jobs` lists active `pending` / `queued` / `processing` jobs and Modal retry jobs with selected stem, Modal request id, dispatch/status detail, retry count, retry time, owner, and last error.
   - Endpoint is protected by `ADMIN_API_TOKEN` via `X-Admin-Token` and requires no schema migration.
   - Frontend `/admin/jobs` adds a compact operations dashboard with token entry, active/processing/queued/rate-limited counters, refresh, and active job table.
+- Admin jobs runbook:
+  - Set `ADMIN_API_TOKEN` in `backend/.env.local` for local development or in the deployment environment for hosted backends, then restart the backend.
+  - Confirm backend startup logs include `Admin API configured=True`.
+  - Open the frontend dashboard route `/admin/jobs` and paste the same token into the Admin Token field.
+  - The browser dashboard route is `/admin/jobs`; the backend API route it calls is `/api/v1/admin/jobs`.
+  - Troubleshooting: `Admin API configured=False` means the backend token is missing or the backend was not restarted after setting it.
+  - Troubleshooting: `Admin API is disabled on this backend. Set ADMIN_API_TOKEN to enable it.` means the backend admin API is still disabled.
+  - Troubleshooting: `Invalid admin token.` means the pasted token does not match the backend `ADMIN_API_TOKEN`.
+- [x] Run local admin dashboard access smoke:
+  - Backend `/health` responded healthy on port 8000 and frontend `/admin/jobs` served the React app on port 5173.
+  - Live admin API calls to `/api/v1/admin/jobs` and `/api/v1/admin/jobs/history` succeeded using the configured local `ADMIN_API_TOKEN`; token value was not logged.
+  - Frontend route coverage passed for logged-out protection and authenticated `/admin/jobs` access; dashboard component coverage passed for empty-token hint, disabled-backend message, active jobs, history, and forgetting the saved admin token.
+  - Browser automation note: the in-app browser was unavailable in this session, so this smoke used HTTP checks plus frontend route/component tests rather than a live click-through screenshot.
 - [x] Run real hosted Modal smoke after deploying current env vars:
   - Hosted smoke passed on 2026-05-26 against `https://ai-guitar-music-sheet-generator.onrender.com`.
   - `/health/deployment` reported `ready=true` and `proceed=true` with checks passing for `processing_backend`, `modal`, `worker_api_token`, `cloudinary`, `database`, `schema`, and `alembic`.
@@ -494,7 +507,7 @@ MVP scope recommendation:
 - [ ] Configure SSL/TLS with Let's Encrypt via ingress
 - [ ] Set up automated backups for database and storage
 - [ ] Implement security scanning (OWASP ZAP, dependency checks)
-- [ ] Create documentation for administrators and developers
+- [ ] Create broader documentation for administrators and developers
 - [ ] Prepare privacy policy and terms of service
 - [ ] Set up error tracking (Sentry or similar)
 - [ ] Conduct user acceptance testing with musician community

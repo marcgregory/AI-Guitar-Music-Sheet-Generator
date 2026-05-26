@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdminJobsDashboard from "./AdminJobsDashboard";
 import audioService from "../../services/audioService";
@@ -97,7 +97,10 @@ describe("AdminJobsDashboard", () => {
 
   it("shows an actionable message when the backend admin API is disabled", async () => {
     mockedAudioService.listAdminJobs.mockRejectedValue({
-      response: { data: { detail: "Admin API is not configured." } },
+      response: {
+        status: 503,
+        data: { detail: "Admin API is not configured." },
+      },
     });
 
     window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
@@ -105,9 +108,118 @@ describe("AdminJobsDashboard", () => {
 
     expect(
       await screen.findByText(
-        "Admin API is disabled on this backend. Set ADMIN_API_TOKEN to enable it.",
+        "Admin API is disabled on this backend (503). Set ADMIN_API_TOKEN and restart the backend so startup logs show Admin API configured=True.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("shows a stale-token hint when the admin token is rejected", async () => {
+    mockedAudioService.listAdminJobs.mockRejectedValue({
+      response: {
+        status: 403,
+        data: { detail: "Invalid admin token." },
+      },
+    });
+
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "old-admin-token");
+    render(<AdminJobsDashboard />);
+
+    expect(
+      await screen.findByText(
+        "Invalid admin token (403). Use Forget admin token, then paste the current backend ADMIN_API_TOKEN.",
+      ),
+    ).toBeInTheDocument();
+    expect(mockedAudioService.listAdminJobs).toHaveBeenCalledWith(
+      "old-admin-token",
+    );
+  });
+
+  it("shows the backend URL when the admin request times out", async () => {
+    mockedAudioService.listAdminJobs.mockRejectedValue({
+      code: "ECONNABORTED",
+      message: "timeout of 10000ms exceeded",
+    });
+
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
+    render(<AdminJobsDashboard />);
+
+    expect(
+      await screen.findByText(
+        "Admin jobs request timed out. Confirm the backend is running at http://localhost:8000/api/v1 and try again.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a network and CORS hint when the admin API cannot be reached", async () => {
+    mockedAudioService.listAdminJobs.mockRejectedValue({
+      request: {},
+    });
+
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
+    render(<AdminJobsDashboard />);
+
+    expect(
+      await screen.findByText(
+        "Could not reach the admin API at http://localhost:8000/api/v1. Check that the backend is running and CORS allows this frontend.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps backend detail text for generic admin errors", async () => {
+    mockedAudioService.listAdminJobs.mockRejectedValue({
+      response: {
+        status: 500,
+        data: { detail: "Database connection failed." },
+      },
+    });
+
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
+    render(<AdminJobsDashboard />);
+
+    expect(
+      await screen.findByText("Database connection failed. (500)"),
+    ).toBeInTheDocument();
+  });
+
+  it("does not flash a timeout alert for a background refresh after a successful load", async () => {
+    let intervalHandler: TimerHandler | undefined;
+    const setIntervalSpy = vi
+      .spyOn(window, "setInterval")
+      .mockImplementation(((handler: TimerHandler, timeout?: number) => {
+        if (timeout === 30000) {
+          intervalHandler = handler;
+        }
+        return 1 as unknown as ReturnType<typeof window.setInterval>;
+      }) as unknown as typeof window.setInterval);
+    const clearIntervalSpy = vi
+      .spyOn(window, "clearInterval")
+      .mockImplementation(() => undefined);
+    mockedAudioService.listAdminJobs
+      .mockResolvedValueOnce(mockJobsResponse)
+      .mockRejectedValueOnce({
+        code: "ECONNABORTED",
+        message: "timeout of 15000ms exceeded",
+      });
+
+    try {
+      window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
+      render(<AdminJobsDashboard />);
+
+      expect(await screen.findByText("Active stem job")).toBeInTheDocument();
+
+      expect(intervalHandler).toEqual(expect.any(Function));
+      await act(async () => {
+        await (intervalHandler as () => void)();
+      });
+
+      await waitFor(() => {
+        expect(mockedAudioService.listAdminJobs).toHaveBeenCalledTimes(2);
+      });
+      expect(screen.queryByText(/Admin jobs request timed out/i)).not.toBeInTheDocument();
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
   });
 
   it("calls listAdminJobHistory with the selected history status", async () => {
