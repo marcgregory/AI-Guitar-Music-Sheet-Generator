@@ -68,6 +68,7 @@ def build_deployment_health() -> dict[str, Any]:
 
     modal_configured = settings.modal_trigger_url_configured
     worker_token_configured = bool((settings.WORKER_API_TOKEN or "").strip())
+    admin_token_configured = bool((settings.ADMIN_API_TOKEN or "").strip())
     cloudinary_configured = settings.cloudinary_configured
     db_check = _check_database()
     schema_check = _check_schema()
@@ -84,6 +85,10 @@ def build_deployment_health() -> dict[str, Any]:
         "worker_api_token": {
             "ok": worker_token_configured,
             "configured": worker_token_configured,
+        },
+        "admin_api": {
+            "ok": True,
+            "admin_api_configured": admin_token_configured,
         },
         "cloudinary": {
             "ok": cloudinary_configured,

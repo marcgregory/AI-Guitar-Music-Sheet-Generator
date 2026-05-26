@@ -14391,6 +14391,14 @@ body,
   transform: translateY(-1px);
 }
 
+.admin-token-hint {
+  margin: -0.35rem 0 0;
+  color: rgba(55, 41, 32, 0.62);
+  font-size: 0.83rem;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
 .admin-job-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

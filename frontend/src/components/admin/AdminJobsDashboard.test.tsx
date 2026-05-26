@@ -85,6 +85,16 @@ describe("AdminJobsDashboard", () => {
     mockedAudioService.listAdminJobHistory.mockResolvedValue(mockHistoryResponse);
   });
 
+  it("shows a short backend token hint before an admin token is saved", () => {
+    render(<AdminJobsDashboard />);
+
+    expect(
+      screen.getByText(
+        "Enter the backend ADMIN_API_TOKEN to view operations jobs.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("calls listAdminJobHistory with the selected history status", async () => {
     await renderWithSavedToken();
 

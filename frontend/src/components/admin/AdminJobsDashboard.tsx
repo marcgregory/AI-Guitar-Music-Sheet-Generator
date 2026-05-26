@@ -542,6 +542,11 @@ const AdminJobsDashboard: React.FC = () => {
                 Forget admin token
               </button>
             </div>
+            {!tokenReady && (
+              <p className="admin-token-hint">
+                Enter the backend ADMIN_API_TOKEN to view operations jobs.
+              </p>
+            )}
           </div>
         </section>
 
