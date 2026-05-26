@@ -3,6 +3,7 @@ from typing import List
 from urllib.parse import urlsplit
 
 LOCAL_ENVIRONMENTS = {"development", "local", "test"}
+PRODUCTION_ENVIRONMENTS = {"production", "prod", "staging"}
 VALID_AUDIO_PROCESSING_MODES = {"local", "modal", "disabled"}
 
 
@@ -38,6 +39,7 @@ class Settings(BaseSettings):
     AUDIO_PROCESSING_MODE: str | None = None
     PROCESSING_MODE: str | None = None
     WORKER_API_TOKEN: str | None = None
+    ADMIN_API_TOKEN: str | None = None
     MODAL_TRIGGER_URL: str | None = None
     MODAL_TOKEN_ID: str | None = None
     MODAL_TOKEN_SECRET: str | None = None
@@ -47,6 +49,9 @@ class Settings(BaseSettings):
     MODAL_MAX_DISPATCH_RETRIES: int = 5
     MODAL_RETRY_SCAN_INTERVAL_SECONDS: int = 30
     MODAL_RETRY_ADMIN_TOKEN: str | None = None
+    ENABLE_USAGE_LIMITS: bool = True
+    MAX_ACTIVE_JOBS_PER_USER: int = 1
+    DAILY_PROCESSING_JOB_LIMIT: int = 5
 
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
@@ -161,6 +166,53 @@ class Settings(BaseSettings):
     @property
     def modal_trigger_url_configured(self) -> bool:
         return bool((self.MODAL_TRIGGER_URL or "").strip())
+
+    @property
+    def cloudinary_configured(self) -> bool:
+        return bool(
+            (self.CLOUDINARY_URL or "").strip()
+            or (
+                (self.CLOUDINARY_CLOUD_NAME or "").strip()
+                and (self.CLOUDINARY_API_KEY or "").strip()
+                and (self.CLOUDINARY_API_SECRET or "").strip()
+            )
+        )
+
+    @property
+    def is_production_environment(self) -> bool:
+        return (self.ENVIRONMENT or "").strip().lower() in PRODUCTION_ENVIRONMENTS
+
+    def validate_deployment_readiness(self) -> None:
+        """Fail fast when a hosted deployment is missing required wiring."""
+        if not self.is_production_environment:
+            return
+
+        missing: list[str] = []
+        try:
+            mode = self.audio_processing_mode
+        except ValueError:
+            mode = None
+
+        if mode != "modal":
+            missing.append("AUDIO_PROCESSING_MODE=modal")
+        if not self.modal_trigger_url_configured:
+            missing.append("MODAL_TRIGGER_URL")
+        if not (self.WORKER_API_TOKEN or "").strip():
+            missing.append("WORKER_API_TOKEN")
+        if not self.cloudinary_configured:
+            missing.append(
+                "CLOUDINARY_URL or CLOUDINARY_CLOUD_NAME/CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET"
+            )
+
+        database_url = (self.DATABASE_URL or "").strip()
+        if not database_url or database_url == "sqlite:///./test.db":
+            missing.append("DATABASE_URL")
+
+        if missing:
+            raise RuntimeError(
+                "Production deployment is not ready. Missing or invalid settings: "
+                + ", ".join(missing)
+            )
 
     @property
     def redis_configured(self) -> bool:

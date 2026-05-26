@@ -52,6 +52,7 @@ secrets = [
 
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
 VALID_LYRICS_LANGUAGES = {"auto", "en", "tl", "ceb", "es", "ja", "ko"}
+WHISPER_FORCED_LANGUAGE_OVERRIDES = {"ceb": None}
 DEFAULT_DEMUCS_MODEL = "htdemucs"
 DEFAULT_TIMEOUT_SECONDS = 1800
 NO_CLEAR_VOCALS_MESSAGE = "No clear vocals detected for lyrics generation."
@@ -77,6 +78,13 @@ def _normalize_lyrics_language(language: str | None = None) -> str:
     if normalized not in VALID_LYRICS_LANGUAGES:
         raise ValueError("lyrics language must be one of: auto, en, tl, ceb, es, ja, ko")
     return normalized
+
+
+def _forced_whisper_language(language: str) -> str | None:
+    return WHISPER_FORCED_LANGUAGE_OVERRIDES.get(
+        language,
+        None if language == "auto" else language,
+    )
 
 def _worker_headers() -> dict[str, str]:
     token = os.environ.get("WORKER_API_TOKEN")
@@ -188,7 +196,7 @@ def _transcribe_vocal_stem(
     runtime = _resolve_whisper_runtime()
     model = _get_whisper_model()
     requested_language = _normalize_lyrics_language(lyrics_language)
-    forced_language = None if requested_language == "auto" else requested_language
+    forced_language = _forced_whisper_language(requested_language)
     segments_iter, info = model.transcribe(
         str(stem_path),
         language=forced_language,

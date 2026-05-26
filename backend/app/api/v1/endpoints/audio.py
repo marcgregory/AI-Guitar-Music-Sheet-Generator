@@ -48,6 +48,7 @@ router = APIRouter()
 VALID_SELECTED_STEMS = {"vocals", "drums", "bass", "other"}
 VALID_LYRICS_LANGUAGES = {"auto", "en", "tl", "ceb", "es", "ja", "ko"}
 ACTIVE_TRANSCRIPTION_STATUSES = ("pending", "queued", "processing")
+USAGE_LIMIT_ACTIVE_STATUSES = ACTIVE_TRANSCRIPTION_STATUSES
 QUEUE_WAITING_STATUSES = ("pending", "queued")
 TERMINAL_TRANSCRIPTION_STATUSES = (
     "stem_ready",
@@ -79,6 +80,10 @@ IMPORTANT_YOUTUBE_COOKIE_NAMES = {
 }
 LOW_YOUTUBE_COOKIE_COUNT_THRESHOLD = 3
 DEFAULT_YOUTUBE_PLAYER_CLIENTS = ("default", "mweb")
+ACTIVE_JOB_LIMIT_DETAIL = (
+    "You already have a transcription job in progress. Please wait for it to finish before starting another."
+)
+DAILY_JOB_LIMIT_DETAIL = "Daily processing limit reached. Please try again tomorrow."
 
 # Define the upload directory relative to the backend package so the location is
 # stable whether uvicorn is launched from the repo root or from backend/.
@@ -95,6 +100,56 @@ from threading import Lock
 
 logger = logging.getLogger(__name__)
 _queue_promotion_lock = Lock()
+
+
+def _log_modal_dispatch_event(
+    event: str,
+    transcription: models.Transcription | None = None,
+    *,
+    transcription_id: int | None = None,
+    selected_stem: str | None = None,
+    job_type: str | None = None,
+    modal_request_id: str | None = None,
+    dispatch_status: str | None = None,
+    retry_count: int | None = None,
+    extra: dict | None = None,
+) -> None:
+    if transcription is not None:
+        transcription_id = transcription.id
+        selected_stem = selected_stem or transcription.selected_stem
+        job_type = job_type or transcription.modal_job_type
+        modal_request_id = modal_request_id or transcription.modal_request_id
+        dispatch_status = dispatch_status or transcription.modal_dispatch_status
+        retry_count = retry_count if retry_count is not None else transcription.modal_retry_count
+
+    logger.info(
+        "modal_dispatch_event event=%s transcription_id=%s selected_stem=%s "
+        "job_type=%s modal_request_id=%s dispatch_status=%s retry_count=%s extra=%s",
+        event,
+        transcription_id,
+        selected_stem,
+        job_type,
+        modal_request_id,
+        dispatch_status,
+        retry_count,
+        extra or {},
+    )
+
+
+def _modal_status_detail(transcription: models.Transcription) -> str | None:
+    dispatch_status = transcription.modal_dispatch_status
+    processing_status = transcription.processing_status
+    if processing_status == "queued" and dispatch_status in {"rate_limited", "retry_queued"}:
+        return "rate_limited_retry"
+    if processing_status == "queued":
+        return "queued_waiting_for_active_job"
+    if processing_status == "processing" and dispatch_status == "dispatched":
+        return "dispatched"
+    if dispatch_status == "completed":
+        return "callback_completed"
+    if dispatch_status == "failed":
+        return "dispatch_failed"
+    return dispatch_status
 
 
 def _run_transcription_locally(
@@ -453,6 +508,12 @@ def _mark_modal_retry(
             f"retry_at={transcription.modal_retry_at}, "
             f"modal_dispatch_status={transcription.modal_dispatch_status}"
         )
+        _log_modal_dispatch_event(
+            "retry_scheduled",
+            transcription,
+            job_type=transcription.modal_job_type,
+            extra={"retry_at": transcription.modal_retry_at.isoformat()},
+        )
     transcription.celery_task_id = None
     session.add(transcription)
     session.commit()
@@ -567,6 +628,11 @@ def _trigger_modal_worker(
             models.Transcription.id == transcription_id
         ).first()
         if not transcription or transcription.is_deleted:
+            _log_modal_dispatch_event(
+                "skipped_missing_or_deleted",
+                transcription_id=transcription_id,
+                job_type=job_type,
+            )
             logger.info(
                 "Modal dispatch skipped because transcription %s is missing or deleted.",
                 transcription_id,
@@ -743,6 +809,7 @@ def _trigger_modal_worker(
         session.add(transcription)
         session.commit()
         session.refresh(transcription)
+        _log_modal_dispatch_event("dispatch_started", transcription, job_type=job_type)
 
         headers = {}
         if core.config.settings.WORKER_API_TOKEN:
@@ -828,6 +895,13 @@ def _trigger_modal_worker(
 
         response.raise_for_status()
         logger.info("Triggered Modal worker for transcription %s", transcription_id)
+        _log_modal_dispatch_event(
+            "dispatch_completed",
+            transcription,
+            job_type=job_type,
+            dispatch_status="dispatched",
+            extra={"status_code": response.status_code},
+        )
         # Metrics: successful dispatch
         logger.info(
             "METRICS: modal_successful_dispatches_total +1"
@@ -960,12 +1034,12 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-def _active_celery_task_ids() -> set[str]:
+def _active_celery_task_ids() -> set[str] | None:
     try:
         active = celery_app.control.inspect(timeout=1.0).active() or {}
     except Exception as exc:
-        logger.warning("Could not inspect active Celery tasks during stale cleanup: %s", exc)
-        return set()
+        logger.info("Could not inspect active Celery tasks during stale cleanup: %s", exc)
+        return None
 
     task_ids: set[str] = set()
     for tasks in active.values():
@@ -982,12 +1056,16 @@ def _cleanup_stale_active_transcription_jobs(db_session: Session) -> int:
     active_jobs = (
         db_session.query(models.Transcription)
         .filter(models.Transcription.is_deleted == False)
-        .filter(models.Transcription.processing_status == "processing")
+        .filter(models.Transcription.processing_status.in_(ACTIVE_TRANSCRIPTION_STATUSES))
         .all()
     )
     stale_jobs = []
     for transcription in active_jobs:
-        if transcription.celery_task_id and str(transcription.celery_task_id) in active_task_ids:
+        if (
+            active_task_ids is not None
+            and transcription.celery_task_id
+            and str(transcription.celery_task_id) in active_task_ids
+        ):
             logger.info(
                 "Skipping stale cleanup for transcription %s because Celery task %s is active",
                 transcription.id,
@@ -2072,6 +2150,10 @@ def _status_payload(
         "queue_position": transcription.queue_position,
         "estimated_wait_time": transcription.estimated_wait_time,
         "modal_dispatch_status": transcription.modal_dispatch_status,
+        "modal_status_detail": _modal_status_detail(transcription),
+        "modal_job_type": transcription.modal_job_type,
+        "modal_request_id": transcription.modal_request_id,
+        "modal_retry_count": transcription.modal_retry_count,
         "modal_retry_at": transcription.modal_retry_at,
         "notes_data": transcription.notes_data,
         "tablature_data": transcription.tablature_data,
@@ -2263,6 +2345,91 @@ def _has_active_transcription(user_id: int, db_session: Session) -> bool:
 
 def _has_global_active_transcription_job(db_session: Session) -> bool:
     return _active_transcription_query(db_session).first() is not None
+
+
+def _usage_limits_enabled() -> bool:
+    return bool(core.config.settings.ENABLE_USAGE_LIMITS)
+
+
+def _user_active_usage_job_count(
+    db_session: Session,
+    user_id: int,
+    *,
+    exclude_transcription_id: int | None = None,
+) -> int:
+    query = (
+        db_session.query(models.Transcription.id)
+        .filter(models.Transcription.user_id == user_id)
+        .filter(models.Transcription.is_demo == False)
+        .filter(models.Transcription.is_deleted == False)
+        .filter(models.Transcription.processing_status.in_(USAGE_LIMIT_ACTIVE_STATUSES))
+    )
+    if exclude_transcription_id is not None:
+        query = query.filter(models.Transcription.id != exclude_transcription_id)
+    return query.count()
+
+
+def _current_utc_day_start() -> datetime:
+    now = datetime.now(timezone.utc)
+    return datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+
+
+def _user_daily_usage_count(db_session: Session, user_id: int) -> int:
+    return (
+        db_session.query(models.UsageEvent.id)
+        .filter(models.UsageEvent.user_id == user_id)
+        .filter(models.UsageEvent.created_at >= _current_utc_day_start())
+        .count()
+    )
+
+
+def _enforce_usage_limits(
+    db_session: Session,
+    current_user: schemas.User,
+    *,
+    exclude_transcription_id: int | None = None,
+) -> None:
+    if not _usage_limits_enabled():
+        return
+
+    max_active = max(0, int(core.config.settings.MAX_ACTIVE_JOBS_PER_USER))
+    if max_active > 0:
+        active_count = _user_active_usage_job_count(
+            db_session,
+            current_user.id,
+            exclude_transcription_id=exclude_transcription_id,
+        )
+        if active_count >= max_active:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=ACTIVE_JOB_LIMIT_DETAIL,
+            )
+
+    daily_limit = max(0, int(core.config.settings.DAILY_PROCESSING_JOB_LIMIT))
+    if daily_limit > 0 and _user_daily_usage_count(db_session, current_user.id) >= daily_limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=DAILY_JOB_LIMIT_DETAIL,
+        )
+
+
+def _record_usage_event(
+    db_session: Session,
+    current_user: schemas.User,
+    action_type: str,
+    *,
+    transcription_id: int | None = None,
+) -> None:
+    if not _usage_limits_enabled():
+        return
+    db_session.add(
+        models.UsageEvent(
+            user_id=current_user.id,
+            transcription_id=transcription_id,
+            action_type=action_type,
+        )
+    )
+    db_session.commit()
 
 
 def _active_queue_count(db_session: Session) -> int:
@@ -2469,7 +2636,13 @@ def _queue_instrument_track_reprocess(
     track: models.InstrumentTrack,
     background_tasks: BackgroundTasks,
     db_session: Session,
+    current_user: schemas.User,
 ) -> models.InstrumentTrack:
+    _enforce_usage_limits(
+        db_session,
+        current_user,
+        exclude_transcription_id=transcription.id,
+    )
     _prepare_track_reprocess(transcription, track, db_session)
     # Track reprocessing is scoped to InstrumentTrack. Keep the parent
     # transcription viewable so the dashboard and result page do not treat this
@@ -2491,6 +2664,13 @@ def _queue_instrument_track_reprocess(
         db_session.commit()
         db_session.refresh(track)
         raise
+    _record_usage_event(
+        db_session,
+        current_user,
+        "track_reprocess",
+        transcription_id=transcription.id,
+    )
+    db_session.refresh(track)
     return track
 
 
@@ -2504,10 +2684,21 @@ def _track_export_filename(
 
 
 def _track_notes_to_midi_bytes(track: models.InstrumentTrack) -> bytes:
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail="Per-track MIDI export must be generated by Modal and is not available for this track.",
-    )
+    if not track.notes_json:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{track.display_name} note data is not available.",
+        )
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as temp_file:
+            temp_path = temp_file.name
+        midi.notes_to_midi(track.notes_json, temp_path)
+        return Path(temp_path).read_bytes()
+    finally:
+        if temp_path:
+            _delete_local_file(temp_path)
 
 @router.post("/upload", response_model=schemas.TranscriptionInDB)
 async def upload_audio_file(
@@ -2552,16 +2743,15 @@ async def upload_audio_file(
     if duplicate:
         return _mark_duplicate_response(duplicate)
 
-    # Global active-job pre-check (MVP): reject new uploads when any transcription
-    # is currently pending, queued, or processing (and not soft-deleted).
     _cleanup_stale_active_transcription_jobs(db_session)
-    if _has_global_active_transcription_job(db_session):
+    if _processing_mode() == "local" and _has_global_active_transcription_job(db_session):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "Another transcription is currently processing. Please wait until it finishes before starting a new one."
             ),
         )
+    _enforce_usage_limits(db_session, current_user)
 
     initial_processing_status, queue_position, estimated_wait = _queue_metadata_for_new_job(db_session)
 
@@ -2640,6 +2830,12 @@ async def upload_audio_file(
         ) from exc
 
     _trigger_next_queued_transcription(background_tasks, db_session)
+    _record_usage_event(
+        db_session,
+        current_user,
+        "upload",
+        transcription_id=db_transcription.id,
+    )
     db_session.refresh(db_transcription)
 
     return db_transcription
@@ -2904,6 +3100,8 @@ def _get_youtube_cookiefile() -> YouTubeCookiefile:
         )
 
     if cookies_text:
+        if cookies_file:
+            logger.info("Using YOUTUBE_COOKIES from environment; ignoring YOUTUBE_COOKIES_FILE.")
         diagnostics = _inspect_youtube_cookies_text(cookies_text)
         _log_youtube_cookie_diagnostics("env", diagnostics)
         if not diagnostics.valid:
@@ -3032,16 +3230,15 @@ async def extract_audio_from_youtube(
     if duplicate:
         return _mark_duplicate_response(duplicate)
 
-    # Global active-job pre-check (MVP): reject new YouTube requests when any
-    # transcription is currently pending, queued, or processing (and not soft-deleted).
     _cleanup_stale_active_transcription_jobs(db_session)
-    if _has_global_active_transcription_job(db_session):
+    if _processing_mode() == "local" and _has_global_active_transcription_job(db_session):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "Another transcription is currently processing. Please wait until it finishes before starting a new one."
             ),
         )
+    _enforce_usage_limits(db_session, current_user)
 
     initial_processing_status, queue_position, estimated_wait = _queue_metadata_for_new_job(db_session)
     if db.DATABASE_URL.startswith("sqlite"):
@@ -3212,6 +3409,12 @@ async def extract_audio_from_youtube(
         ) from exc
 
     _trigger_next_queued_transcription(background_tasks, db_session)
+    _record_usage_event(
+        db_session,
+        current_user,
+        "youtube",
+        transcription_id=db_transcription.id,
+    )
     db_session.refresh(db_transcription)
 
     return db_transcription
@@ -3334,6 +3537,10 @@ async def get_transcription_status(
             "queue_position": None,
             "estimated_wait_time": None,
             "modal_dispatch_status": transcription.modal_dispatch_status,
+            "modal_status_detail": _modal_status_detail(transcription),
+            "modal_job_type": transcription.modal_job_type,
+            "modal_request_id": transcription.modal_request_id,
+            "modal_retry_count": transcription.modal_retry_count,
             "modal_retry_at": transcription.modal_retry_at,
         })
 
@@ -3352,6 +3559,10 @@ async def get_transcription_status(
             "queue_position": None,
             "estimated_wait_time": None,
             "modal_dispatch_status": transcription.modal_dispatch_status,
+            "modal_status_detail": _modal_status_detail(transcription),
+            "modal_job_type": transcription.modal_job_type,
+            "modal_request_id": transcription.modal_request_id,
+            "modal_retry_count": transcription.modal_retry_count,
             "modal_retry_at": transcription.modal_retry_at,
         })
 
@@ -3381,7 +3592,9 @@ async def get_transcription_status(
         db_session.commit()
         message = None
         if current_status == "queued":
-            if _processing_mode() == "local":
+            if transcription.modal_dispatch_status in {"rate_limited", "retry_queued"}:
+                message = "Waiting for Modal capacity. Retry scheduled."
+            elif _processing_mode() == "local":
                 message = "Queued for local processing."
             else:
                 message = (
@@ -3402,6 +3615,10 @@ async def get_transcription_status(
             "queue_position": transcription.queue_position,
             "estimated_wait_time": transcription.estimated_wait_time,
             "modal_dispatch_status": transcription.modal_dispatch_status,
+            "modal_status_detail": _modal_status_detail(transcription),
+            "modal_job_type": transcription.modal_job_type,
+            "modal_request_id": transcription.modal_request_id,
+            "modal_retry_count": transcription.modal_retry_count,
             "modal_retry_at": transcription.modal_retry_at,
         })
 
@@ -3577,6 +3794,11 @@ async def generate_tab(
             status_code=status.HTTP_409_CONFLICT,
             detail="Tab generation is already processing.",
         )
+    _enforce_usage_limits(
+        db_session,
+        current_user,
+        exclude_transcription_id=transcription.id,
+    )
     existing_score_ready = _can_generate_score(transcription)
     if transcription.processing_status in {"pending", "queued"}:
         transcription.processing_status = "stem_ready"
@@ -3607,6 +3829,13 @@ async def generate_tab(
         db_session.add(transcription)
         db_session.commit()
         db_session.refresh(transcription)
+    _record_usage_event(
+        db_session,
+        current_user,
+        "generate_tabs",
+        transcription_id=transcription.id,
+    )
+    db_session.refresh(transcription)
     metadata = _metadata_payload(transcription)
     message = (
         "Rhythm generation started."
@@ -3666,6 +3895,11 @@ async def generate_lyrics(
             status_code=status.HTTP_409_CONFLICT,
             detail="Lyrics generation is already processing.",
         )
+    _enforce_usage_limits(
+        db_session,
+        current_user,
+        exclude_transcription_id=transcription.id,
+    )
     lyrics_language = _validate_lyrics_language(
         request.language if request else None
     )
@@ -3710,6 +3944,13 @@ async def generate_lyrics(
         db_session.add(transcription)
         db_session.commit()
         db_session.refresh(transcription)
+    _record_usage_event(
+        db_session,
+        current_user,
+        "generate_lyrics",
+        transcription_id=transcription.id,
+    )
+    db_session.refresh(transcription)
 
     return {
         "status": transcription.processing_status,
@@ -3767,6 +4008,11 @@ async def retry_transcription(
                 "Upload the source again to separate a different stem."
             ),
         )
+    _enforce_usage_limits(
+        db_session,
+        current_user,
+        exclude_transcription_id=transcription.id,
+    )
 
     sensitivity = (
         "high"
@@ -3808,6 +4054,13 @@ async def retry_transcription(
         db_session.add(transcription)
         db_session.commit()
         db_session.refresh(transcription)
+    _record_usage_event(
+        db_session,
+        current_user,
+        "retry",
+        transcription_id=transcription.id,
+    )
+    db_session.refresh(transcription)
 
     return {
         "status": transcription.processing_status,
@@ -4018,6 +4271,7 @@ async def reprocess_instrument_track_endpoint(
         track,
         background_tasks,
         db_session,
+        current_user,
     )
 
 
@@ -4112,10 +4366,25 @@ async def get_instrument_track_musicxml(
     _ensure_track_export_ready(transcription, track, format_name="musicxml")
 
     if not track.notation_json:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"{track.display_name} MusicXML data is not available.",
-        )
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as temp_file:
+                temp_path = temp_file.name
+            midi.notes_to_midi(track.notes_json, temp_path)
+            track.notation_json = midi.midi_to_musicxml(temp_path)
+            db_session.add(track)
+            db_session.commit()
+            db_session.refresh(track)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not generate {track.display_name} MusicXML data: {exc}",
+            ) from exc
+        finally:
+            if temp_path:
+                _delete_local_file(temp_path)
 
     return Response(
         content=track.notation_json,

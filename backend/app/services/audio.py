@@ -338,6 +338,12 @@ def _maybe_find_demucs_stem(
     except FileNotFoundError:
         return None
 
+
+def _portable_local_path(path: str | Path) -> str:
+    """Return a normalized local path in a stable slash format for API/test payloads."""
+    return Path(storage.normalize_local_path(path)).as_posix()
+
+
 def preprocess_audio(input_file_path: str, output_file_path: str = None, target_sr: int = 22050) -> str:
     """
     Preprocess audio file: load, normalize (peak normalization), and resample.
@@ -441,7 +447,7 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
                     run_debug,
                 )
                 if stem_path:
-                    stems[instrument_type] = storage.normalize_local_path(stem_path)
+                    stems[instrument_type] = _portable_local_path(stem_path)
 
             if stems:
                 return stems
@@ -461,9 +467,9 @@ def separate_sources_multi(input_file_path: str, output_dir: str = None) -> dict
             fallback_debug,
         )
         if vocals_path:
-            fallback_stems["vocals"] = storage.normalize_local_path(vocals_path)
+            fallback_stems["vocals"] = _portable_local_path(vocals_path)
         if accompaniment_path:
-            fallback_stems["other"] = storage.normalize_local_path(accompaniment_path)
+            fallback_stems["other"] = _portable_local_path(accompaniment_path)
         if fallback_stems:
             return fallback_stems
         raise FileNotFoundError("No stems found after Demucs fallback separation")
@@ -508,7 +514,7 @@ def separate_selected_stem(
     input_stem = input_path.stem
     try:
         run_debug = _run_demucs(input_path, output_path, DEMUCS_GUITAR_MODEL, two_stems=selected_stem)
-        return storage.normalize_local_path(
+        return _portable_local_path(
             _find_demucs_stem(output_path, DEMUCS_GUITAR_MODEL, input_stem, selected_stem, run_debug)
         )
     except Exception as primary_error:
@@ -519,7 +525,7 @@ def separate_selected_stem(
 
         try:
             fallback_debug = _run_demucs(input_path, output_path, DEMUCS_FALLBACK_MODEL, two_stems=selected_stem)
-            return storage.normalize_local_path(
+            return _portable_local_path(
                 _find_demucs_stem(output_path, DEMUCS_FALLBACK_MODEL, input_stem, selected_stem, fallback_debug)
             )
         except Exception as fallback_error:

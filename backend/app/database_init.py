@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from sqlalchemy import inspect, text
 from .db import Base, SessionLocal, engine
+from .core import config
 # Import models to ensure they are registered with the Base
 from . import models
 
@@ -17,15 +18,26 @@ def init_db():
     """Initialize the database by creating all tables."""
     logger.info("Creating database tables...")
     Base.metadata.create_all(bind=engine)
+    if config.settings.is_production_environment:
+        validate_schema_against_models()
 
     try:
         _ensure_transcription_phase1_columns()
         _ensure_project_deletion_columns()
+        _ensure_usage_event_schema()
     except Exception as exc:
+        if config.settings.is_production_environment:
+            raise RuntimeError(
+                "Schema compatibility checks failed during production startup. "
+                "Run backend migrations before deploying."
+            ) from exc
         logger.warning(
             "Schema compatibility checks failed; continuing startup. Error: %s",
             exc,
         )
+
+    if config.settings.is_production_environment:
+        validate_schema_against_models()
 
     try:
         _seed_demo_transcription()
@@ -36,6 +48,32 @@ def init_db():
         )
 
     logger.info("Database tables created successfully")
+
+
+def validate_schema_against_models(bind=engine) -> None:
+    """Validate that the live database has every table/column declared by models."""
+    inspector = inspect(bind)
+    existing_tables = set(inspector.get_table_names())
+    missing: list[str] = []
+
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            missing.append(f"{table.name}.*")
+            continue
+
+        existing_columns = {
+            column["name"]
+            for column in inspector.get_columns(table.name)
+        }
+        for column in table.columns:
+            if column.name not in existing_columns:
+                missing.append(f"{table.name}.{column.name}")
+
+    if missing:
+        raise RuntimeError(
+            "Database schema is missing model columns. Run migrations before boot: "
+            + ", ".join(sorted(missing))
+        )
 
 
 def _ensure_transcription_phase1_columns():
@@ -342,6 +380,29 @@ def _ensure_project_deletion_columns():
             conn.execute(
                 text(f"ALTER TABLE projects ADD COLUMN {column_name} {ddl_type}")
             )
+        conn.commit()
+
+
+def _ensure_usage_event_schema():
+    """Create the usage event table/indexes for deployments without Alembic yet."""
+    inspector = inspect(engine)
+    table_names = inspector.get_table_names()
+    if "usage_events" not in table_names:
+        models.UsageEvent.__table__.create(bind=engine, checkfirst=True)
+
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_usage_events_user_created_at "
+                "ON usage_events (user_id, created_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_usage_events_transcription_id "
+                "ON usage_events (transcription_id)"
+            )
+        )
         conn.commit()
 
 if __name__ == "__main__":

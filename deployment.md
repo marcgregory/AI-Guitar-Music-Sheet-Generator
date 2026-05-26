@@ -31,6 +31,9 @@ Backend/API:
 - `ALGORITHM`
 - `ACCESS_TOKEN_EXPIRE_MINUTES`
 - `MODAL_TRIGGER_URL`
+- `MODAL_RETRY_SCAN_INTERVAL_SECONDS=30`
+- `MODAL_RETRY_ADMIN_TOKEN` optional, enables `POST /api/v1/audio/modal-retry`
+- `ADMIN_API_TOKEN` optional, enables the admin jobs dashboard and `/api/v1/admin/jobs`
 - `STALE_TRANSCRIPTION_TIMEOUT_SECONDS=1800`
 - `MODAL_RATE_LIMIT_BASE_BACKOFF_SECONDS`
 - `MODAL_RATE_LIMIT_MAX_BACKOFF_SECONDS`
@@ -59,6 +62,41 @@ Frontend:
 
 - `VITE_API_URL`
 
+## Migration and Smoke Commands
+
+Run migrations before starting the hosted API:
+
+```bash
+cd backend
+python run_migrations.py
+```
+
+After deploy, run a read-only smoke check from the repository root:
+
+```bash
+python scripts/deploy_smoke.py --base-url https://your-backend.example
+```
+
+The smoke command calls `GET /health/deployment` and exits non-zero when required deployment checks are not ready.
+
+To run the hosted Modal dispatch smoke, use a dedicated test account:
+
+```bash
+python scripts/deploy_smoke.py --base-url https://your-backend.example --run-upload --username smoke@example.com --password "test-password" --selected-stem other
+```
+
+Add `--register` the first time if the smoke user does not exist. The upload smoke generates a tiny WAV, uploads it through `/api/v1/audio/upload`, polls `/api/v1/audio/{id}/status`, and confirms either `stem_ready` / `completed_with_warning` or a rate-limit retry state with `modal_retry_count` and `modal_retry_at`.
+
+`GET /health/deployment` reports only safe diagnostics:
+
+- `processing_backend` and whether it is `modal`
+- Modal trigger configured yes/no
+- worker callback token configured yes/no
+- Cloudinary configured yes/no
+- database reachable yes/no
+- schema validation pass/fail
+- Alembic current/head status when available
+
 ## Processing Mode
 
 `AUDIO_PROCESSING_MODE=modal` is the production MVP mode. The backend triggers Modal GPU processing. Modal downloads the original audio from Cloudinary, runs selected-stem separation, runs stem-specific generation, uploads outputs to Cloudinary, and reports completion/failure back to the backend.
@@ -80,6 +118,16 @@ These endpoints should require `WORKER_API_TOKEN`. Store detailed logs in Modal/
 ## Status and Result Flow
 
 Clients should poll `GET /api/v1/audio/{id}/status` first. Call `GET /api/v1/audio/{id}/result` only after the status is ready, such as `stem_ready`, `completed`, or `completed_with_warning`. Vocal lyrics use `lyrics_generation_status`, which is separate from the main `processing_status`, so Generate Lyrics should not send users back to the processing screen.
+
+Expected hosted status transitions:
+
+- new active job: `processing` with `modal_dispatch_status=dispatched`, `modal_status_detail=dispatched`, and a `modal_request_id`
+- another active job exists: `queued` with `modal_status_detail=queued_waiting_for_active_job`
+- Modal capacity/rate limit: `queued` with `modal_dispatch_status=rate_limited` or `retry_queued`, `modal_status_detail=rate_limited_retry`, `modal_retry_at`, and `modal_retry_count`
+- worker callback success: `stem_ready`, `completed`, or `completed_with_warning` with `modal_dispatch_status=completed` and `modal_status_detail=callback_completed`
+- worker callback failure or exhausted dispatch retries: `failed` with `modal_dispatch_status=failed`
+
+Backend logs include structured Modal audit fields for dispatches and callbacks: `transcription_id`, `selected_stem`, `job_type`, `modal_request_id`, dispatch status, and retry count.
 
 ## Kaggle Clarification
 

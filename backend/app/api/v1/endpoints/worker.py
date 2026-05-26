@@ -42,6 +42,21 @@ def _set_manual_generation_status(
     if not field_name:
         return
     setattr(transcription, field_name, generation_status)
+
+
+def _log_modal_callback_event(event: str, transcription: models.Transcription, **extra: Any) -> None:
+    logger.info(
+        "modal_callback_event event=%s transcription_id=%s selected_stem=%s "
+        "job_type=%s modal_request_id=%s dispatch_status=%s retry_count=%s extra=%s",
+        event,
+        transcription.id,
+        transcription.selected_stem,
+        transcription.modal_job_type,
+        transcription.modal_request_id,
+        transcription.modal_dispatch_status,
+        transcription.modal_retry_count,
+        extra,
+    )
 INSTRUMENT_DISPLAY_NAMES = {
     "vocals": "Vocals",
     "drums": "Drums",
@@ -241,6 +256,7 @@ async def complete_worker_job(
         db_session.add(transcription)
         db_session.commit()
         db_session.refresh(transcription)
+        _log_modal_callback_event("lyrics_completed", transcription)
         logger.info(
             "lyrics_generation_completed transcription_id=%s selected_stem=%s segment_count=%s detected_language=%s",
             transcription.id,
@@ -375,7 +391,11 @@ async def complete_worker_job(
                 _cleanup_original_cloudinary_audio_after_tab_completion(transcription)
     else:
         transcription.can_generate_score = False
-        transcription.processing_status = "stem_ready"
+        transcription.processing_status = (
+            "completed_with_warning"
+            if selected_stem in {"bass", "other"} and warning_message
+            else "stem_ready"
+        )
     transcription.is_processed = True
     if not (
         is_generate_tab_job
@@ -433,6 +453,11 @@ async def complete_worker_job(
     db_session.add(transcription)
     db_session.commit()
     db_session.refresh(transcription)
+    _log_modal_callback_event(
+        "job_completed",
+        transcription,
+        status=transcription.processing_status,
+    )
     _trigger_next_queued_transcription(background_tasks, db_session)
     return transcription
 
@@ -524,6 +549,7 @@ async def fail_worker_job(
             transcription.celery_task_id = None
             transcription.modal_dispatch_status = "failed"
             transcription.modal_retry_at = None
+        _log_modal_callback_event("job_failed", transcription, error=sanitized_error)
         db_session.add(transcription)
         db_session.commit()
         db_session.refresh(transcription)

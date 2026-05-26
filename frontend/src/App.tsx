@@ -7,6 +7,7 @@ import Dashboard from './components/auth/Dashboard';
 import AudioUpload from './components/AudioUpload';
 import ProcessingStatus from './components/ProcessingStatus';
 import TranscriptionViewer from './components/TranscriptionViewer';
+import AdminJobsDashboard from './components/admin/AdminJobsDashboard';
 import LandingPage from './components/LandingPage';
 import { AppShell, PublicShell } from './components/SiteNav';
 import MotionDirector from './components/MotionDirector';
@@ -31,6 +32,7 @@ function App() {
           <Route path="/upload" element={<PrivateRoute><AudioUpload /></PrivateRoute>} />
           <Route path="/processing/:transcriptionId" element={<PrivateRoute><ProcessingStatus /></PrivateRoute>} />
           <Route path="/transcription/:transcriptionId" element={<PrivateRoute><TranscriptionViewer /></PrivateRoute>} />
+          <Route path="/admin/jobs" element={<PrivateRoute><AdminJobsDashboard /></PrivateRoute>} />
           {/* Redirect any other routes to login for now */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>

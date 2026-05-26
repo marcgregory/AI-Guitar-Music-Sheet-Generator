@@ -7,7 +7,7 @@ import re
 from sqlalchemy import inspect, text
 from alembic.config import Config
 from alembic import command
-from app.database_init import engine
+from app.database_init import engine, validate_schema_against_models
 from app.db import Base
 from app.core.config import settings
 
@@ -213,6 +213,7 @@ def run_migrations() -> None:
 
     logger.info("Running Alembic upgrade head")
     command.upgrade(alembic_cfg, "head")
+    validate_schema_against_models()
     logger.info("Alembic migrations complete")
 
 

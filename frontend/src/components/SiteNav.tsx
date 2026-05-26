@@ -143,6 +143,15 @@ export const AppNav = () => {
           >
             New transcription
           </NavLink>
+          <NavLink
+            to="/admin/jobs"
+            onClick={closeMobileMenu}
+            className={({ isActive }) =>
+              `site-nav-link ${isActive ? "active" : ""}`
+            }
+          >
+            Jobs
+          </NavLink>
         </nav>
         <div className="site-nav-actions">
           <button

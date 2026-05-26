@@ -859,6 +859,285 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.modal-diagnostics-panel {
+  display: grid;
+  gap: 0.8rem;
+  width: min(100%, 780px);
+  margin: 1rem auto 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 252, 245, 0.7);
+  color: var(--text-soft);
+}
+
+.modal-diagnostics-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--text-h);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.modal-diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.modal-diagnostics-row {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.46);
+}
+
+.modal-diagnostics-row dt {
+  margin: 0 0 0.25rem;
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.modal-diagnostics-row dd {
+  margin: 0;
+  color: var(--text-h);
+  font-size: 0.92rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.admin-jobs-page {
+  display: grid;
+  gap: 1rem;
+  width: min(1440px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: clamp(1rem, 2.7vw, 2.5rem);
+}
+
+.admin-jobs-header,
+.admin-job-table-shell,
+.admin-job-stat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-tight);
+  backdrop-filter: blur(20px);
+}
+
+.admin-jobs-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 520px);
+  align-items: end;
+  gap: 1rem;
+  padding: clamp(1rem, 2.6vw, 2rem);
+}
+
+.admin-kicker,
+.admin-token-panel label,
+.admin-job-table-header span,
+.admin-job-stat span,
+.admin-job-table th {
+  color: var(--text-soft);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.admin-jobs-header h1 {
+  max-width: 10ch;
+  font-size: clamp(2.8rem, 6vw, 5.4rem);
+}
+
+.admin-token-panel {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.admin-token-panel p {
+  color: var(--text-soft);
+  font-size: 0.84rem;
+}
+
+.admin-token-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.admin-token-row input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: 0;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--text-h);
+  padding: 0.7rem 0.85rem;
+}
+
+.admin-token-row input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-bg);
+}
+
+.admin-job-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.admin-job-stat {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.35rem 0.75rem;
+  padding: 1rem;
+}
+
+.admin-job-stat .ui-icon {
+  grid-row: span 2;
+  color: var(--accent);
+}
+
+.admin-job-stat strong {
+  color: var(--text-h);
+  font-family: var(--heading);
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  font-weight: 400;
+  line-height: 1;
+}
+
+.admin-job-table-shell {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  padding: clamp(1rem, 2vw, 1.4rem);
+}
+
+.admin-job-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.admin-job-table-header h2 {
+  font-family: var(--sans);
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.admin-job-table-scroll {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.admin-job-table {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: collapse;
+}
+
+.admin-job-table th,
+.admin-job-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.85rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-job-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.admin-job-table td {
+  color: var(--text-h);
+}
+
+.admin-job-table td strong,
+.admin-job-table td span,
+.admin-job-table td small {
+  display: block;
+  max-width: 22rem;
+  overflow-wrap: anywhere;
+}
+
+.admin-job-table td small {
+  margin-top: 0.24rem;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.admin-status-pill {
+  width: fit-content;
+  border-radius: 4px;
+  background: rgba(36, 76, 105, 0.12);
+  color: var(--blue);
+  padding: 0.18rem 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.admin-job-rate-limited .admin-status-pill {
+  background: rgba(191, 141, 49, 0.16);
+  color: #7a6331;
+}
+
+.admin-job-processing .admin-status-pill {
+  background: rgba(66, 117, 95, 0.14);
+  color: var(--green);
+}
+
+.admin-empty-state {
+  display: grid;
+  place-items: center;
+  gap: 0.65rem;
+  min-height: 180px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-soft);
+  text-align: center;
+}
+
+.admin-empty-state .ui-icon {
+  width: 2rem;
+  height: 2rem;
+  color: var(--green);
+}
+
+@media (max-width: 640px) {
+  .modal-diagnostics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-token-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .admin-jobs-header,
+  .admin-job-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
 .project-body {
   display: grid;
   gap: 0.9rem;
@@ -11838,7 +12117,9 @@ button.drum-tab-cell {
   justify-self: center;
   display: inline-flex;
   gap: 0.25rem;
-  min-width: min(100%, 330px);
+  width: max-content;
+  min-width: 0;
+  max-width: min(100%, calc(100vw - 2rem));
   border: 1px solid rgba(255, 244, 223, 0.16);
   border-radius: 999px;
   background: rgba(255, 244, 223, 0.08);
@@ -11850,13 +12131,14 @@ button.drum-tab-cell {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 1 1 0;
+  flex: 0 0 auto;
+  min-inline-size: 7.75rem;
   min-height: 36px;
   border: 1px solid transparent;
   border-radius: 999px;
   background: transparent;
   color: rgba(255, 244, 223, 0.62);
-  padding: 0.55rem 1.5rem;
+  padding: 0.55rem clamp(0.95rem, 1.5vw, 1.35rem);
   font-size: 0.72rem;
   font-weight: 900;
   letter-spacing: 0.08em;
@@ -13666,5 +13948,900 @@ body,
   .premium-bottom-bar .transcription-actions {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Premium operations dashboard */
+.app-shell:has(.admin-jobs-page) {
+  --ops-ivory: #fbf7ee;
+  --ops-paper: rgba(255, 251, 243, 0.78);
+  --ops-sand: #eadfce;
+  --ops-mocha: #7a5f4b;
+  --ops-espresso: #211814;
+  --ops-bronze: #b9682d;
+  --ops-bronze-deep: #883b16;
+  --ops-olive: #56816a;
+  --ops-violet: #8d72c9;
+  --ops-rose: #c95045;
+  min-height: 100vh;
+  background:
+    linear-gradient(120deg, rgba(255, 255, 255, 0.72), transparent 35%),
+    radial-gradient(ellipse at 78% -10%, rgba(185, 104, 45, 0.22), transparent 34rem),
+    radial-gradient(ellipse at 18% 110%, rgba(86, 129, 106, 0.16), transparent 32rem),
+    linear-gradient(135deg, #fffaf1 0%, #f4eadb 48%, #eee0cd 100%);
+}
+
+.app-shell:has(.admin-jobs-page)::before {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  content: "";
+  opacity: 0.62;
+  background:
+    linear-gradient(126deg, transparent 0 43%, rgba(255, 255, 255, 0.62) 43.2% 43.8%, transparent 44%),
+    linear-gradient(152deg, transparent 0 58%, rgba(185, 104, 45, 0.13) 58.2% 58.6%, transparent 59%),
+    repeating-linear-gradient(90deg, rgba(33, 24, 20, 0.034) 0 1px, transparent 1px 88px);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 100%);
+}
+
+.app-shell:has(.admin-jobs-page) .app-site-nav {
+  display: none;
+}
+
+.app-shell:has(.admin-jobs-page) .app-shell-main {
+  position: relative;
+  z-index: 1;
+  padding: 0;
+}
+
+.admin-jobs-page {
+  position: relative;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 0;
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  color: var(--ops-espresso);
+}
+
+.admin-ops-sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  border-right: 1px solid rgba(73, 54, 40, 0.13);
+  background:
+    linear-gradient(180deg, rgba(255, 252, 246, 0.86), rgba(248, 238, 223, 0.74)),
+    rgba(255, 250, 242, 0.78);
+  padding: 28px 22px;
+  box-shadow: 18px 0 70px rgba(74, 51, 31, 0.08);
+  backdrop-filter: blur(28px);
+}
+
+.admin-ops-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.72rem;
+  color: var(--ops-espresso);
+  font-family: var(--heading);
+  font-size: 1.58rem;
+  line-height: 1;
+}
+
+.admin-ops-mark,
+.admin-stat-icon,
+.admin-panel-icon,
+.admin-empty-illustration {
+  display: inline-grid;
+  place-items: center;
+}
+
+.admin-ops-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #bd5a20, #7e2d14);
+  color: #fff7eb;
+  box-shadow: 0 18px 34px rgba(136, 59, 22, 0.24);
+}
+
+.admin-ops-mark svg,
+.admin-ops-nav-item svg,
+.admin-token-panel svg,
+.admin-job-toolbar svg,
+.admin-stat-icon svg,
+.admin-panel-icon svg,
+.admin-empty-illustration svg,
+.admin-upgrade-card svg {
+  width: 1.08rem;
+  height: 1.08rem;
+  stroke-width: 1.8;
+}
+
+.admin-ops-nav {
+  display: grid;
+  gap: 0.56rem;
+  margin-top: 2.65rem;
+}
+
+.admin-ops-nav-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 0.72rem;
+  min-height: 56px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: transparent;
+  color: #513c31;
+  padding: 0 0.88rem;
+  font-weight: 800;
+  text-align: left;
+  transition:
+    transform var(--motion-medium) var(--ease-premium),
+    background var(--motion-fast) var(--ease-soft),
+    border-color var(--motion-fast) var(--ease-soft),
+    box-shadow var(--motion-medium) var(--ease-premium);
+}
+
+.admin-ops-nav-item:hover,
+.admin-ops-nav-item.is-active {
+  border-color: rgba(185, 104, 45, 0.12);
+  background: rgba(255, 249, 240, 0.82);
+  box-shadow:
+    0 18px 46px rgba(113, 74, 42, 0.1),
+    0 0 0 1px rgba(255, 255, 255, 0.72) inset;
+  transform: translateX(2px);
+}
+
+.admin-ops-nav-item.is-active {
+  color: var(--ops-bronze-deep);
+}
+
+.admin-ops-nav-item.is-active::after {
+  position: absolute;
+  inset: 13px auto 13px 0;
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #e0a15b, var(--ops-bronze-deep));
+  box-shadow: 0 0 28px rgba(185, 104, 45, 0.48);
+  content: "";
+}
+
+.admin-upgrade-card {
+  display: grid;
+  gap: 0.76rem;
+  margin-top: auto;
+  overflow: hidden;
+  border: 1px solid rgba(126, 75, 37, 0.16);
+  border-radius: 18px;
+  background:
+    linear-gradient(140deg, rgba(255, 255, 255, 0.56), transparent 45%),
+    linear-gradient(180deg, rgba(255, 247, 233, 0.88), rgba(238, 220, 195, 0.62));
+  padding: 1.08rem;
+  box-shadow:
+    0 22px 54px rgba(82, 55, 34, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.84) inset;
+}
+
+.admin-upgrade-card svg {
+  color: #c78425;
+}
+
+.admin-upgrade-card strong,
+.admin-profile-card strong {
+  color: var(--ops-espresso);
+  font-weight: 900;
+}
+
+.admin-upgrade-card p,
+.admin-profile-card p {
+  color: rgba(65, 48, 38, 0.67);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.admin-upgrade-card button,
+.admin-refresh-button {
+  min-height: 46px;
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(255, 209, 147, 0.32), transparent 35%),
+    linear-gradient(135deg, #c56525, #8b2f13);
+  color: #fffaf1;
+  font-weight: 900;
+  box-shadow:
+    0 18px 38px rgba(137, 60, 22, 0.24),
+    0 1px 0 rgba(255, 255, 255, 0.28) inset;
+  transition:
+    transform var(--motion-medium) var(--ease-premium),
+    box-shadow var(--motion-medium) var(--ease-premium);
+}
+
+.admin-upgrade-card button:hover,
+.admin-refresh-button:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 24px 52px rgba(137, 60, 22, 0.28),
+    0 1px 0 rgba(255, 255, 255, 0.32) inset;
+}
+
+.admin-profile-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 2rem;
+}
+
+.admin-profile-card > span {
+  display: inline-grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #f5d4ae, #f8eee0);
+  color: #9b3b18;
+  font-weight: 900;
+  box-shadow: 0 12px 32px rgba(137, 77, 34, 0.14);
+}
+
+.admin-ops-main {
+  display: grid;
+  gap: clamp(1.05rem, 1.6vw, 1.55rem);
+  min-width: 0;
+  padding: clamp(1.1rem, 3vw, 3.5rem);
+}
+
+.admin-jobs-header {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 576px);
+  align-items: center;
+  gap: clamp(1.25rem, 4vw, 5rem);
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 1.4rem 0 2.35rem;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.admin-jobs-header::before {
+  position: absolute;
+  inset: -24% -12% auto 30%;
+  height: 340px;
+  pointer-events: none;
+  content: "";
+  background:
+    linear-gradient(140deg, transparent 0 18%, rgba(185, 104, 45, 0.16) 18.3% 18.8%, transparent 19%),
+    linear-gradient(158deg, transparent 0 44%, rgba(255, 255, 255, 0.74) 44.3% 45%, transparent 45.3%),
+    radial-gradient(ellipse at 52% 35%, rgba(255, 247, 235, 0.76), transparent 30rem);
+}
+
+.admin-hero-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 0.9rem;
+}
+
+.admin-kicker {
+  color: #a54018;
+  font-size: 0.73rem;
+  font-weight: 950;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.admin-jobs-header h1 {
+  max-width: none;
+  color: #120e0c;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: clamp(4.8rem, 8.4vw, 8.75rem);
+  letter-spacing: 0;
+  line-height: 0.78;
+}
+
+.admin-hero-copy > p:last-child {
+  max-width: 38rem;
+  color: rgba(43, 33, 28, 0.68);
+  font-size: clamp(1.03rem, 1.35vw, 1.24rem);
+  line-height: 1.55;
+}
+
+.admin-token-panel {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 1.05rem;
+  min-width: 0;
+  border: 1px solid rgba(77, 55, 41, 0.15);
+  border-radius: 24px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.62), transparent 42%),
+    rgba(255, 250, 243, 0.72);
+  padding: clamp(1rem, 2vw, 1.55rem);
+  box-shadow:
+    0 28px 80px rgba(76, 52, 31, 0.11),
+    0 1px 0 rgba(255, 255, 255, 0.8) inset;
+  backdrop-filter: blur(28px);
+}
+
+.admin-token-heading,
+.admin-token-heading span {
+  display: flex;
+  align-items: center;
+  gap: 0.52rem;
+}
+
+.admin-token-heading {
+  justify-content: space-between;
+  color: rgba(48, 36, 29, 0.72);
+  font-size: 0.72rem;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.admin-token-heading small {
+  color: rgba(72, 53, 41, 0.54);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.admin-token-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px auto;
+  align-items: center;
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+.admin-token-row input {
+  width: 100%;
+  min-height: 48px;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  color: #140f0d;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 1rem;
+  letter-spacing: 0.24em;
+}
+
+.admin-token-row input::placeholder {
+  color: rgba(54, 39, 30, 0.34);
+  letter-spacing: 0.04em;
+}
+
+.admin-token-row input:focus {
+  box-shadow: none;
+}
+
+.admin-token-eye,
+.admin-job-toolbar button {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(81, 58, 43, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.46);
+  color: #6c4632;
+  transition:
+    transform var(--motion-medium) var(--ease-premium),
+    background var(--motion-fast) var(--ease-soft),
+    color var(--motion-fast) var(--ease-soft);
+}
+
+.admin-token-eye:hover,
+.admin-job-toolbar button:hover {
+  background: #fffaf2;
+  color: var(--ops-bronze-deep);
+  transform: translateY(-1px);
+}
+
+.admin-refresh-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  min-width: 134px;
+  padding: 0 1.2rem;
+}
+
+.admin-job-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(0.85rem, 1.6vw, 1.45rem);
+}
+
+.admin-job-stat {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  min-height: 156px;
+  overflow: hidden;
+  border: 1px solid rgba(76, 54, 39, 0.12);
+  border-radius: 24px;
+  background:
+    linear-gradient(140deg, rgba(255, 255, 255, 0.62), transparent 44%),
+    rgba(255, 251, 244, 0.72);
+  padding: 1.45rem;
+  box-shadow:
+    0 24px 62px rgba(72, 49, 30, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+  backdrop-filter: blur(24px);
+  transition:
+    transform var(--motion-medium) var(--ease-premium),
+    box-shadow var(--motion-medium) var(--ease-premium),
+    border-color var(--motion-fast) var(--ease-soft);
+}
+
+.admin-job-stat:hover {
+  border-color: rgba(141, 92, 48, 0.22);
+  box-shadow:
+    0 32px 78px rgba(74, 47, 27, 0.13),
+    0 1px 0 rgba(255, 255, 255, 0.88) inset;
+  transform: translateY(-5px) scale(1.01);
+}
+
+.admin-stat-icon {
+  grid-row: span 3;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  margin-right: 0.7rem;
+  background: rgba(86, 129, 106, 0.16);
+  color: var(--ops-olive);
+}
+
+.admin-stat-processing .admin-stat-icon {
+  background: rgba(185, 104, 45, 0.14);
+  color: var(--ops-bronze);
+}
+
+.admin-stat-queued .admin-stat-icon {
+  background: rgba(141, 114, 201, 0.16);
+  color: var(--ops-violet);
+}
+
+.admin-stat-limited .admin-stat-icon {
+  background: rgba(201, 80, 69, 0.14);
+  color: var(--ops-rose);
+}
+
+.admin-job-stat > span:not(.admin-stat-icon) {
+  color: rgba(46, 36, 30, 0.72);
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.admin-job-stat strong {
+  color: #120e0c;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: clamp(2.55rem, 4vw, 3.5rem);
+  font-weight: 400;
+  line-height: 0.92;
+}
+
+.admin-job-stat p {
+  color: rgba(50, 39, 32, 0.6);
+  font-size: 0.82rem;
+}
+
+.admin-stat-sparkline {
+  position: absolute;
+  right: 1.1rem;
+  bottom: 1rem;
+  width: 58px;
+  height: 42px;
+  color: currentColor;
+  opacity: 0.78;
+}
+
+.admin-stat-sparkline path {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 2.2;
+}
+
+.admin-stat-active {
+  color: var(--ops-olive);
+}
+
+.admin-stat-processing {
+  color: #db822e;
+}
+
+.admin-stat-queued {
+  color: var(--ops-violet);
+}
+
+.admin-stat-limited {
+  color: var(--ops-rose);
+}
+
+.admin-job-table-shell {
+  position: relative;
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  min-height: 406px;
+  overflow: hidden;
+  border: 1px solid rgba(76, 54, 39, 0.12);
+  border-radius: 24px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.6), transparent 44%),
+    rgba(255, 251, 244, 0.7);
+  padding: clamp(1.05rem, 2vw, 1.75rem);
+  box-shadow:
+    0 28px 82px rgba(73, 50, 30, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.84) inset;
+  backdrop-filter: blur(28px);
+}
+
+.admin-job-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid rgba(79, 57, 42, 0.14);
+  padding-bottom: 1.2rem;
+}
+
+.admin-job-table-header > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.admin-panel-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: rgba(185, 104, 45, 0.1);
+  color: #774225;
+}
+
+.admin-job-table-header h2 {
+  color: #160f0c;
+  font-family: var(--heading);
+  font-size: clamp(1.4rem, 2vw, 1.8rem);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.admin-job-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.admin-job-toolbar select {
+  min-height: 44px;
+  border: 1px solid rgba(81, 58, 43, 0.13);
+  border-radius: 12px;
+  outline: 0;
+  background: rgba(255, 255, 255, 0.58);
+  color: #5b4032;
+  padding: 0 2.1rem 0 0.9rem;
+  font-weight: 700;
+}
+
+.admin-job-toolbar span {
+  color: rgba(50, 39, 32, 0.58);
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.admin-empty-state {
+  position: relative;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 0.72rem;
+  min-height: 282px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 18px;
+  color: rgba(41, 31, 26, 0.65);
+  text-align: center;
+}
+
+.admin-empty-state::before,
+.admin-empty-state::after {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(185, 104, 45, 0.52);
+  box-shadow:
+    110px 38px 0 rgba(185, 104, 45, 0.28),
+    -96px 86px 0 rgba(86, 129, 106, 0.22),
+    54px -42px 0 rgba(141, 114, 201, 0.24);
+  content: "";
+  animation: admin-particle-drift 6s var(--ease-soft) infinite alternate;
+}
+
+.admin-empty-state::before {
+  top: 32%;
+  left: 44%;
+}
+
+.admin-empty-state::after {
+  right: 34%;
+  bottom: 34%;
+  animation-delay: -2s;
+}
+
+.admin-empty-orbit {
+  position: absolute;
+  width: 170px;
+  height: 170px;
+  border: 1px solid rgba(185, 104, 45, 0.12);
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(185, 104, 45, 0.09), transparent 62%);
+}
+
+.admin-empty-illustration {
+  position: relative;
+  z-index: 1;
+  width: 86px;
+  height: 72px;
+  border: 1px solid rgba(185, 104, 45, 0.16);
+  border-radius: 24px 24px 18px 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(237, 202, 172, 0.8)),
+    #f0c7a4;
+  color: #b35c25;
+  box-shadow:
+    0 22px 48px rgba(145, 86, 43, 0.15),
+    0 -18px 42px rgba(255, 255, 255, 0.58) inset;
+}
+
+.admin-empty-state h3 {
+  position: relative;
+  z-index: 1;
+  color: #150f0c;
+  font-family: var(--heading);
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+.admin-empty-state p {
+  position: relative;
+  z-index: 1;
+  max-width: 34rem;
+  color: rgba(44, 34, 29, 0.62);
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+.admin-loading-skeleton {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.9rem 1rem;
+  align-items: center;
+  min-height: 240px;
+  padding: 2rem;
+  color: var(--ops-bronze);
+}
+
+.admin-loading-skeleton svg {
+  grid-row: span 3;
+  animation: admin-spin 1.2s linear infinite;
+}
+
+.admin-loading-skeleton span {
+  height: 18px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(95, 68, 49, 0.08), rgba(255, 255, 255, 0.72), rgba(95, 68, 49, 0.08));
+  background-size: 220% 100%;
+  animation: admin-skeleton 1.35s ease-in-out infinite;
+}
+
+.admin-loading-skeleton span:nth-of-type(1) {
+  width: min(100%, 620px);
+}
+
+.admin-loading-skeleton span:nth-of-type(2) {
+  width: min(82%, 480px);
+}
+
+.admin-loading-skeleton span:nth-of-type(3) {
+  width: min(68%, 360px);
+}
+
+.admin-job-table-scroll {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.admin-job-table {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: separate;
+  border-spacing: 0 0.7rem;
+}
+
+.admin-job-table th {
+  border: 0;
+  color: rgba(50, 39, 32, 0.48);
+  padding: 0.4rem 0.85rem;
+  font-size: 0.68rem;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.admin-job-table td {
+  border-block: 1px solid rgba(76, 54, 39, 0.1);
+  background: rgba(255, 255, 255, 0.46);
+  color: #201713;
+  padding: 1rem 0.85rem;
+  vertical-align: top;
+}
+
+.admin-job-table td:first-child {
+  border-left: 1px solid rgba(76, 54, 39, 0.1);
+  border-radius: 16px 0 0 16px;
+}
+
+.admin-job-table td:last-child {
+  border-right: 1px solid rgba(76, 54, 39, 0.1);
+  border-radius: 0 16px 16px 0;
+}
+
+.admin-job-table td strong,
+.admin-job-table td span,
+.admin-job-table td small {
+  display: block;
+  max-width: 22rem;
+  overflow-wrap: anywhere;
+}
+
+.admin-job-table td small {
+  margin-top: 0.25rem;
+  color: rgba(50, 39, 32, 0.55);
+  font-size: 0.78rem;
+}
+
+.admin-status-pill {
+  width: fit-content;
+  border-radius: 999px;
+  background: rgba(86, 129, 106, 0.13);
+  color: #3f7058;
+  padding: 0.22rem 0.58rem;
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.admin-job-rate-limited .admin-status-pill {
+  background: rgba(201, 80, 69, 0.14);
+  color: #a73f35;
+}
+
+.admin-job-processing .admin-status-pill {
+  background: rgba(185, 104, 45, 0.14);
+  color: #9b4b1f;
+}
+
+.admin-job-queued .admin-status-pill {
+  background: rgba(141, 114, 201, 0.14);
+  color: #7559b0;
+}
+
+@keyframes admin-skeleton {
+  from {
+    background-position: 120% 0;
+  }
+
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@keyframes admin-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes admin-particle-drift {
+  from {
+    transform: translate3d(-8px, 6px, 0);
+    opacity: 0.44;
+  }
+
+  to {
+    transform: translate3d(10px, -9px, 0);
+    opacity: 0.88;
+  }
+}
+
+@media (max-width: 1180px) {
+  .admin-jobs-page {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-ops-sidebar {
+    position: relative;
+    min-height: auto;
+    border-right: 0;
+    border-bottom: 1px solid rgba(73, 54, 40, 0.13);
+  }
+
+  .admin-ops-nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .admin-upgrade-card,
+  .admin-profile-card {
+    display: none;
+  }
+
+  .admin-jobs-header,
+  .admin-job-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .admin-ops-sidebar,
+  .admin-ops-main {
+    padding: 1rem;
+  }
+
+  .admin-ops-nav,
+  .admin-jobs-header,
+  .admin-job-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-jobs-header h1 {
+    font-size: clamp(4rem, 18vw, 5.8rem);
+  }
+
+  .admin-token-row {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+
+  .admin-refresh-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .admin-job-table-header,
+  .admin-job-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-job-toolbar select,
+  .admin-job-toolbar button {
+    width: 100%;
   }
 }
