@@ -480,9 +480,13 @@ MVP scope recommendation:
   - Backend `GET /api/v1/admin/jobs` lists active `pending` / `queued` / `processing` jobs and Modal retry jobs with selected stem, Modal request id, dispatch/status detail, retry count, retry time, owner, and last error.
   - Endpoint is protected by `ADMIN_API_TOKEN` via `X-Admin-Token` and requires no schema migration.
   - Frontend `/admin/jobs` adds a compact operations dashboard with token entry, active/processing/queued/rate-limited counters, refresh, and active job table.
-- [ ] Run real hosted Modal smoke after deploying current env vars:
-  - Blocked in this workspace on 2026-05-26 because local env files are development-only (`AUDIO_PROCESSING_MODE=local`, SQLite, localhost API), no Railway/Render link is present, and no deployed backend URL was available to verify.
-  - Required deploy vars remain `ENVIRONMENT=production`, `AUDIO_PROCESSING_MODE=modal`, `MODAL_TRIGGER_URL`, `WORKER_API_TOKEN`, Cloudinary credentials, real `DATABASE_URL`, and optional `ADMIN_API_TOKEN`.
+- [x] Run real hosted Modal smoke after deploying current env vars:
+  - Hosted smoke passed on 2026-05-26 against `https://ai-guitar-music-sheet-generator.onrender.com`.
+  - `/health/deployment` reported `ready=true` and `proceed=true` with checks passing for `processing_backend`, `modal`, `worker_api_token`, `cloudinary`, `database`, `schema`, and `alembic`.
+  - Upload smoke registered/logged in `smoke@example.com`, uploaded a generated tiny WAV with `selected_stem=other`, and created `transcription_id=29`.
+  - Status polling observed `processing` with `modal_dispatch_status=dispatched`, `modal_request_id=d7609b3c-83ff-4768-b8e1-a4aaaf821f01`, `modal_retry_count=0`, and `modal_retry_at=None`.
+  - Final status reached `stem_ready` with `modal_dispatch_status=completed`, confirming Modal dispatch, worker callback, and hosted status readiness completed successfully.
+  - Deploy note: pass the Render service origin as `--base-url`; do not append `/api/v1` because `scripts/deploy_smoke.py` builds health/API paths internally.
 - [ ] Set up production Docker images (multi-stage builds)
 - [ ] Configure Kubernetes deployment manifests (or Docker Swarm)
 - [ ] Set up monitoring (Prometheus metrics, Grafana dashboards)
