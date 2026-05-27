@@ -156,6 +156,28 @@ export interface AdminJobHistoryResponse {
   count: number;
 }
 
+export interface AdminUsageRow {
+  user_id: number;
+  username: string;
+  usage_count: number;
+  daily_limit: number;
+  remaining_quota: number;
+  active_job_count: number;
+  reset_available: boolean;
+}
+
+export interface AdminUsageResponse {
+  date: string;
+  usage: AdminUsageRow[];
+  reset_available: boolean;
+}
+
+export interface AdminUsageResetResponse {
+  success: boolean;
+  deleted_count: number;
+  usage: AdminUsageRow;
+}
+
 export type AdminJobHistoryStatus =
   | "completed"
   | "completed_with_warning"
@@ -189,6 +211,22 @@ export type ProcessingStatusValue =
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+export const DAILY_LIMIT_QUEUE_EMPTY_MESSAGE =
+  "The queue can be empty, but your daily processing quota is already used.";
+
+export const isDailyProcessingLimitError = (error: unknown): boolean => {
+  if (!isRecord(error) || !isRecord(error.response)) return false;
+  const status = error.response.status;
+  const detail = isRecord(error.response.data)
+    ? error.response.data.detail
+    : undefined;
+  return (
+    status === 429 &&
+    typeof detail === "string" &&
+    detail.includes("Daily processing limit reached")
+  );
+};
 
 const transcriptionListCache = new Map<string, Transcription[]>();
 const TRANSCRIPTION_LIST_TIMEOUT_MS = 15000;
@@ -525,6 +563,42 @@ const audioService = {
       ...(Object.keys(params).length > 0 ? { params } : {}),
       timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
     });
+
+    return response.data;
+  },
+
+  listAdminUsage: async (
+    adminToken: string,
+    options?: {
+      userId?: number;
+      date?: string;
+    },
+  ): Promise<AdminUsageResponse> => {
+    const params: Record<string, string | number> = {};
+    if (options?.userId !== undefined) params.user_id = options.userId;
+    if (options?.date) params.date = options.date;
+
+    const response = await apiClient.get("/admin/usage", {
+      headers: { "X-Admin-Token": adminToken },
+      ...(Object.keys(params).length > 0 ? { params } : {}),
+      timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
+    });
+
+    return response.data;
+  },
+
+  resetAdminUsage: async (
+    adminToken: string,
+    userId: number,
+  ): Promise<AdminUsageResetResponse> => {
+    const response = await apiClient.post(
+      "/admin/usage/reset",
+      { user_id: userId },
+      {
+        headers: { "X-Admin-Token": adminToken },
+        timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
+      },
+    );
 
     return response.data;
   },

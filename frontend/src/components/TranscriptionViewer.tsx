@@ -6,7 +6,10 @@ import React, {
   useCallback,
 } from "react";
 import type { AlphaTabApi } from "@coderline/alphatab";
-import audioService from "../services/audioService";
+import audioService, {
+  DAILY_LIMIT_QUEUE_EMPTY_MESSAGE,
+  isDailyProcessingLimitError,
+} from "../services/audioService";
 import type { InstrumentTrack, Transcription } from "../services/audioService";
 import type { LyricsLanguage } from "../services/audioService";
 import { buildTranscriptionMetadata } from "../utils/transcriptionMetadata";
@@ -2226,6 +2229,9 @@ const formatCompletedAt = (dateValue?: string | null): string => {
 };
 
 const errorMessageOf = (error: unknown, fallback: string): string => {
+  if (isDailyProcessingLimitError(error)) {
+    return DAILY_LIMIT_QUEUE_EMPTY_MESSAGE;
+  }
   if (isRecord(error)) {
     const response = error.response;
     if (

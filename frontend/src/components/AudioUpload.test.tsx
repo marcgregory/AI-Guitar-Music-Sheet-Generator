@@ -15,6 +15,18 @@ vi.mock("./auth/AuthContext", () => ({
 }));
 
 vi.mock("../services/audioService", () => ({
+  DAILY_LIMIT_QUEUE_EMPTY_MESSAGE:
+    "The queue can be empty, but your daily processing quota is already used.",
+  isDailyProcessingLimitError: (error: unknown) => {
+    const err = error as {
+      response?: { status?: number; data?: { detail?: unknown } };
+    };
+    return (
+      err.response?.status === 429 &&
+      typeof err.response.data?.detail === "string" &&
+      err.response.data.detail.includes("Daily processing limit reached")
+    );
+  },
   default: {
     listTranscriptions: vi.fn(),
     uploadAudioFile: vi.fn(),
@@ -88,5 +100,42 @@ describe("AudioUpload", () => {
         ),
       ).toBeInTheDocument();
     });
+  });
+
+  it("shows specific copy for daily processing limit errors", async () => {
+    const mockedAudioService = audioService as unknown as {
+      uploadAudioFile: { mockRejectedValue: (value: unknown) => void };
+    };
+    mockedAudioService.uploadAudioFile.mockRejectedValue({
+      response: {
+        status: 429,
+        data: {
+          detail: "Daily processing limit reached. Please try again tomorrow.",
+        },
+      },
+    });
+    const { container } = render(<AudioUpload />);
+
+    await waitFor(() => {
+      expect(audioService.listTranscriptions).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getAllByRole("radio")[3]);
+    const fileInput = container.querySelector(
+      "input[type='file']",
+    ) as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: {
+        files: [new File(["RIFF...."], "sample.wav", { type: "audio/wav" })],
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Upload audio/i }));
+
+    expect(
+      await screen.findByText(
+        "The queue can be empty, but your daily processing quota is already used.",
+      ),
+    ).toBeInTheDocument();
   });
 });

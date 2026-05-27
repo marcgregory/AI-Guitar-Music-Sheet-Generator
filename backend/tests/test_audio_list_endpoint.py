@@ -60,6 +60,8 @@ def reset_database():
     config.settings.ENABLE_USAGE_LIMITS = True
     config.settings.MAX_ACTIVE_JOBS_PER_USER = 1
     config.settings.DAILY_PROCESSING_JOB_LIMIT = 5
+    config.settings.ENABLE_ADMIN_USAGE_RESET = False
+    config.settings.ENVIRONMENT = "development"
 
 
 def create_user(session, username: str, email: str):

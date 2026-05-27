@@ -47,4 +47,53 @@ describe("audioService", () => {
       timeout: 15000,
     });
   });
+
+  it("passes admin usage filters as query params", async () => {
+    const getMock = vi.mocked(apiClient.get);
+    getMock.mockResolvedValueOnce({ data: { date: "2026-05-27", usage: [] } });
+
+    await audioService.listAdminUsage("admin-token", {
+      userId: 123,
+      date: "2026-05-27",
+    });
+
+    expect(getMock).toHaveBeenCalledWith("/admin/usage", {
+      headers: { "X-Admin-Token": "admin-token" },
+      params: {
+        user_id: 123,
+        date: "2026-05-27",
+      },
+      timeout: 15000,
+    });
+  });
+
+  it("posts admin usage reset requests without touching jobs", async () => {
+    const postMock = vi.mocked(apiClient.post);
+    postMock.mockResolvedValueOnce({
+      data: {
+        success: true,
+        deleted_count: 5,
+        usage: {
+          user_id: 123,
+          username: "markyturns",
+          usage_count: 0,
+          daily_limit: 5,
+          remaining_quota: 5,
+          active_job_count: 0,
+          reset_available: true,
+        },
+      },
+    });
+
+    await audioService.resetAdminUsage("admin-token", 123);
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/admin/usage/reset",
+      { user_id: 123 },
+      {
+        headers: { "X-Admin-Token": "admin-token" },
+        timeout: 15000,
+      },
+    );
+  });
 });

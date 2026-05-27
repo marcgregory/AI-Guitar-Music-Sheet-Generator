@@ -22,6 +22,7 @@ import {
   LayoutDashboard,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Settings,
   ShieldCheck,
 } from "lucide-react";
@@ -30,6 +31,8 @@ import audioService, {
   type AdminJobHistoryResponse,
   type AdminJobHistoryStatus,
   type AdminJobsResponse,
+  type AdminUsageResponse,
+  type AdminUsageRow,
 } from "../../services/audioService";
 import { API_BASE_URL } from "../../services/apiClient";
 import { ADMIN_TOKEN_STORAGE_KEY } from "../../utils/adminAccess";
@@ -63,6 +66,12 @@ const emptyJobsResponse: AdminJobsResponse = {
 const emptyJobHistoryResponse: AdminJobHistoryResponse = {
   jobs: [],
   count: 0,
+};
+
+const emptyUsageResponse: AdminUsageResponse = {
+  date: "",
+  usage: [],
+  reset_available: false,
 };
 
 const parseApiDate = (value?: string | null): Date | null => {
@@ -171,6 +180,11 @@ const getJobTone = (job: AdminJob): string => {
 
 const statusLabel = (value?: string | null): string =>
   value ? value.replaceAll("_", " ") : "unknown";
+
+const formatQuota = (row: AdminUsageRow): string =>
+  row.daily_limit > 0
+    ? `${row.usage_count} / ${row.daily_limit}`
+    : `${row.usage_count} / unlimited`;
 
 const AdminFilterSelect = <T extends string | number>({
   "aria-label": ariaLabel,
@@ -330,8 +344,14 @@ const AdminJobsDashboard: React.FC = () => {
     useState<AdminJobsResponse>(emptyJobsResponse);
   const [jobHistoryResponse, setJobHistoryResponse] =
     useState<AdminJobHistoryResponse>(emptyJobHistoryResponse);
+  const [usageResponse, setUsageResponse] =
+    useState<AdminUsageResponse>(emptyUsageResponse);
   const [isLoading, setIsLoading] = useState(false);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [isUsageLoading, setIsUsageLoading] = useState(false);
+  const [resettingUsageUserId, setResettingUsageUserId] = useState<number | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [isTokenVisible, setIsTokenVisible] = useState(false);
@@ -341,7 +361,9 @@ const AdminJobsDashboard: React.FC = () => {
     useState<HistoryStatusFilter>("all");
   const [historyLimit, setHistoryLimit] = useState<HistoryLimit>(50);
   const isJobsRequestInFlightRef = useRef(false);
+  const isUsageRequestInFlightRef = useRef(false);
   const lastSuccessfulJobsLoadRef = useRef<Date | null>(null);
+  const lastSuccessfulUsageLoadRef = useRef<Date | null>(null);
 
   const tokenReady = adminToken.trim().length > 0;
 
@@ -387,6 +409,47 @@ const AdminJobsDashboard: React.FC = () => {
     }
   }, [adminToken]);
 
+  const loadUsage = useCallback(async (options?: { background?: boolean }) => {
+    const trimmedToken = adminToken.trim();
+    if (!trimmedToken) {
+      setError("Enter the admin token configured on the backend.");
+      return;
+    }
+    if (isUsageRequestInFlightRef.current) return;
+
+    const isBackground = Boolean(options?.background);
+    isUsageRequestInFlightRef.current = true;
+    setIsUsageLoading(true);
+    if (!isBackground) {
+      setError(null);
+    }
+    try {
+      window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmedToken);
+      const response = await audioService.listAdminUsage(trimmedToken);
+      setUsageResponse(response);
+      const loadedAt = new Date();
+      setLastLoadedAt(loadedAt);
+      lastSuccessfulUsageLoadRef.current = loadedAt;
+    } catch (err: any) {
+      if (
+        isBackground &&
+        lastSuccessfulUsageLoadRef.current &&
+        isTransientAdminJobsError(err)
+      ) {
+        return;
+      }
+      setError(
+        formatAdminJobsError(
+          err,
+          "Could not load usage limits. Check the token and backend configuration.",
+        ),
+      );
+    } finally {
+      isUsageRequestInFlightRef.current = false;
+      setIsUsageLoading(false);
+    }
+  }, [adminToken]);
+
   const loadJobHistory = useCallback(async () => {
     const trimmedToken = adminToken.trim();
     if (!trimmedToken) {
@@ -423,17 +486,58 @@ const AdminJobsDashboard: React.FC = () => {
     setError(null);
     setJobsResponse(emptyJobsResponse);
     setJobHistoryResponse(emptyJobHistoryResponse);
+    setUsageResponse(emptyUsageResponse);
     setLastLoadedAt(null);
   }, []);
+
+  const handleResetUsage = useCallback(async (row: AdminUsageRow) => {
+    const trimmedToken = adminToken.trim();
+    if (!trimmedToken) {
+      setError("Enter the admin token configured on the backend.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Reset today's usage counter for ${row.username}? This will not clear active jobs or delete transcriptions.`,
+    );
+    if (!confirmed) return;
+
+    setResettingUsageUserId(row.user_id);
+    setError(null);
+    try {
+      window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmedToken);
+      const response = await audioService.resetAdminUsage(
+        trimmedToken,
+        row.user_id,
+      );
+      setUsageResponse((current) => ({
+        ...current,
+        usage: current.usage.map((item) =>
+          item.user_id === response.usage.user_id ? response.usage : item,
+        ),
+      }));
+      setLastLoadedAt(new Date());
+    } catch (err: any) {
+      setError(
+        formatAdminJobsError(
+          err,
+          "Could not reset usage limits. Check the token and backend configuration.",
+        ),
+      );
+    } finally {
+      setResettingUsageUserId(null);
+    }
+  }, [adminToken]);
 
   useEffect(() => {
     if (!tokenReady) return;
     void loadJobs();
+    void loadUsage();
     const intervalId = window.setInterval(() => {
       void loadJobs({ background: true });
+      void loadUsage({ background: true });
     }, 30000);
     return () => window.clearInterval(intervalId);
-  }, [loadJobs, tokenReady]);
+  }, [loadJobs, loadUsage, tokenReady]);
 
   useEffect(() => {
     if (!tokenReady || activeView !== "history") return;
@@ -506,6 +610,10 @@ const AdminJobsDashboard: React.FC = () => {
 
   const isViewingHistory = activeView === "history";
   const currentJobs = isViewingHistory ? jobHistoryResponse.jobs : visibleJobs;
+  const primaryRefreshLabel =
+    isUsageLoading || (isViewingHistory ? isHistoryLoading : isLoading)
+      ? "Loading..."
+      : "Refresh";
 
   return (
     <div className="admin-jobs-page">
@@ -602,20 +710,20 @@ const AdminJobsDashboard: React.FC = () => {
                 type="button"
                 className="admin-refresh-button"
                 onClick={() => {
-                  void (isViewingHistory ? loadJobHistory() : loadJobs());
+                  if (isViewingHistory) {
+                    void loadJobHistory();
+                  } else {
+                    void loadJobs();
+                  }
+                  void loadUsage();
                 }}
-                disabled={isViewingHistory ? isHistoryLoading : isLoading}
+                disabled={
+                  (isViewingHistory ? isHistoryLoading : isLoading) ||
+                  isUsageLoading
+                }
               >
                 <RefreshCw aria-hidden="true" />
-                <span>
-                  {isViewingHistory
-                    ? isHistoryLoading
-                      ? "Loading..."
-                      : "Refresh"
-                    : isLoading
-                      ? "Loading..."
-                      : "Refresh"}
-                </span>
+                <span>{primaryRefreshLabel}</span>
               </button>
               <button
                 type="button"
@@ -656,6 +764,105 @@ const AdminJobsDashboard: React.FC = () => {
               </svg>
             </article>
           ))}
+        </section>
+
+        <section className="admin-usage-panel" aria-label="Usage limits">
+          <div className="admin-job-table-header">
+            <div>
+              <span className="admin-panel-icon">
+                <BarChart3 aria-hidden="true" />
+              </span>
+              <h2>Usage Limits</h2>
+            </div>
+            <div className="admin-job-toolbar">
+              <span>
+                {usageResponse.date
+                  ? `UTC ${usageResponse.date}`
+                  : "UTC today"}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  void loadUsage();
+                }}
+                disabled={isUsageLoading}
+                aria-label="Refresh usage limits"
+              >
+                <RefreshCw aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+
+          {isUsageLoading && usageResponse.usage.length === 0 ? (
+            <div className="admin-loading-skeleton" aria-label="Loading usage limits">
+              <Loader2 aria-hidden="true" />
+              <span />
+              <span />
+              <span />
+            </div>
+          ) : usageResponse.usage.length === 0 ? (
+            <div className="admin-usage-empty">
+              <strong>No usage limits are active for this UTC day.</strong>
+              <span>Users with quota usage or active jobs will appear here.</span>
+            </div>
+          ) : (
+            <div className="admin-usage-grid">
+              {usageResponse.usage.map((row) => {
+                const quotaUsed =
+                  row.daily_limit > 0
+                    ? Math.min(100, (row.usage_count / row.daily_limit) * 100)
+                    : 0;
+                const isResetting = resettingUsageUserId === row.user_id;
+                return (
+                  <article className="admin-usage-card" key={row.user_id}>
+                    <div className="admin-usage-card-header">
+                      <div>
+                        <strong>{row.username}</strong>
+                        <span>User {row.user_id}</span>
+                      </div>
+                      <span
+                        className={`admin-usage-quota ${
+                          row.remaining_quota === 0 ? "is-exhausted" : ""
+                        }`}
+                      >
+                        {formatQuota(row)}
+                      </span>
+                    </div>
+                    <div className="admin-usage-meter" aria-hidden="true">
+                      <span style={{ width: `${quotaUsed}%` }} />
+                    </div>
+                    <div className="admin-usage-facts">
+                      <span>
+                        <strong>{row.remaining_quota}</strong>
+                        Remaining
+                      </span>
+                      <span>
+                        <strong>{row.active_job_count}</strong>
+                        Active jobs
+                      </span>
+                    </div>
+                    {row.reset_available && (
+                      <button
+                        type="button"
+                        className="admin-usage-reset"
+                        onClick={() => {
+                          void handleResetUsage(row);
+                        }}
+                        disabled={isResetting}
+                      >
+                        {isResetting ? (
+                          <Loader2 aria-hidden="true" />
+                        ) : (
+                          <RotateCcw aria-hidden="true" />
+                        )}
+                        <span>{isResetting ? "Resetting..." : "Reset usage"}</span>
+                      </button>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
         </section>
 
         <section className="admin-job-table-shell">

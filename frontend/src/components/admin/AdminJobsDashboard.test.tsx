@@ -13,6 +13,8 @@ vi.mock("../../services/audioService", () => ({
   default: {
     listAdminJobs: vi.fn(),
     listAdminJobHistory: vi.fn(),
+    listAdminUsage: vi.fn(),
+    resetAdminUsage: vi.fn(),
   },
 }));
 
@@ -62,9 +64,27 @@ const mockHistoryResponse = {
   count: 1,
 };
 
+const mockUsageResponse = {
+  date: "2026-05-27",
+  usage: [
+    {
+      user_id: 123,
+      username: "markyturns",
+      usage_count: 5,
+      daily_limit: 5,
+      remaining_quota: 0,
+      active_job_count: 0,
+      reset_available: true,
+    },
+  ],
+  reset_available: true,
+};
+
 const mockedAudioService = audioService as unknown as {
   listAdminJobs: ReturnType<typeof vi.fn>;
   listAdminJobHistory: ReturnType<typeof vi.fn>;
+  listAdminUsage: ReturnType<typeof vi.fn>;
+  resetAdminUsage: ReturnType<typeof vi.fn>;
 };
 
 const renderWithSavedToken = async () => {
@@ -83,6 +103,17 @@ describe("AdminJobsDashboard", () => {
     vi.clearAllMocks();
     mockedAudioService.listAdminJobs.mockResolvedValue(mockJobsResponse);
     mockedAudioService.listAdminJobHistory.mockResolvedValue(mockHistoryResponse);
+    mockedAudioService.listAdminUsage.mockResolvedValue(mockUsageResponse);
+    mockedAudioService.resetAdminUsage.mockResolvedValue({
+      success: true,
+      deleted_count: 5,
+      usage: {
+        ...mockUsageResponse.usage[0],
+        usage_count: 0,
+        remaining_quota: 5,
+      },
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
   });
 
   it("shows a short backend token hint before an admin token is saved", () => {
@@ -220,6 +251,58 @@ describe("AdminJobsDashboard", () => {
       setIntervalSpy.mockRestore();
       clearIntervalSpy.mockRestore();
     }
+  });
+
+  it("renders daily usage when active jobs are empty", async () => {
+    mockedAudioService.listAdminJobs.mockResolvedValue({
+      jobs: [],
+      counts: {
+        active: 0,
+        queued: 0,
+        processing: 0,
+        rate_limited: 0,
+      },
+    });
+
+    await renderWithSavedToken();
+
+    expect(await screen.findByText("Usage Limits")).toBeInTheDocument();
+    expect(screen.getByText("markyturns")).toBeInTheDocument();
+    expect(screen.getByText("5 / 5")).toBeInTheDocument();
+    expect(screen.getByText("Remaining")).toBeInTheDocument();
+    expect(screen.getByText("Active jobs")).toBeInTheDocument();
+    expect(screen.getByText("All clear!")).toBeInTheDocument();
+  });
+
+  it("shows reset controls only when backend says reset is available", async () => {
+    mockedAudioService.listAdminUsage.mockResolvedValue({
+      ...mockUsageResponse,
+      usage: [
+        {
+          ...mockUsageResponse.usage[0],
+          reset_available: false,
+        },
+      ],
+      reset_available: false,
+    });
+
+    await renderWithSavedToken();
+
+    expect(screen.queryByRole("button", { name: /Reset usage/i })).not.toBeInTheDocument();
+  });
+
+  it("calls reset usage for the selected user and refreshes the row", async () => {
+    await renderWithSavedToken();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Reset usage/i }));
+
+    await waitFor(() => {
+      expect(mockedAudioService.resetAdminUsage).toHaveBeenCalledWith(
+        "saved-admin-token",
+        123,
+      );
+    });
+    expect(await screen.findByText("0 / 5")).toBeInTheDocument();
   });
 
   it("calls listAdminJobHistory with the selected history status", async () => {

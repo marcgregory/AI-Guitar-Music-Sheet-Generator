@@ -16,6 +16,8 @@ import {
   Video,
 } from "lucide-react";
 import audioService, {
+  DAILY_LIMIT_QUEUE_EMPTY_MESSAGE,
+  isDailyProcessingLimitError,
   type StemSelection,
   type Transcription,
 } from "../services/audioService";
@@ -206,6 +208,9 @@ const AudioUpload: React.FC = () => {
   }, [loadActiveTranscriptions]);
 
   const fallbackErrorMessage = (err: any, fallback: string): string => {
+    if (isDailyProcessingLimitError(err)) {
+      return DAILY_LIMIT_QUEUE_EMPTY_MESSAGE;
+    }
     const detail = err.response?.data?.detail;
     if (typeof detail === "string") return detail;
     if (

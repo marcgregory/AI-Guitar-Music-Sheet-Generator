@@ -35,6 +35,21 @@ def _create_job(username: str, **overrides) -> int:
         session.close()
 
 
+def _seed_usage_event(user_id: int, *, created_at: datetime) -> None:
+    session = TestingSessionLocal()
+    try:
+        session.add(
+            models.UsageEvent(
+                user_id=user_id,
+                action_type="admin_usage_test",
+                created_at=created_at,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+
 def test_admin_jobs_requires_configured_token():
     reset_database()
     original_token = config.settings.ADMIN_API_TOKEN
@@ -62,6 +77,219 @@ def test_admin_jobs_rejects_invalid_token():
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Invalid admin token."
+
+
+def test_admin_usage_requires_admin_token():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    try:
+        response = client.get("/api/v1/admin/usage")
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Invalid admin token."
+
+
+def test_admin_usage_counts_selected_utc_date_and_filters_user():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "usage-date-owner", "usage-date@example.com")
+        other = create_user(session, "usage-date-other", "usage-date-other@example.com")
+        owner_id = owner.id
+        other_id = other.id
+    finally:
+        session.close()
+
+    _seed_usage_event(
+        owner_id,
+        created_at=datetime(2026, 5, 27, 8, 30, tzinfo=timezone.utc),
+    )
+    _seed_usage_event(
+        owner_id,
+        created_at=datetime(2026, 5, 27, 23, 59, tzinfo=timezone.utc),
+    )
+    _seed_usage_event(
+        owner_id,
+        created_at=datetime(2026, 5, 26, 23, 59, tzinfo=timezone.utc),
+    )
+    _seed_usage_event(
+        other_id,
+        created_at=datetime(2026, 5, 27, 9, 0, tzinfo=timezone.utc),
+    )
+
+    try:
+        response = client.get(
+            f"/api/v1/admin/usage?user_id={owner_id}&date=2026-05-27",
+            headers={"X-Admin-Token": "admin-secret"},
+        )
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["date"] == "2026-05-27"
+    assert payload["reset_available"] is True
+    assert payload["usage"] == [
+        {
+            "user_id": owner_id,
+            "username": "usage-date-owner",
+            "usage_count": 2,
+            "daily_limit": 5,
+            "remaining_quota": 3,
+            "active_job_count": 0,
+            "reset_available": True,
+        }
+    ]
+
+
+def test_admin_usage_default_today_excludes_previous_day_usage():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "usage-today-owner", "usage-today@example.com")
+        owner_id = owner.id
+    finally:
+        session.close()
+    now = datetime.now(timezone.utc)
+    _seed_usage_event(owner_id, created_at=now)
+    _seed_usage_event(owner_id, created_at=now - timedelta(days=1, minutes=5))
+
+    try:
+        response = client.get(
+            "/api/v1/admin/usage",
+            headers={"X-Admin-Token": "admin-secret"},
+        )
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    rows = response.json()["usage"]
+    assert len(rows) == 1
+    assert rows[0]["username"] == "usage-today-owner"
+    assert rows[0]["usage_count"] == 1
+
+
+def test_admin_usage_active_job_count_and_usage_count_are_independent():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    session = TestingSessionLocal()
+    try:
+        usage_owner = create_user(session, "usage-only-owner", "usage-only@example.com")
+        usage_owner_id = usage_owner.id
+    finally:
+        session.close()
+    _seed_usage_event(usage_owner_id, created_at=datetime.now(timezone.utc))
+    active_id = _create_job("usage-active-only", processing_status="processing")
+
+    try:
+        response = client.get(
+            "/api/v1/admin/usage",
+            headers={"X-Admin-Token": "admin-secret"},
+        )
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+
+    assert response.status_code == 200
+    rows = {row["username"]: row for row in response.json()["usage"]}
+    assert rows["usage-only-owner"]["usage_count"] == 1
+    assert rows["usage-only-owner"]["active_job_count"] == 0
+    assert rows["usage-active-only"]["usage_count"] == 0
+    assert rows["usage-active-only"]["active_job_count"] == 1
+    assert active_id is not None
+
+
+def test_admin_usage_reset_blocked_outside_local_without_explicit_enable():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    original_environment = config.settings.ENVIRONMENT
+    original_reset = config.settings.ENABLE_ADMIN_USAGE_RESET
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    config.settings.ENVIRONMENT = "production"
+    config.settings.ENABLE_ADMIN_USAGE_RESET = False
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "reset-blocked-owner", "reset-blocked@example.com")
+        owner_id = owner.id
+    finally:
+        session.close()
+    _seed_usage_event(owner_id, created_at=datetime.now(timezone.utc))
+
+    try:
+        response = client.post(
+            "/api/v1/admin/usage/reset",
+            headers={"X-Admin-Token": "admin-secret"},
+            json={"user_id": owner_id},
+        )
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+        config.settings.ENVIRONMENT = original_environment
+        config.settings.ENABLE_ADMIN_USAGE_RESET = original_reset
+
+    assert response.status_code == 403
+    session = TestingSessionLocal()
+    try:
+        assert session.query(models.UsageEvent).count() == 1
+    finally:
+        session.close()
+
+
+def test_admin_usage_reset_deletes_today_usage_only_and_leaves_jobs():
+    reset_database()
+    original_token = config.settings.ADMIN_API_TOKEN
+    original_environment = config.settings.ENVIRONMENT
+    config.settings.ADMIN_API_TOKEN = "admin-secret"
+    config.settings.ENVIRONMENT = "development"
+    active_id = _create_job("reset-owner", processing_status="processing")
+    session = TestingSessionLocal()
+    try:
+        owner = session.query(models.User).filter(models.User.username == "reset-owner").one()
+        owner_id = owner.id
+    finally:
+        session.close()
+    now = datetime.now(timezone.utc)
+    _seed_usage_event(owner_id, created_at=now)
+    _seed_usage_event(owner_id, created_at=now - timedelta(days=1, minutes=5))
+
+    try:
+        response = client.post(
+            "/api/v1/admin/usage/reset",
+            headers={"X-Admin-Token": "admin-secret"},
+            json={"user_id": owner_id},
+        )
+    finally:
+        config.settings.ADMIN_API_TOKEN = original_token
+        config.settings.ENVIRONMENT = original_environment
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["deleted_count"] == 1
+    assert payload["usage"] == {
+        "user_id": owner_id,
+        "username": "reset-owner",
+        "usage_count": 0,
+        "daily_limit": 5,
+        "remaining_quota": 5,
+        "active_job_count": 1,
+        "reset_available": True,
+    }
+    session = TestingSessionLocal()
+    try:
+        remaining_events = session.query(models.UsageEvent).all()
+        job = session.query(models.Transcription).filter(models.Transcription.id == active_id).one()
+        assert len(remaining_events) == 1
+        assert job.processing_status == "processing"
+        assert job.is_deleted is False
+    finally:
+        session.close()
 
 
 def test_admin_jobs_lists_active_modal_observability_fields():
