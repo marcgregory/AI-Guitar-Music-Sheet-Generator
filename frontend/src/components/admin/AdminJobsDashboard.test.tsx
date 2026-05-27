@@ -69,12 +69,30 @@ const mockUsageResponse = {
   usage: [
     {
       user_id: 123,
-      username: "markyturns",
+      username: "quota-exhausted",
       usage_count: 5,
       daily_limit: 5,
       remaining_quota: 0,
       active_job_count: 0,
       reset_available: true,
+    },
+    {
+      user_id: 124,
+      username: "quota-available",
+      usage_count: 2,
+      daily_limit: 5,
+      remaining_quota: 3,
+      active_job_count: 1,
+      reset_available: false,
+    },
+    {
+      user_id: 125,
+      username: "quota-unlimited",
+      usage_count: 7,
+      daily_limit: 0,
+      remaining_quota: 0,
+      active_job_count: 1,
+      reset_available: false,
     },
   ],
   reset_available: true,
@@ -267,11 +285,55 @@ describe("AdminJobsDashboard", () => {
     await renderWithSavedToken();
 
     expect(await screen.findByText("Usage Limits")).toBeInTheDocument();
-    expect(screen.getByText("markyturns")).toBeInTheDocument();
+    expect(screen.getByText("quota-exhausted")).toBeInTheDocument();
+    expect(screen.getByText("quota-available")).toBeInTheDocument();
+    expect(screen.getByText("quota-unlimited")).toBeInTheDocument();
     expect(screen.getByText("5 / 5")).toBeInTheDocument();
-    expect(screen.getByText("Remaining")).toBeInTheDocument();
-    expect(screen.getByText("Active jobs")).toBeInTheDocument();
+    expect(screen.getByText("2 / 5")).toBeInTheDocument();
+    expect(screen.getByText("7 / unlimited")).toBeInTheDocument();
+    expect(screen.getAllByText("Remaining")).toHaveLength(3);
+    expect(screen.getAllByText("Active jobs")).toHaveLength(3);
     expect(screen.getByText("All clear!")).toBeInTheDocument();
+  });
+
+  it("filters usage rows to exhausted limited users only", async () => {
+    await renderWithSavedToken();
+
+    expect(await screen.findByText("quota-exhausted")).toBeInTheDocument();
+    expect(screen.getByText("quota-available")).toBeInTheDocument();
+    expect(screen.getByText("quota-unlimited")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Exhausted only"));
+
+    expect(screen.getByText("quota-exhausted")).toBeInTheDocument();
+    expect(screen.queryByText("quota-available")).not.toBeInTheDocument();
+    expect(screen.queryByText("quota-unlimited")).not.toBeInTheDocument();
+  });
+
+  it("shows an exhausted-only empty state when no limited users are exhausted", async () => {
+    mockedAudioService.listAdminUsage.mockResolvedValue({
+      ...mockUsageResponse,
+      usage: [
+        {
+          ...mockUsageResponse.usage[1],
+          username: "quota-still-available",
+        },
+        {
+          ...mockUsageResponse.usage[2],
+          username: "quota-still-unlimited",
+        },
+      ],
+    });
+
+    await renderWithSavedToken();
+
+    fireEvent.click(screen.getByLabelText("Exhausted only"));
+
+    expect(
+      screen.getByText("No exhausted users for this UTC day."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("quota-still-available")).not.toBeInTheDocument();
+    expect(screen.queryByText("quota-still-unlimited")).not.toBeInTheDocument();
   });
 
   it("shows reset controls only when backend says reset is available", async () => {

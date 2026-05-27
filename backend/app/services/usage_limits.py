@@ -15,6 +15,10 @@ def next_utc_reset_at() -> datetime:
     return current_utc_day_start() + timedelta(days=1)
 
 
+def next_utc_reset_at_iso() -> str:
+    return next_utc_reset_at().isoformat().replace("+00:00", "Z")
+
+
 def user_daily_usage_count(db_session: Session, user_id: int) -> int:
     return (
         db_session.query(models.UsageEvent.id)
@@ -42,6 +46,6 @@ def user_usage_summary(db_session: Session, user_id: int) -> dict[str, object]:
         "usage_count": usage_count,
         "daily_limit": daily_limit,
         "remaining_quota": max(daily_limit - usage_count, 0),
-        "resets_at": next_utc_reset_at(),
+        "resets_at": next_utc_reset_at_iso(),
         "is_unlimited": False,
     }

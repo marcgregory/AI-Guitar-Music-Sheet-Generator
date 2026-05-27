@@ -223,12 +223,59 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const DAILY_LIMIT_QUEUE_EMPTY_MESSAGE =
   "The queue can be empty, but your daily processing quota is already used.";
 
+export interface DailyProcessingLimitDetail {
+  error: string;
+  message?: string;
+  usage?: UserUsage;
+}
+
+const isUserUsage = (value: unknown): value is UserUsage => {
+  if (!isRecord(value)) return false;
+  const remainingQuota = value.remaining_quota;
+  const resetsAt = value.resets_at;
+  return (
+    typeof value.usage_count === "number" &&
+    typeof value.daily_limit === "number" &&
+    (typeof remainingQuota === "number" || remainingQuota === null) &&
+    (typeof resetsAt === "string" || resetsAt === null) &&
+    typeof value.is_unlimited === "boolean"
+  );
+};
+
+export const getDailyProcessingLimitDetail = (
+  error: unknown,
+): DailyProcessingLimitDetail | null => {
+  if (!isRecord(error) || !isRecord(error.response)) return null;
+  const status = error.response.status;
+  const detail = isRecord(error.response.data)
+    ? error.response.data.detail
+    : undefined;
+
+  if (status !== 429 || !isRecord(detail)) return null;
+  if (detail.error !== "Daily processing limit reached.") return null;
+
+  return {
+    error: detail.error,
+    message: typeof detail.message === "string" ? detail.message : undefined,
+    usage: isUserUsage(detail.usage) ? detail.usage : undefined,
+  };
+};
+
+export const getDailyProcessingLimitUsage = (
+  error: unknown,
+): UserUsage | null => getDailyProcessingLimitDetail(error)?.usage ?? null;
+
+export const getDailyProcessingLimitMessage = (
+  error: unknown,
+): string | null => getDailyProcessingLimitDetail(error)?.message ?? null;
+
 export const isDailyProcessingLimitError = (error: unknown): boolean => {
   if (!isRecord(error) || !isRecord(error.response)) return false;
   const status = error.response.status;
   const detail = isRecord(error.response.data)
     ? error.response.data.detail
     : undefined;
+  if (getDailyProcessingLimitDetail(error)) return true;
   return (
     status === 429 &&
     typeof detail === "string" &&

@@ -56,7 +56,7 @@ def reset_database():
     config.settings.YOUTUBE_COOKIES_B64 = None
     config.settings.YOUTUBE_PO_TOKEN = None
     config.settings.YOUTUBE_VISITOR_DATA = None
-    config.settings.YOUTUBE_PLAYER_CLIENT = "mweb"
+    config.settings.YOUTUBE_PLAYER_CLIENT = None
     config.settings.YOUTUBE_PLAYER_CLIENTS = None
     config.settings.ENABLE_USAGE_LIMITS = True
     config.settings.MAX_ACTIVE_JOBS_PER_USER = 1
@@ -3363,11 +3363,10 @@ def test_extract_audio_from_youtube_retries_without_cookies_then_returns_rejecte
     assert response.json()["detail"] == (
         "YouTube rejected this request. Please upload the audio directly or refresh cookies/PO token."
     )
-    assert len(calls) == 8
-    assert all("cookiefile" in call for call in calls[:4])
-    assert all("cookiefile" not in call for call in calls[4:])
-    assert [call["format"] for call in calls[:4]] == audio_endpoint.FORMAT_CANDIDATES
-    assert [call["format"] for call in calls[4:]] == audio_endpoint.FORMAT_CANDIDATES
+    assert len(calls) == 2
+    assert "cookiefile" in calls[0]
+    assert "cookiefile" not in calls[1]
+    assert [call["format"] for call in calls] == ["bestaudio/best", "bestaudio/best"]
     assert "cookies_loaded=True" in caplog.text
     assert "cookies_loaded=False" in caplog.text
     assert "po_token_configured=True" in caplog.text
@@ -3433,11 +3432,10 @@ def test_extract_audio_from_youtube_cookie_rejection_retry_can_succeed():
 
     assert response.status_code == 200
     assert response.json()["title"] == "Retry worked"
-    assert len(calls) == 5
-    assert all("cookiefile" in call for call in calls[:4])
-    assert "cookiefile" not in calls[4]
-    assert [call["format"] for call in calls[:4]] == audio_endpoint.FORMAT_CANDIDATES
-    assert calls[4]["format"] == audio_endpoint.FORMAT_CANDIDATES[0]
+    assert len(calls) == 2
+    assert "cookiefile" in calls[0]
+    assert "cookiefile" not in calls[1]
+    assert [call["format"] for call in calls] == ["bestaudio/best", "bestaudio/best"]
 
 
 def test_extract_audio_from_youtube_does_not_retry_cookie_attempt_for_unrelated_error():
@@ -3486,9 +3484,9 @@ def test_extract_audio_from_youtube_does_not_retry_cookie_attempt_for_unrelated_
         config.settings.YOUTUBE_COOKIES = original_cookies
 
     assert response.status_code == 500
-    assert len(calls) == 4
-    assert all("cookiefile" in call for call in calls)
-    assert [call["format"] for call in calls] == audio_endpoint.FORMAT_CANDIDATES
+    assert len(calls) == 1
+    assert "cookiefile" in calls[0]
+    assert calls[0]["format"] == "bestaudio/best"
 
 
 def test_youtube_download_options_include_cookiefile_when_configured():
@@ -3503,13 +3501,15 @@ def test_youtube_download_options_include_cookiefile_when_configured():
     assert options["cookiefile"] == "/app/secrets/youtube.cookies.txt"
 
 
-def test_youtube_download_options_include_resilient_defaults_without_player_skip():
+def test_youtube_download_options_use_default_format_without_extractor_args():
     from app.api.v1.endpoints.audio import _build_youtube_download_options
 
     original_po_token = config.settings.YOUTUBE_PO_TOKEN
     original_player_client = config.settings.YOUTUBE_PLAYER_CLIENT
+    original_visitor_data = config.settings.YOUTUBE_VISITOR_DATA
     config.settings.YOUTUBE_PO_TOKEN = None
-    config.settings.YOUTUBE_PLAYER_CLIENT = "mweb"
+    config.settings.YOUTUBE_PLAYER_CLIENT = None
+    config.settings.YOUTUBE_VISITOR_DATA = None
 
     try:
         options = _build_youtube_download_options(
@@ -3519,25 +3519,26 @@ def test_youtube_download_options_include_resilient_defaults_without_player_skip
     finally:
         config.settings.YOUTUBE_PO_TOKEN = original_po_token
         config.settings.YOUTUBE_PLAYER_CLIENT = original_player_client
+        config.settings.YOUTUBE_VISITOR_DATA = original_visitor_data
 
     assert options["format"] == "bestaudio/best"
     assert options["noplaylist"] is True
     assert options["quiet"] is True
     assert options["no_warnings"] is True
-    assert "player_skip" not in options["extractor_args"]["youtube"]
+    assert "extractor_args" not in options
 
 
-def test_extract_audio_from_youtube_retries_format_selection_until_success():
+def test_extract_audio_from_youtube_does_not_retry_format_selection():
     reset_database()
     session = TestingSessionLocal()
     try:
-        create_user(session, "youtube-format-retry", "youtube-format-retry@example.com")
+        create_user(session, "youtube-format-no-retry", "youtube-format-no-retry@example.com")
     finally:
         session.close()
 
     calls = []
 
-    class FormatRetryYoutubeDL:
+    class FormatFailYoutubeDL:
         def __init__(self, options):
             self.options = options
             calls.append(options.copy())
@@ -3549,33 +3550,24 @@ def test_extract_audio_from_youtube_retries_format_selection_until_success():
             return False
 
         def extract_info(self, url, download):
-            if self.options["format"] == audio_endpoint.FORMAT_CANDIDATES[0]:
-                raise RuntimeError("Requested format is not available")
-            outtmpl = self.options["outtmpl"]["default"]
-            output_name = outtmpl.replace("%(ext)s", "wav")
-            output_path = Path(self.options["paths"]["home"]) / output_name
-            output_path.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
-            return {"title": "Format retry worked"}
+            raise RuntimeError("Requested format is not available")
 
-    with (
-        patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", FormatRetryYoutubeDL),
-        patch("app.api.v1.endpoints.audio._start_transcription_processing", return_value=None),
-    ):
+    with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", FormatFailYoutubeDL):
         response = client.post(
             "/api/v1/audio/youtube",
-            headers=auth_headers("youtube-format-retry"),
+            headers=auth_headers("youtube-format-no-retry"),
             json={
                 "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
                 "selected_stem": "other",
             },
         )
 
-    assert response.status_code == 200
-    assert response.json()["title"] == "Format retry worked"
-    assert [call["format"] for call in calls] == audio_endpoint.FORMAT_CANDIDATES[:2]
+    assert response.status_code == 500
+    assert len(calls) == 1
+    assert calls[0]["format"] == "bestaudio/best"
 
 
-def test_extract_audio_from_youtube_tries_all_formats_before_failing(caplog):
+def test_extract_audio_from_youtube_logs_youtube_debug_options(caplog):
     reset_database()
     caplog.set_level("WARNING", logger="app.api.v1.endpoints.audio")
     session = TestingSessionLocal()
@@ -3611,8 +3603,12 @@ def test_extract_audio_from_youtube_tries_all_formats_before_failing(caplog):
         )
 
     assert response.status_code == 500
-    assert [call["format"] for call in calls] == audio_endpoint.FORMAT_CANDIDATES
-    assert "yt_dlp_format_retry" in caplog.text
+    assert len(calls) == 1
+    assert calls[0]["format"] == "bestaudio/best"
+    assert "youtube_debug format=bestaudio/best" in caplog.text
+    assert "extractor_args_enabled=False" in caplog.text
+    assert "postprocessors_enabled=True" in caplog.text
+    assert "yt_dlp_format_retry" not in caplog.text
 
 
 def test_youtube_download_options_include_po_token_extractor_args():
@@ -3621,11 +3617,9 @@ def test_youtube_download_options_include_po_token_extractor_args():
     original_po_token = config.settings.YOUTUBE_PO_TOKEN
     original_visitor_data = config.settings.YOUTUBE_VISITOR_DATA
     original_player_client = config.settings.YOUTUBE_PLAYER_CLIENT
-    original_player_clients = config.settings.YOUTUBE_PLAYER_CLIENTS
     config.settings.YOUTUBE_PO_TOKEN = "token-one"
     config.settings.YOUTUBE_VISITOR_DATA = "visitor-data"
     config.settings.YOUTUBE_PLAYER_CLIENT = "mweb"
-    config.settings.YOUTUBE_PLAYER_CLIENTS = "web,mweb"
 
     try:
         options = _build_youtube_download_options(
@@ -3636,11 +3630,10 @@ def test_youtube_download_options_include_po_token_extractor_args():
         config.settings.YOUTUBE_PO_TOKEN = original_po_token
         config.settings.YOUTUBE_VISITOR_DATA = original_visitor_data
         config.settings.YOUTUBE_PLAYER_CLIENT = original_player_client
-        config.settings.YOUTUBE_PLAYER_CLIENTS = original_player_clients
 
     assert options["extractor_args"] == {
         "youtube": {
-            "po_token": ["mweb.gvs+token-one"],
+            "po_token": ["token-one"],
             "visitor_data": ["visitor-data"],
             "player_client": ["mweb"],
         }

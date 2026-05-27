@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import audioService, {
   DAILY_LIMIT_QUEUE_EMPTY_MESSAGE,
+  getDailyProcessingLimitMessage,
+  getDailyProcessingLimitUsage,
   isDailyProcessingLimitError,
   type StemSelection,
   type Transcription,
@@ -234,7 +236,7 @@ const AudioUpload: React.FC = () => {
 
   const fallbackErrorMessage = (err: any, fallback: string): string => {
     if (isDailyProcessingLimitError(err)) {
-      return DAILY_LIMIT_QUEUE_EMPTY_MESSAGE;
+      return getDailyProcessingLimitMessage(err) ?? DAILY_LIMIT_QUEUE_EMPTY_MESSAGE;
     }
     const detail = err.response?.data?.detail;
     if (typeof detail === "string") return detail;
@@ -257,7 +259,12 @@ const AudioUpload: React.FC = () => {
   const quotaBlockedMessage =
     "Your daily processing attempts are used. Quota resets at 00:00 UTC.";
 
-  const handleDailyLimitError = async () => {
+  const handleDailyLimitError = async (err: unknown) => {
+    const structuredUsage = getDailyProcessingLimitUsage(err);
+    if (structuredUsage) {
+      setUsage(structuredUsage);
+      return;
+    }
     await loadUsage();
   };
 
@@ -397,7 +404,7 @@ const AudioUpload: React.FC = () => {
         showProcessingSlotBusy();
       } else {
         if (isDailyProcessingLimitError(err)) {
-          void handleDailyLimitError();
+          void handleDailyLimitError(err);
         }
         setError(fallbackErrorMessage(err, "Upload failed. Please try again."));
       }
@@ -477,7 +484,7 @@ const AudioUpload: React.FC = () => {
         showProcessingSlotBusy();
       } else {
         if (isDailyProcessingLimitError(err)) {
-          void handleDailyLimitError();
+          void handleDailyLimitError(err);
         }
         setError(
           fallbackErrorMessage(

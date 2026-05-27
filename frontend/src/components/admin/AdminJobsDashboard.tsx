@@ -362,6 +362,7 @@ const AdminJobsDashboard: React.FC = () => {
   const [historyLimit, setHistoryLimit] = useState<HistoryLimit>(50);
   const [usageUserIdFilter, setUsageUserIdFilter] = useState("");
   const [usageDateFilter, setUsageDateFilter] = useState("");
+  const [showExhaustedOnly, setShowExhaustedOnly] = useState(false);
   const isJobsRequestInFlightRef = useRef(false);
   const isUsageRequestInFlightRef = useRef(false);
   const lastSuccessfulJobsLoadRef = useRef<Date | null>(null);
@@ -508,6 +509,7 @@ const AdminJobsDashboard: React.FC = () => {
     setUsageResponse(emptyUsageResponse);
     setUsageUserIdFilter("");
     setUsageDateFilter("");
+    setShowExhaustedOnly(false);
     setLastLoadedAt(null);
   }, []);
 
@@ -631,6 +633,15 @@ const AdminJobsDashboard: React.FC = () => {
 
   const isViewingHistory = activeView === "history";
   const currentJobs = isViewingHistory ? jobHistoryResponse.jobs : visibleJobs;
+  const visibleUsageRows = useMemo(
+    () =>
+      showExhaustedOnly
+        ? usageResponse.usage.filter(
+            (row) => row.daily_limit > 0 && row.remaining_quota === 0,
+          )
+        : usageResponse.usage,
+    [showExhaustedOnly, usageResponse.usage],
+  );
   const primaryRefreshLabel =
     isUsageLoading || (isViewingHistory ? isHistoryLoading : isLoading)
       ? "Loading..."
@@ -796,6 +807,16 @@ const AdminJobsDashboard: React.FC = () => {
               <h2>Usage Limits</h2>
             </div>
             <div className="admin-job-toolbar">
+              <label className="admin-usage-toggle">
+                <input
+                  type="checkbox"
+                  checked={showExhaustedOnly}
+                  onChange={(event) =>
+                    setShowExhaustedOnly(event.target.checked)
+                  }
+                />
+                <span>Exhausted only</span>
+              </label>
               <label className="admin-usage-filter">
                 <span>User ID</span>
                 <input
@@ -847,9 +868,14 @@ const AdminJobsDashboard: React.FC = () => {
               <strong>No usage limits are active for this UTC day.</strong>
               <span>Users with quota usage or active jobs will appear here.</span>
             </div>
+          ) : visibleUsageRows.length === 0 && showExhaustedOnly ? (
+            <div className="admin-usage-empty">
+              <strong>No exhausted users for this UTC day.</strong>
+              <span>Clear the filter to view all usage rows.</span>
+            </div>
           ) : (
             <div className="admin-usage-grid">
-              {usageResponse.usage.map((row) => {
+              {visibleUsageRows.map((row) => {
                 const quotaUsed =
                   row.daily_limit > 0
                     ? Math.min(100, (row.usage_count / row.daily_limit) * 100)

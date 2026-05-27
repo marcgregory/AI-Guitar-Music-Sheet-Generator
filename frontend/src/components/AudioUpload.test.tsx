@@ -21,11 +21,29 @@ vi.mock("../services/audioService", () => ({
     const err = error as {
       response?: { status?: number; data?: { detail?: unknown } };
     };
+    const detail = err.response?.data?.detail;
     return (
       err.response?.status === 429 &&
-      typeof err.response.data?.detail === "string" &&
-      err.response.data.detail.includes("Daily processing limit reached")
+      ((typeof detail === "string" &&
+        detail.includes("Daily processing limit reached")) ||
+        (typeof detail === "object" &&
+          detail !== null &&
+          "error" in detail &&
+          detail.error === "Daily processing limit reached."))
     );
+  },
+  getDailyProcessingLimitMessage: (error: unknown) => {
+    const err = error as {
+      response?: { data?: { detail?: { message?: unknown } } };
+    };
+    const message = err.response?.data?.detail?.message;
+    return typeof message === "string" ? message : null;
+  },
+  getDailyProcessingLimitUsage: (error: unknown) => {
+    const err = error as {
+      response?: { data?: { detail?: { usage?: unknown } } };
+    };
+    return err.response?.data?.detail?.usage ?? null;
   },
   default: {
     listTranscriptions: vi.fn(),
@@ -147,6 +165,61 @@ describe("AudioUpload", () => {
         "The queue can be empty, but your daily processing quota is already used.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("uses structured daily quota 429 messages and updates quota immediately", async () => {
+    const structuredUsage = {
+      usage_count: 1,
+      daily_limit: 1,
+      remaining_quota: 0,
+      resets_at: "2026-05-28T00:00:00Z",
+      is_unlimited: false,
+    };
+    const mockedAudioService = audioService as unknown as {
+      getMyUsage: { mockResolvedValue: (value: unknown) => void };
+      uploadAudioFile: { mockRejectedValue: (value: unknown) => void };
+    };
+    mockedAudioService.getMyUsage.mockResolvedValue({
+      usage_count: 0,
+      daily_limit: 1,
+      remaining_quota: 1,
+      resets_at: "2026-05-28T00:00:00Z",
+      is_unlimited: false,
+    });
+    mockedAudioService.uploadAudioFile.mockRejectedValue({
+      response: {
+        status: 429,
+        data: {
+          detail: {
+            error: "Daily processing limit reached.",
+            message:
+              "Your daily processing attempts are used. Quota resets at 00:00 UTC.",
+            usage: structuredUsage,
+          },
+        },
+      },
+    });
+    const { container } = render(<AudioUpload />);
+
+    await screen.findByText("1 remaining today");
+    fireEvent.click(screen.getAllByRole("radio")[3]);
+    const fileInput = container.querySelector(
+      "input[type='file']",
+    ) as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: {
+        files: [new File(["RIFF...."], "sample.wav", { type: "audio/wav" })],
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Upload audio/i }));
+
+    expect(
+      await screen.findByText(
+        "Your daily processing attempts are used. Quota resets at 00:00 UTC.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("0 remaining today")).toBeInTheDocument();
   });
 
   it("shows daily quota copy near upload actions", async () => {

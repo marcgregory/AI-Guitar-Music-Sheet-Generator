@@ -22,7 +22,6 @@ from test_audio_list_endpoint import (
 ACTIVE_JOB_LIMIT_DETAIL = (
     "You already have a transcription job in progress. Please wait for it to finish before starting another."
 )
-DAILY_JOB_LIMIT_DETAIL = "Daily processing limit reached. Please try again tomorrow."
 
 
 def _use_modal_mode():
@@ -421,8 +420,32 @@ def test_costly_actions_rejected_after_daily_limit(endpoint_kind):
         )
 
     assert response.status_code == 429
-    assert response.json()["detail"] == DAILY_JOB_LIMIT_DETAIL
+    detail = response.json()["detail"]
+    assert detail["error"] == "Daily processing limit reached."
+    assert detail["message"] == (
+        "Your daily processing attempts are used. Quota resets at 00:00 UTC."
+    )
+    assert detail["usage"]["usage_count"] == 5
+    assert detail["usage"]["daily_limit"] == 5
+    assert detail["usage"]["remaining_quota"] == 0
+    assert detail["usage"]["resets_at"] is not None
+    assert detail["usage"]["is_unlimited"] is False
     assert _usage_count(username) == 5
+
+
+def test_unlimited_daily_limit_never_rejects_for_daily_usage():
+    reset_database()
+    _use_modal_mode()
+    config.settings.DAILY_PROCESSING_JOB_LIMIT = 0
+    with TestingSessionLocal() as session:
+        create_user(session, "usage-unlimited-upload", "usage-unlimited-upload@example.com")
+
+    _seed_daily_usage("usage-unlimited-upload", count=5)
+
+    response = _upload_sample("usage-unlimited-upload", contents=b"RIFF unlimited quota")
+
+    assert response.status_code == 200
+    assert _usage_count("usage-unlimited-upload") == 6
 
 
 def test_usage_event_not_recorded_for_validation_failure_or_duplicate_reuse():

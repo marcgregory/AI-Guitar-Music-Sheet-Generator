@@ -31,7 +31,11 @@ from ....services.audio_source_resolver import (
     resolve_generate_tab_audio_source,
 )
 from ....services.tablature import tablature_to_ascii_tab
-from ....services.usage_limits import current_utc_day_start, user_daily_usage_count
+from ....services.usage_limits import (
+    current_utc_day_start,
+    user_daily_usage_count,
+    user_usage_summary,
+)
 from ....celery import celery_app
 
 # Schema for YouTube URL request
@@ -83,17 +87,10 @@ IMPORTANT_YOUTUBE_COOKIE_NAMES = {
     "VISITOR_INFO1_LIVE",
 }
 LOW_YOUTUBE_COOKIE_COUNT_THRESHOLD = 3
-DEFAULT_YOUTUBE_PLAYER_CLIENT = "mweb"
-FORMAT_CANDIDATES = [
-    "bestaudio[ext=m4a]/bestaudio/best",
-    "bestaudio/best",
-    "bestaudio",
-    "best",
-]
+DEFAULT_YOUTUBE_PLAYER_CLIENT = None
 ACTIVE_JOB_LIMIT_DETAIL = (
     "You already have a transcription job in progress. Please wait for it to finish before starting another."
 )
-DAILY_JOB_LIMIT_DETAIL = "Daily processing limit reached. Please try again tomorrow."
 
 # Define the upload directory relative to the backend package so the location is
 # stable whether uvicorn is launched from the repo root or from backend/.
@@ -2442,7 +2439,11 @@ def _enforce_usage_limits(
     if daily_limit > 0 and _user_daily_usage_count(db_session, current_user.id) >= daily_limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=DAILY_JOB_LIMIT_DETAIL,
+            detail={
+                "error": "Daily processing limit reached.",
+                "message": "Your daily processing attempts are used. Quota resets at 00:00 UTC.",
+                "usage": user_usage_summary(db_session, current_user.id),
+            },
         )
 
 
@@ -2924,32 +2925,19 @@ def _build_youtube_download_options(
     return options
 
 
-def _split_env_list(value: str | None) -> list[str]:
-    if not value:
-        return []
-    return [item.strip() for item in re.split(r"[,;\s]+", value) if item.strip()]
-
-
 def _build_youtube_extractor_args() -> dict[str, list[str]]:
-    player_client = (
-        core.config.settings.YOUTUBE_PLAYER_CLIENT or DEFAULT_YOUTUBE_PLAYER_CLIENT
-    ).strip() or DEFAULT_YOUTUBE_PLAYER_CLIENT
-    raw_po_token = (core.config.settings.YOUTUBE_PO_TOKEN or "").strip()
+    extractor_args = {}
+    player_client = (core.config.settings.YOUTUBE_PLAYER_CLIENT or "").strip()
+    if player_client:
+        extractor_args["player_client"] = [player_client]
+    po_token = (core.config.settings.YOUTUBE_PO_TOKEN or "").strip()
+    if po_token:
+        extractor_args["po_token"] = [po_token]
     visitor_data = (core.config.settings.YOUTUBE_VISITOR_DATA or "").strip()
-    player_clients = _split_env_list(core.config.settings.YOUTUBE_PLAYER_CLIENTS)
-
-    extractor_args: dict[str, list[str]] = {"player_client": [player_client]}
-    if raw_po_token:
-        if ".gvs+" in raw_po_token:
-            po_token_value = raw_po_token
-        else:
-            po_token_value = f"{player_client}.gvs+{raw_po_token}"
-        extractor_args["po_token"] = [po_token_value]
     if visitor_data:
         extractor_args["visitor_data"] = [visitor_data]
-    if not raw_po_token and player_clients:
-        extractor_args["player_client"] = player_clients
 
+    logger.info(f"youtube_extractor_args_enabled={bool(extractor_args)}")
     return extractor_args
 
 
@@ -3240,6 +3228,28 @@ def _log_youtube_download_attempt(
     )
 
 
+def _log_youtube_debug_options(yt_dlp_opts: dict, cookiefile: str | None) -> None:
+    extractor_args = yt_dlp_opts.get("extractor_args") or {}
+    youtube_args = extractor_args.get("youtube") if isinstance(extractor_args, dict) else None
+    player_client = None
+    po_token_configured = bool((core.config.settings.YOUTUBE_PO_TOKEN or "").strip())
+    if not po_token_configured and isinstance(youtube_args, dict):
+        player_client_values = youtube_args.get("player_client")
+        if player_client_values:
+            player_client = ",".join(str(value) for value in player_client_values)
+
+    logger.warning(
+        "youtube_debug format=%s cookiefile=%s extractor_args_enabled=%s "
+        "player_client=%s outtmpl=%s postprocessors_enabled=%s",
+        yt_dlp_opts.get("format"),
+        bool(cookiefile),
+        bool(extractor_args),
+        player_client,
+        yt_dlp_opts.get("outtmpl"),
+        bool(yt_dlp_opts.get("postprocessors")),
+    )
+
+
 def _run_youtube_download_attempt(
     *,
     youtube_url: str,
@@ -3257,20 +3267,10 @@ def _run_youtube_download_attempt(
     logger.info("yt-dlp output template: %s", yt_dlp_opts["outtmpl"])
     logger.info("ffmpeg_path: %s", ffmpeg_path)
 
-    last_error: Exception | None = None
-    for fmt in FORMAT_CANDIDATES:
-        yt_dlp_opts["format"] = fmt
-        try:
-            with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
-                info_dict = ydl.extract_info(youtube_url, download=True)
-                return info_dict.get("title", "YouTube Audio") if info_dict else "YouTube Audio"
-        except Exception as exc:
-            last_error = exc
-            logger.warning("yt_dlp_format_retry format=%s error=%s", fmt, str(exc))
-
-    if last_error:
-        raise last_error
-    raise RuntimeError("yt-dlp download failed before any format was attempted.")
+    _log_youtube_debug_options(yt_dlp_opts, cookiefile)
+    with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
+        info_dict = ydl.extract_info(youtube_url, download=True)
+        return info_dict.get("title", "YouTube Audio") if info_dict else "YouTube Audio"
 
 
 def _resolve_youtube_downloaded_audio_path(unique_filename: str) -> Path:

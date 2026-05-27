@@ -12,7 +12,11 @@ vi.mock("./apiClient", () => ({
   default: mockApiClient,
 }));
 
-import audioService from "./audioService";
+import audioService, {
+  getDailyProcessingLimitMessage,
+  getDailyProcessingLimitUsage,
+  isDailyProcessingLimitError,
+} from "./audioService";
 import { apiClient } from "./apiClient";
 
 describe("audioService", () => {
@@ -95,5 +99,49 @@ describe("audioService", () => {
         timeout: 15000,
       },
     );
+  });
+
+  it("recognizes legacy string daily processing limit errors", () => {
+    const error = {
+      response: {
+        status: 429,
+        data: {
+          detail: "Daily processing limit reached. Please try again tomorrow.",
+        },
+      },
+    };
+
+    expect(isDailyProcessingLimitError(error)).toBe(true);
+    expect(getDailyProcessingLimitMessage(error)).toBeNull();
+    expect(getDailyProcessingLimitUsage(error)).toBeNull();
+  });
+
+  it("extracts structured daily processing limit detail safely", () => {
+    const usage = {
+      usage_count: 1,
+      daily_limit: 1,
+      remaining_quota: 0,
+      resets_at: "2026-05-28T00:00:00Z",
+      is_unlimited: false,
+    };
+    const error = {
+      response: {
+        status: 429,
+        data: {
+          detail: {
+            error: "Daily processing limit reached.",
+            message:
+              "Your daily processing attempts are used. Quota resets at 00:00 UTC.",
+            usage,
+          },
+        },
+      },
+    };
+
+    expect(isDailyProcessingLimitError(error)).toBe(true);
+    expect(getDailyProcessingLimitMessage(error)).toBe(
+      "Your daily processing attempts are used. Quota resets at 00:00 UTC.",
+    );
+    expect(getDailyProcessingLimitUsage(error)).toEqual(usage);
   });
 });

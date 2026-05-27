@@ -14636,6 +14636,63 @@ body,
   backdrop-filter: blur(26px);
 }
 
+.admin-usage-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 42px;
+  border: 1px solid rgba(120, 98, 72, 0.16);
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 248, 237, 0.64)),
+    rgba(255, 255, 255, 0.72);
+  color: #5f4633;
+  padding: 0 0.75rem 0 0.55rem;
+  font-size: 0.82rem;
+  font-weight: 900;
+  box-shadow:
+    0 8px 24px rgba(89, 64, 38, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+  cursor: pointer;
+  user-select: none;
+}
+
+.admin-usage-toggle input {
+  display: grid;
+  place-items: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  appearance: none;
+  border: 1px solid rgba(120, 98, 72, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+}
+
+.admin-usage-toggle input::before {
+  width: 0.58rem;
+  height: 0.58rem;
+  border-radius: inherit;
+  background: #b9682d;
+  opacity: 0;
+  transform: scale(0.65);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+  content: "";
+}
+
+.admin-usage-toggle input:checked::before {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.admin-usage-toggle input:focus-visible {
+  outline: 3px solid rgba(166, 111, 52, 0.18);
+  outline-offset: 2px;
+}
+
 .admin-usage-filter {
   display: grid;
   gap: 0.22rem;
