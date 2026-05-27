@@ -65,8 +65,8 @@ DEMO_AUDIO_URL = "/demo/example-guitar-riff.wav"
 CELERY_INSPECT_FAILURE_LOG_COOLDOWN_SECONDS = 30.0
 _last_celery_inspect_failure_log_at: float | None = None
 STEM_READY_MESSAGE = "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
-YOUTUBE_COOKIE_REJECTED_DETAIL = (
-    "Cookies were loaded, but YouTube rejected them. Re-export fresh cookies, add YOUTUBE_PO_TOKEN, or upload audio directly."
+YOUTUBE_REJECTED_REQUEST_DETAIL = (
+    "YouTube rejected this request. Please upload the audio directly or refresh cookies/PO token."
 )
 YOUTUBE_COOKIES_MALFORMED_DETAIL = (
     "YOUTUBE_COOKIES is configured but is not valid Netscape cookie format."
@@ -83,7 +83,13 @@ IMPORTANT_YOUTUBE_COOKIE_NAMES = {
     "VISITOR_INFO1_LIVE",
 }
 LOW_YOUTUBE_COOKIE_COUNT_THRESHOLD = 3
-DEFAULT_YOUTUBE_PLAYER_CLIENTS = ("default", "mweb")
+DEFAULT_YOUTUBE_PLAYER_CLIENT = "mweb"
+FORMAT_CANDIDATES = [
+    "bestaudio[ext=m4a]/bestaudio/best",
+    "bestaudio/best",
+    "bestaudio",
+    "best",
+]
 ACTIVE_JOB_LIMIT_DETAIL = (
     "You already have a transcription job in progress. Please wait for it to finish before starting another."
 )
@@ -2890,6 +2896,7 @@ def _build_youtube_download_options(
     """Build yt-dlp options using a simple filename template for Windows."""
     options = {
         'format': 'bestaudio/best',
+        'noplaylist': True,
         'paths': {'home': str(UPLOAD_DIR)},
         'outtmpl': {'default': f'{unique_filename}.%(ext)s'},
         'postprocessors': [{
@@ -2924,18 +2931,23 @@ def _split_env_list(value: str | None) -> list[str]:
 
 
 def _build_youtube_extractor_args() -> dict[str, list[str]]:
-    extractor_args: dict[str, list[str]] = {}
-    po_tokens = _split_env_list(core.config.settings.YOUTUBE_PO_TOKEN)
+    player_client = (
+        core.config.settings.YOUTUBE_PLAYER_CLIENT or DEFAULT_YOUTUBE_PLAYER_CLIENT
+    ).strip() or DEFAULT_YOUTUBE_PLAYER_CLIENT
+    raw_po_token = (core.config.settings.YOUTUBE_PO_TOKEN or "").strip()
     visitor_data = (core.config.settings.YOUTUBE_VISITOR_DATA or "").strip()
     player_clients = _split_env_list(core.config.settings.YOUTUBE_PLAYER_CLIENTS)
 
-    if po_tokens:
-        extractor_args["po_token"] = po_tokens
+    extractor_args: dict[str, list[str]] = {"player_client": [player_client]}
+    if raw_po_token:
+        if ".gvs+" in raw_po_token:
+            po_token_value = raw_po_token
+        else:
+            po_token_value = f"{player_client}.gvs+{raw_po_token}"
+        extractor_args["po_token"] = [po_token_value]
     if visitor_data:
         extractor_args["visitor_data"] = [visitor_data]
-    if po_tokens or visitor_data:
-        extractor_args["player_client"] = player_clients or list(DEFAULT_YOUTUBE_PLAYER_CLIENTS)
-    elif player_clients:
+    if not raw_po_token and player_clients:
         extractor_args["player_client"] = player_clients
 
     return extractor_args
@@ -3213,6 +3225,78 @@ def _youtube_verification_detail() -> str:
     )
 
 
+def _log_youtube_download_attempt(
+    *,
+    cookies_loaded: bool,
+    retry_without_cookies: bool,
+) -> None:
+    logger.info(
+        "yt-dlp download attempt cookies_loaded=%s po_token_configured=%s "
+        "yt_dlp_version=%s retry_without_cookies=%s",
+        cookies_loaded,
+        bool((core.config.settings.YOUTUBE_PO_TOKEN or "").strip()),
+        _get_ytdlp_version(),
+        retry_without_cookies,
+    )
+
+
+def _run_youtube_download_attempt(
+    *,
+    youtube_url: str,
+    unique_filename: str,
+    ffmpeg_path: str | None,
+    cookiefile: str | None,
+    retry_without_cookies: bool,
+) -> str:
+    yt_dlp_opts = _build_youtube_download_options(unique_filename, ffmpeg_path, cookiefile)
+    _log_youtube_download_attempt(
+        cookies_loaded=bool(cookiefile),
+        retry_without_cookies=retry_without_cookies,
+    )
+    logger.info("yt-dlp output directory: %s", UPLOAD_DIR)
+    logger.info("yt-dlp output template: %s", yt_dlp_opts["outtmpl"])
+    logger.info("ffmpeg_path: %s", ffmpeg_path)
+
+    last_error: Exception | None = None
+    for fmt in FORMAT_CANDIDATES:
+        yt_dlp_opts["format"] = fmt
+        try:
+            with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
+                info_dict = ydl.extract_info(youtube_url, download=True)
+                return info_dict.get("title", "YouTube Audio") if info_dict else "YouTube Audio"
+        except Exception as exc:
+            last_error = exc
+            logger.warning("yt_dlp_format_retry format=%s error=%s", fmt, str(exc))
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("yt-dlp download failed before any format was attempted.")
+
+
+def _resolve_youtube_downloaded_audio_path(unique_filename: str) -> Path:
+    expected_audio_file_path = UPLOAD_DIR / f"{unique_filename}.wav"
+    logger.info("yt-dlp expected output path: %s", expected_audio_file_path)
+
+    if expected_audio_file_path.exists():
+        return expected_audio_file_path
+
+    # Sometimes yt-dlp keeps the original extension. Check common audio types.
+    for ext in ["wav", "mp3", "webm", "opus", "m4a", "ogg"]:
+        candidate = UPLOAD_DIR / f"{unique_filename}.{ext}"
+        if candidate.exists():
+            return candidate
+
+    existing = list(UPLOAD_DIR.glob(f"{unique_filename}.*"))
+    logger.error(
+        "Expected audio file not found. Files matching pattern: %s",
+        existing,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to extract audio from YouTube URL. No output file found.",
+    )
+
+
 @router.post("/youtube", response_model=schemas.TranscriptionInDB)
 async def extract_audio_from_youtube(
     request: YouTubeUploadRequest,
@@ -3279,11 +3363,6 @@ async def extract_audio_from_youtube(
 
     # Keep yt-dlp's template as a plain filename; paths.home carries the directory.
     youtube_cookiefile = _get_youtube_cookiefile()
-    yt_dlp_opts = _build_youtube_download_options(unique_filename, ffmpeg_path, youtube_cookiefile.path)
-
-    logger.info(f"yt-dlp output directory: {UPLOAD_DIR}")
-    logger.info(f"yt-dlp output template: {yt_dlp_opts['outtmpl']}")
-    logger.info(f"ffmpeg_path: {ffmpeg_path}")
     logger.info(
         "yt-dlp cookies configured: %s source=%s",
         youtube_cookiefile.loaded,
@@ -3293,20 +3372,43 @@ async def extract_audio_from_youtube(
     video_title = "YouTube Audio"
 
     try:
-        # Download and extract audio in a single pass
         try:
-            with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
-                info_dict = ydl.extract_info(youtube_url, download=True)
-                video_title = info_dict.get('title', 'YouTube Audio') if info_dict else 'YouTube Audio'
+            video_title = _run_youtube_download_attempt(
+                youtube_url=youtube_url,
+                unique_filename=unique_filename,
+                ffmpeg_path=ffmpeg_path,
+                cookiefile=youtube_cookiefile.path,
+                retry_without_cookies=False,
+            )
+        except Exception as first_error:
+            should_retry_without_cookies = (
+                youtube_cookiefile.loaded and _is_youtube_verification_error(first_error)
+            )
+            if not should_retry_without_cookies:
+                raise
+            logger.warning(
+                "yt-dlp cookie attempt rejected by YouTube; retrying once without cookies."
+            )
+            try:
+                video_title = _run_youtube_download_attempt(
+                    youtube_url=youtube_url,
+                    unique_filename=unique_filename,
+                    ffmpeg_path=ffmpeg_path,
+                    cookiefile=None,
+                    retry_without_cookies=True,
+                )
+            except Exception as retry_error:
+                if _is_youtube_verification_error(retry_error):
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=YOUTUBE_REJECTED_REQUEST_DETAIL,
+                    ) from retry_error
+                raise
         finally:
             if youtube_cookiefile.cleanup and youtube_cookiefile.path:
                 _delete_local_file(youtube_cookiefile.path)
 
-        expected_audio_file_path = UPLOAD_DIR / f"{unique_filename}.wav"
-        logger.info("yt-dlp expected output path: %s", expected_audio_file_path)
-
-        # After download, the file should be at the resolved path
-        audio_file_path = expected_audio_file_path
+        audio_file_path = _resolve_youtube_downloaded_audio_path(unique_filename)
 
         # Check if the file exists
         if not audio_file_path.exists():
@@ -3338,11 +3440,7 @@ async def extract_audio_from_youtube(
         if _is_youtube_verification_error(e):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    YOUTUBE_COOKIE_REJECTED_DETAIL
-                    if youtube_cookiefile.loaded
-                    else _youtube_verification_detail()
-                ),
+                detail=YOUTUBE_REJECTED_REQUEST_DETAIL,
             ) from e
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -3353,11 +3451,7 @@ async def extract_audio_from_youtube(
         if _is_youtube_verification_error(e):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    YOUTUBE_COOKIE_REJECTED_DETAIL
-                    if youtube_cookiefile.loaded
-                    else _youtube_verification_detail()
-                ),
+                detail=YOUTUBE_REJECTED_REQUEST_DETAIL,
             ) from e
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

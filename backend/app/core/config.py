@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     # Example token format: web.gvs+TOKEN or mweb.gvs+TOKEN.
     YOUTUBE_PO_TOKEN: str | None = None
     YOUTUBE_VISITOR_DATA: str | None = None
+    YOUTUBE_PLAYER_CLIENT: str | None = "mweb"
     YOUTUBE_PLAYER_CLIENTS: str | None = None
 
     # Cloudinary durable storage
