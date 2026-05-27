@@ -360,6 +360,8 @@ const AdminJobsDashboard: React.FC = () => {
   const [historyStatusFilter, setHistoryStatusFilter] =
     useState<HistoryStatusFilter>("all");
   const [historyLimit, setHistoryLimit] = useState<HistoryLimit>(50);
+  const [usageUserIdFilter, setUsageUserIdFilter] = useState("");
+  const [usageDateFilter, setUsageDateFilter] = useState("");
   const isJobsRequestInFlightRef = useRef(false);
   const isUsageRequestInFlightRef = useRef(false);
   const lastSuccessfulJobsLoadRef = useRef<Date | null>(null);
@@ -417,6 +419,20 @@ const AdminJobsDashboard: React.FC = () => {
     }
     if (isUsageRequestInFlightRef.current) return;
 
+    const trimmedUserId = usageUserIdFilter.trim();
+    const parsedUserId =
+      trimmedUserId.length > 0 ? Number.parseInt(trimmedUserId, 10) : undefined;
+    if (
+      trimmedUserId.length > 0 &&
+      (!/^\d+$/.test(trimmedUserId) ||
+        !Number.isInteger(parsedUserId) ||
+        parsedUserId === undefined ||
+        parsedUserId < 1)
+    ) {
+      setError("Usage user id must be a positive number.");
+      return;
+    }
+
     const isBackground = Boolean(options?.background);
     isUsageRequestInFlightRef.current = true;
     setIsUsageLoading(true);
@@ -425,7 +441,10 @@ const AdminJobsDashboard: React.FC = () => {
     }
     try {
       window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmedToken);
-      const response = await audioService.listAdminUsage(trimmedToken);
+      const response = await audioService.listAdminUsage(trimmedToken, {
+        userId: parsedUserId,
+        date: usageDateFilter || undefined,
+      });
       setUsageResponse(response);
       const loadedAt = new Date();
       setLastLoadedAt(loadedAt);
@@ -448,7 +467,7 @@ const AdminJobsDashboard: React.FC = () => {
       isUsageRequestInFlightRef.current = false;
       setIsUsageLoading(false);
     }
-  }, [adminToken]);
+  }, [adminToken, usageDateFilter, usageUserIdFilter]);
 
   const loadJobHistory = useCallback(async () => {
     const trimmedToken = adminToken.trim();
@@ -487,6 +506,8 @@ const AdminJobsDashboard: React.FC = () => {
     setJobsResponse(emptyJobsResponse);
     setJobHistoryResponse(emptyJobHistoryResponse);
     setUsageResponse(emptyUsageResponse);
+    setUsageUserIdFilter("");
+    setUsageDateFilter("");
     setLastLoadedAt(null);
   }, []);
 
@@ -775,6 +796,27 @@ const AdminJobsDashboard: React.FC = () => {
               <h2>Usage Limits</h2>
             </div>
             <div className="admin-job-toolbar">
+              <label className="admin-usage-filter">
+                <span>User ID</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  placeholder="All"
+                  value={usageUserIdFilter}
+                  onChange={(event) => setUsageUserIdFilter(event.target.value)}
+                  aria-label="Filter usage by user id"
+                />
+              </label>
+              <label className="admin-usage-filter">
+                <span>Date</span>
+                <input
+                  type="date"
+                  value={usageDateFilter}
+                  onChange={(event) => setUsageDateFilter(event.target.value)}
+                  aria-label="Filter usage by UTC date"
+                />
+              </label>
               <span>
                 {usageResponse.date
                   ? `UTC ${usageResponse.date}`

@@ -256,6 +256,105 @@ def test_previous_day_usage_events_do_not_count_toward_daily_limit():
     assert _usage_count("usage-yesterday-owner") == 6
 
 
+def test_current_user_usage_requires_auth():
+    reset_database()
+
+    response = client.get("/api/v1/usage/me")
+
+    assert response.status_code == 401
+
+
+def test_current_user_usage_counts_today_only_and_returns_reset():
+    reset_database()
+    now = datetime.now(timezone.utc)
+    with TestingSessionLocal() as session:
+        owner = create_user(session, "usage-me-owner", "usage-me@example.com")
+        other = create_user(session, "usage-me-other", "usage-me-other@example.com")
+        session.add_all(
+            [
+                models.UsageEvent(
+                    user_id=owner.id,
+                    action_type="today_one",
+                    created_at=now,
+                ),
+                models.UsageEvent(
+                    user_id=owner.id,
+                    action_type="today_two",
+                    created_at=now,
+                ),
+                models.UsageEvent(
+                    user_id=owner.id,
+                    action_type="yesterday",
+                    created_at=now - timedelta(days=1, minutes=5),
+                ),
+                models.UsageEvent(
+                    user_id=other.id,
+                    action_type="other_user",
+                    created_at=now,
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get("/api/v1/usage/me", headers=auth_headers("usage-me-owner"))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["usage_count"] == 2
+    assert payload["daily_limit"] == 5
+    assert payload["remaining_quota"] == 3
+    assert payload["is_unlimited"] is False
+    resets_at = datetime.fromisoformat(payload["resets_at"].replace("Z", "+00:00"))
+    assert resets_at.tzinfo is not None
+    assert resets_at.hour == 0
+    assert resets_at.minute == 0
+    assert resets_at > now
+
+
+def test_current_user_usage_clamps_remaining_quota_at_zero():
+    reset_database()
+    with TestingSessionLocal() as session:
+        create_user(session, "usage-me-exhausted", "usage-me-exhausted@example.com")
+
+    _seed_daily_usage("usage-me-exhausted", count=7)
+
+    response = client.get(
+        "/api/v1/usage/me",
+        headers=auth_headers("usage-me-exhausted"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["usage_count"] == 7
+    assert payload["daily_limit"] == 5
+    assert payload["remaining_quota"] == 0
+    assert payload["is_unlimited"] is False
+
+
+def test_current_user_usage_reports_unlimited_daily_limit():
+    reset_database()
+    config.settings.DAILY_PROCESSING_JOB_LIMIT = 0
+    with TestingSessionLocal() as session:
+        create_user(session, "usage-me-unlimited", "usage-me-unlimited@example.com")
+
+    _seed_daily_usage("usage-me-unlimited", count=3)
+
+    response = client.get(
+        "/api/v1/usage/me",
+        headers=auth_headers("usage-me-unlimited"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "usage_count": 3,
+        "daily_limit": 0,
+        "remaining_quota": None,
+        "resets_at": None,
+        "is_unlimited": True,
+    }
+
+
 @pytest.mark.parametrize(
     "endpoint_kind",
     ["upload", "youtube", "retry", "generate_tabs", "generate_lyrics", "track_reprocess"],

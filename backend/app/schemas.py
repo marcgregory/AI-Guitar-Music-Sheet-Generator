@@ -29,6 +29,15 @@ class UserInDB(UserInDBBase):
 class User(UserInDBBase):
     pass
 
+
+class UserUsage(BaseModel):
+    usage_count: int
+    daily_limit: int
+    remaining_quota: Optional[int] = None
+    resets_at: Optional[datetime] = None
+    is_unlimited: bool
+
+
 # Token schemas
 class Token(BaseModel):
     access_token: str

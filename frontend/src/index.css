@@ -8690,6 +8690,95 @@ body {
   border-color: rgba(191, 141, 49, 0.24);
 }
 
+.usage-quota-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.85rem;
+  border: 1px solid rgba(86, 129, 106, 0.22);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(242, 250, 246, 0.64)),
+    rgba(255, 255, 255, 0.76);
+  color: #385d4a;
+  padding: 0.86rem 0.95rem;
+  box-shadow:
+    0 12px 28px rgba(57, 83, 66, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.usage-quota-card svg {
+  width: 1.2rem;
+  height: 1.2rem;
+  color: currentColor;
+}
+
+.usage-quota-card div {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.usage-quota-card strong {
+  color: #203f30;
+  font-size: 0.88rem;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.usage-quota-card span,
+.usage-quota-card small {
+  color: rgba(38, 62, 49, 0.7);
+  font-size: 0.8rem;
+  font-weight: 760;
+  line-height: 1.28;
+}
+
+.usage-quota-card.is-loading {
+  border-color: rgba(191, 141, 49, 0.22);
+  color: #765f2c;
+}
+
+.usage-quota-card.is-loading strong {
+  color: #5d481d;
+}
+
+.usage-quota-card.is-warning {
+  border-color: rgba(219, 130, 46, 0.34);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.8), rgba(255, 244, 229, 0.72)),
+    rgba(255, 250, 242, 0.8);
+  color: #9a5b1e;
+}
+
+.usage-quota-card.is-warning strong {
+  color: #754014;
+}
+
+.usage-quota-card.is-exhausted {
+  border-color: rgba(201, 80, 69, 0.32);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(255, 239, 237, 0.7)),
+    rgba(255, 248, 246, 0.82);
+  color: #9b382f;
+}
+
+.usage-quota-card.is-exhausted strong {
+  color: #7b2821;
+}
+
+.usage-quota-card.is-unlimited {
+  border-color: rgba(55, 122, 154, 0.24);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(235, 249, 253, 0.66)),
+    rgba(255, 255, 255, 0.78);
+  color: #2f6680;
+}
+
+.usage-quota-card.is-unlimited strong {
+  color: #244d61;
+}
+
 .processing-slot-busy-card {
   position: relative;
   display: grid;
@@ -14545,6 +14634,45 @@ body,
     0 24px 72px rgba(73, 50, 30, 0.09),
     0 1px 0 rgba(255, 255, 255, 0.84) inset;
   backdrop-filter: blur(26px);
+}
+
+.admin-usage-filter {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 116px;
+}
+
+.admin-usage-filter span {
+  color: rgba(50, 39, 32, 0.56);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.admin-usage-filter input {
+  min-height: 42px;
+  width: 100%;
+  border: 1px solid rgba(120, 98, 72, 0.16);
+  border-radius: 13px;
+  outline: 0;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 248, 237, 0.64)),
+    rgba(255, 255, 255, 0.72);
+  color: #5f4633;
+  padding: 0 0.72rem;
+  font-size: 0.84rem;
+  font-weight: 800;
+  box-shadow:
+    0 8px 24px rgba(89, 64, 38, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.admin-usage-filter input:focus {
+  border-color: rgba(166, 111, 52, 0.45);
+  box-shadow:
+    0 0 0 4px rgba(166, 111, 52, 0.12),
+    0 8px 24px rgba(89, 64, 38, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
 }
 
 .admin-usage-grid {

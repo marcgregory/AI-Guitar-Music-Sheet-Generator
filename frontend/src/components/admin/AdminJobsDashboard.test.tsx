@@ -305,6 +305,39 @@ describe("AdminJobsDashboard", () => {
     expect(await screen.findByText("0 / 5")).toBeInTheDocument();
   });
 
+  it("calls listAdminUsage with the selected user id and UTC date filters", async () => {
+    await renderWithSavedToken();
+
+    await waitFor(() => {
+      expect(mockedAudioService.listAdminUsage).toHaveBeenCalledWith(
+        "saved-admin-token",
+        { userId: undefined, date: undefined },
+      );
+    });
+
+    fireEvent.change(screen.getByLabelText("Filter usage by user id"), {
+      target: { value: "123" },
+    });
+
+    await waitFor(() => {
+      expect(mockedAudioService.listAdminUsage).toHaveBeenLastCalledWith(
+        "saved-admin-token",
+        { userId: 123, date: undefined },
+      );
+    });
+
+    fireEvent.change(screen.getByLabelText("Filter usage by UTC date"), {
+      target: { value: "2026-05-27" },
+    });
+
+    await waitFor(() => {
+      expect(mockedAudioService.listAdminUsage).toHaveBeenLastCalledWith(
+        "saved-admin-token",
+        { userId: 123, date: "2026-05-27" },
+      );
+    });
+  });
+
   it("calls listAdminJobHistory with the selected history status", async () => {
     await renderWithSavedToken();
 

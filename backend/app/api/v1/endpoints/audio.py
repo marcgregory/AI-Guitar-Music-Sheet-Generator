@@ -31,6 +31,7 @@ from ....services.audio_source_resolver import (
     resolve_generate_tab_audio_source,
 )
 from ....services.tablature import tablature_to_ascii_tab
+from ....services.usage_limits import current_utc_day_start, user_daily_usage_count
 from ....celery import celery_app
 
 # Schema for YouTube URL request
@@ -2402,17 +2403,11 @@ def _user_active_usage_job_count(
 
 
 def _current_utc_day_start() -> datetime:
-    now = datetime.now(timezone.utc)
-    return datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    return current_utc_day_start()
 
 
 def _user_daily_usage_count(db_session: Session, user_id: int) -> int:
-    return (
-        db_session.query(models.UsageEvent.id)
-        .filter(models.UsageEvent.user_id == user_id)
-        .filter(models.UsageEvent.created_at >= _current_utc_day_start())
-        .count()
-    )
+    return user_daily_usage_count(db_session, user_id)
 
 
 def _enforce_usage_limits(

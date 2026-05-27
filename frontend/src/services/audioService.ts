@@ -178,6 +178,14 @@ export interface AdminUsageResetResponse {
   usage: AdminUsageRow;
 }
 
+export interface UserUsage {
+  usage_count: number;
+  daily_limit: number;
+  remaining_quota: number | null;
+  resets_at: string | null;
+  is_unlimited: boolean;
+}
+
 export type AdminJobHistoryStatus =
   | "completed"
   | "completed_with_warning"
@@ -599,6 +607,15 @@ const audioService = {
         timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
       },
     );
+
+    return response.data;
+  },
+
+  getMyUsage: async (token: string): Promise<UserUsage> => {
+    void token;
+    const response = await apiClient.get("/usage/me", {
+      timeout: TRANSCRIPTION_LIST_TIMEOUT_MS,
+    });
 
     return response.data;
   },
