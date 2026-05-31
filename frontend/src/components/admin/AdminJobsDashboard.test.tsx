@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdminJobsDashboard from "./AdminJobsDashboard";
 import audioService from "../../services/audioService";
@@ -13,6 +13,8 @@ vi.mock("../../services/audioService", () => ({
   default: {
     listAdminJobs: vi.fn(),
     listAdminJobHistory: vi.fn(),
+    listAdminUsage: vi.fn(),
+    resetAdminUsage: vi.fn(),
   },
 }));
 
@@ -62,9 +64,45 @@ const mockHistoryResponse = {
   count: 1,
 };
 
+const mockUsageResponse = {
+  date: "2026-05-27",
+  usage: [
+    {
+      user_id: 123,
+      username: "quota-exhausted",
+      usage_count: 5,
+      daily_limit: 5,
+      remaining_quota: 0,
+      active_job_count: 0,
+      reset_available: true,
+    },
+    {
+      user_id: 124,
+      username: "quota-available",
+      usage_count: 2,
+      daily_limit: 5,
+      remaining_quota: 3,
+      active_job_count: 1,
+      reset_available: false,
+    },
+    {
+      user_id: 125,
+      username: "quota-unlimited",
+      usage_count: 7,
+      daily_limit: 0,
+      remaining_quota: 0,
+      active_job_count: 1,
+      reset_available: false,
+    },
+  ],
+  reset_available: true,
+};
+
 const mockedAudioService = audioService as unknown as {
   listAdminJobs: ReturnType<typeof vi.fn>;
   listAdminJobHistory: ReturnType<typeof vi.fn>;
+  listAdminUsage: ReturnType<typeof vi.fn>;
+  resetAdminUsage: ReturnType<typeof vi.fn>;
 };
 
 const renderWithSavedToken = async () => {
@@ -83,6 +121,17 @@ describe("AdminJobsDashboard", () => {
     vi.clearAllMocks();
     mockedAudioService.listAdminJobs.mockResolvedValue(mockJobsResponse);
     mockedAudioService.listAdminJobHistory.mockResolvedValue(mockHistoryResponse);
+    mockedAudioService.listAdminUsage.mockResolvedValue(mockUsageResponse);
+    mockedAudioService.resetAdminUsage.mockResolvedValue({
+      success: true,
+      deleted_count: 5,
+      usage: {
+        ...mockUsageResponse.usage[0],
+        usage_count: 0,
+        remaining_quota: 5,
+      },
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
   });
 
   it("shows a short backend token hint before an admin token is saved", () => {
@@ -97,7 +146,10 @@ describe("AdminJobsDashboard", () => {
 
   it("shows an actionable message when the backend admin API is disabled", async () => {
     mockedAudioService.listAdminJobs.mockRejectedValue({
-      response: { data: { detail: "Admin API is not configured." } },
+      response: {
+        status: 503,
+        data: { detail: "Admin API is not configured." },
+      },
     });
 
     window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
@@ -105,9 +157,247 @@ describe("AdminJobsDashboard", () => {
 
     expect(
       await screen.findByText(
-        "Admin API is disabled on this backend. Set ADMIN_API_TOKEN to enable it.",
+        "Admin API is disabled on this backend (503). Set ADMIN_API_TOKEN and restart the backend so startup logs show Admin API configured=True.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("shows a stale-token hint when the admin token is rejected", async () => {
+    mockedAudioService.listAdminJobs.mockRejectedValue({
+      response: {
+        status: 403,
+        data: { detail: "Invalid admin token." },
+      },
+    });
+
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "old-admin-token");
+    render(<AdminJobsDashboard />);
+
+    expect(
+      await screen.findByText(
+        "Invalid admin token (403). Use Forget admin token, then paste the current backend ADMIN_API_TOKEN.",
+      ),
+    ).toBeInTheDocument();
+    expect(mockedAudioService.listAdminJobs).toHaveBeenCalledWith(
+      "old-admin-token",
+    );
+  });
+
+  it("shows the backend URL when the admin request times out", async () => {
+    mockedAudioService.listAdminJobs.mockRejectedValue({
+      code: "ECONNABORTED",
+      message: "timeout of 10000ms exceeded",
+    });
+
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
+    render(<AdminJobsDashboard />);
+
+    expect(
+      await screen.findByText(
+        "Admin jobs request timed out. Confirm the backend is running at http://localhost:8000/api/v1 and try again.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a network and CORS hint when the admin API cannot be reached", async () => {
+    mockedAudioService.listAdminJobs.mockRejectedValue({
+      request: {},
+    });
+
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
+    render(<AdminJobsDashboard />);
+
+    expect(
+      await screen.findByText(
+        "Could not reach the admin API at http://localhost:8000/api/v1. Check that the backend is running and CORS allows this frontend.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps backend detail text for generic admin errors", async () => {
+    mockedAudioService.listAdminJobs.mockRejectedValue({
+      response: {
+        status: 500,
+        data: { detail: "Database connection failed." },
+      },
+    });
+
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
+    render(<AdminJobsDashboard />);
+
+    expect(
+      await screen.findByText("Database connection failed. (500)"),
+    ).toBeInTheDocument();
+  });
+
+  it("does not flash a timeout alert for a background refresh after a successful load", async () => {
+    let intervalHandler: TimerHandler | undefined;
+    const setIntervalSpy = vi
+      .spyOn(window, "setInterval")
+      .mockImplementation(((handler: TimerHandler, timeout?: number) => {
+        if (timeout === 30000) {
+          intervalHandler = handler;
+        }
+        return 1 as unknown as ReturnType<typeof window.setInterval>;
+      }) as unknown as typeof window.setInterval);
+    const clearIntervalSpy = vi
+      .spyOn(window, "clearInterval")
+      .mockImplementation(() => undefined);
+    mockedAudioService.listAdminJobs
+      .mockResolvedValueOnce(mockJobsResponse)
+      .mockRejectedValueOnce({
+        code: "ECONNABORTED",
+        message: "timeout of 15000ms exceeded",
+      });
+
+    try {
+      window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "saved-admin-token");
+      render(<AdminJobsDashboard />);
+
+      expect(await screen.findByText("Active stem job")).toBeInTheDocument();
+
+      expect(intervalHandler).toEqual(expect.any(Function));
+      await act(async () => {
+        await (intervalHandler as () => void)();
+      });
+
+      await waitFor(() => {
+        expect(mockedAudioService.listAdminJobs).toHaveBeenCalledTimes(2);
+      });
+      expect(screen.queryByText(/Admin jobs request timed out/i)).not.toBeInTheDocument();
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("renders daily usage when active jobs are empty", async () => {
+    mockedAudioService.listAdminJobs.mockResolvedValue({
+      jobs: [],
+      counts: {
+        active: 0,
+        queued: 0,
+        processing: 0,
+        rate_limited: 0,
+      },
+    });
+
+    await renderWithSavedToken();
+
+    expect(await screen.findByText("Usage Limits")).toBeInTheDocument();
+    expect(screen.getByText("quota-exhausted")).toBeInTheDocument();
+    expect(screen.getByText("quota-available")).toBeInTheDocument();
+    expect(screen.getByText("quota-unlimited")).toBeInTheDocument();
+    expect(screen.getByText("5 / 5")).toBeInTheDocument();
+    expect(screen.getByText("2 / 5")).toBeInTheDocument();
+    expect(screen.getByText("7 / unlimited")).toBeInTheDocument();
+    expect(screen.getAllByText("Remaining")).toHaveLength(3);
+    expect(screen.getAllByText("Active jobs")).toHaveLength(3);
+    expect(screen.getByText("All clear!")).toBeInTheDocument();
+  });
+
+  it("filters usage rows to exhausted limited users only", async () => {
+    await renderWithSavedToken();
+
+    expect(await screen.findByText("quota-exhausted")).toBeInTheDocument();
+    expect(screen.getByText("quota-available")).toBeInTheDocument();
+    expect(screen.getByText("quota-unlimited")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Exhausted only"));
+
+    expect(screen.getByText("quota-exhausted")).toBeInTheDocument();
+    expect(screen.queryByText("quota-available")).not.toBeInTheDocument();
+    expect(screen.queryByText("quota-unlimited")).not.toBeInTheDocument();
+  });
+
+  it("shows an exhausted-only empty state when no limited users are exhausted", async () => {
+    mockedAudioService.listAdminUsage.mockResolvedValue({
+      ...mockUsageResponse,
+      usage: [
+        {
+          ...mockUsageResponse.usage[1],
+          username: "quota-still-available",
+        },
+        {
+          ...mockUsageResponse.usage[2],
+          username: "quota-still-unlimited",
+        },
+      ],
+    });
+
+    await renderWithSavedToken();
+
+    fireEvent.click(screen.getByLabelText("Exhausted only"));
+
+    expect(
+      screen.getByText("No exhausted users for this UTC day."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("quota-still-available")).not.toBeInTheDocument();
+    expect(screen.queryByText("quota-still-unlimited")).not.toBeInTheDocument();
+  });
+
+  it("shows reset controls only when backend says reset is available", async () => {
+    mockedAudioService.listAdminUsage.mockResolvedValue({
+      ...mockUsageResponse,
+      usage: [
+        {
+          ...mockUsageResponse.usage[0],
+          reset_available: false,
+        },
+      ],
+      reset_available: false,
+    });
+
+    await renderWithSavedToken();
+
+    expect(screen.queryByRole("button", { name: /Reset usage/i })).not.toBeInTheDocument();
+  });
+
+  it("calls reset usage for the selected user and refreshes the row", async () => {
+    await renderWithSavedToken();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Reset usage/i }));
+
+    await waitFor(() => {
+      expect(mockedAudioService.resetAdminUsage).toHaveBeenCalledWith(
+        "saved-admin-token",
+        123,
+      );
+    });
+    expect(await screen.findByText("0 / 5")).toBeInTheDocument();
+  });
+
+  it("calls listAdminUsage with the selected user id and UTC date filters", async () => {
+    await renderWithSavedToken();
+
+    await waitFor(() => {
+      expect(mockedAudioService.listAdminUsage).toHaveBeenCalledWith(
+        "saved-admin-token",
+        { userId: undefined, date: undefined },
+      );
+    });
+
+    fireEvent.change(screen.getByLabelText("Filter usage by user id"), {
+      target: { value: "123" },
+    });
+
+    await waitFor(() => {
+      expect(mockedAudioService.listAdminUsage).toHaveBeenLastCalledWith(
+        "saved-admin-token",
+        { userId: 123, date: undefined },
+      );
+    });
+
+    fireEvent.change(screen.getByLabelText("Filter usage by UTC date"), {
+      target: { value: "2026-05-27" },
+    });
+
+    await waitFor(() => {
+      expect(mockedAudioService.listAdminUsage).toHaveBeenLastCalledWith(
+        "saved-admin-token",
+        { userId: 123, date: "2026-05-27" },
+      );
+    });
   });
 
   it("calls listAdminJobHistory with the selected history status", async () => {

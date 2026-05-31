@@ -17,7 +17,7 @@ ctranslate2
 # Demucs/Basic Pitch dependencies live in backend/modal_worker.py's Modal image.
 # Railway/FastAPI must not install or execute torch, demucs, librosa,
 # Basic Pitch, or local MIDI/score generation libraries in production.
-yt-dlp==2026.3.17
+yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.tar.gz
 pytest==7.4.3
 httpx==0.25.2
 email-validator==2.3.0

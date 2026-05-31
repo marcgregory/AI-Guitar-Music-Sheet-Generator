@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Icon } from "../Icon";
 import { AuthStudioShell } from "./AuthStudioShell";
 import { useAuth } from "./AuthContext";
+import { Helmet } from 'react-helmet-async';
 
 const Login: React.FC = () => {
   const { login } = useAuth();
@@ -73,6 +74,21 @@ const Login: React.FC = () => {
   };
 
   return (
+    <>
+      <Helmet>
+        <title>Login – MusicSheet Studio</title>
+        <meta name="description" content="Sign in to MusicSheet Studio to convert your guitar recordings into sheet music, tabs, and chord charts." />
+        <meta property="og:title" content="Login – MusicSheet Studio" />
+        <meta property="og:description" content="Sign in to MusicSheet Studio to convert your guitar recordings into sheet music, tabs, and chord charts." />
+        <meta property="og:image" content="https://yourdomain.com/og-image.jpg" />
+        <meta property="og:url" content="https://yourdomain.com/login" />
+        <meta property="og:type" content="website" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="Login – MusicSheet Studio" />
+        <meta name="twitter:description" content="Sign in to MusicSheet Studio to convert your guitar recordings into sheet music, tabs, and chord charts." />
+        <meta name="twitter:image" content="https://yourdomain.com/og-image.jpg" />
+        <link rel="canonical" href="https://yourdomain.com/login" />
+      </Helmet>
     <AuthStudioShell
       eyebrow="Guitar AI Studio"
       formTitle="Welcome back"
@@ -161,6 +177,7 @@ const Login: React.FC = () => {
           </div>
         </form>
     </AuthStudioShell>
+    </>
   );
 };
 

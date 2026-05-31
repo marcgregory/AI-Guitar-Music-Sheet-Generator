@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import db, models, tasks
+from app import database_init, db, models, tasks
 from app.api.v1.endpoints import audio as audio_endpoint
 from app.core import config
 from app.core.security import create_access_token, get_password_hash
@@ -55,10 +56,13 @@ def reset_database():
     config.settings.YOUTUBE_COOKIES_B64 = None
     config.settings.YOUTUBE_PO_TOKEN = None
     config.settings.YOUTUBE_VISITOR_DATA = None
+    config.settings.YOUTUBE_PLAYER_CLIENT = None
     config.settings.YOUTUBE_PLAYER_CLIENTS = None
     config.settings.ENABLE_USAGE_LIMITS = True
     config.settings.MAX_ACTIVE_JOBS_PER_USER = 1
     config.settings.DAILY_PROCESSING_JOB_LIMIT = 5
+    config.settings.ENABLE_ADMIN_USAGE_RESET = False
+    config.settings.ENVIRONMENT = "development"
 
 
 def create_user(session, username: str, email: str):
@@ -299,6 +303,61 @@ def test_demo_transcription_response_uses_public_audio_url_for_playback_fields()
     tracks_payload = tracks_response.json()
     assert tracks_payload[0]["stem_audio_path"] == "/demo/example-guitar-riff.wav"
     assert "/app/app/static" not in json.dumps(tracks_payload)
+
+
+def test_demo_seed_repairs_stale_processing_status(monkeypatch):
+    reset_database()
+    monkeypatch.setattr(database_init, "SessionLocal", TestingSessionLocal)
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "demo-system", "demo-system@example.local")
+        stale_demo = models.Transcription(
+            title="Example guitar riff",
+            audio_file_path="stale.wav",
+            separated_audio_file_path="stale.wav",
+            source_type="demo",
+            source_url="/demo/example-guitar-riff.wav",
+            normalized_source_id="demo:example-guitar-riff",
+            user_id=owner.id,
+            is_demo=True,
+            is_processed=True,
+            processing_status="processing",
+            queue_position=1,
+            estimated_wait_time=300,
+            celery_task_id="stale-task",
+            modal_dispatch_status="dispatched",
+            modal_job_type="process",
+            modal_request_id="stale-request",
+            modal_retry_count=2,
+        )
+        session.add(stale_demo)
+        session.commit()
+    finally:
+        session.close()
+
+    database_init._seed_demo_transcription()
+
+    session = TestingSessionLocal()
+    try:
+        demo = (
+            session.query(models.Transcription)
+            .filter(models.Transcription.normalized_source_id == "demo:example-guitar-riff")
+            .one()
+        )
+
+        assert demo.processing_status == "completed"
+        assert demo.is_processed is True
+        assert demo.queue_position == 0
+        assert demo.estimated_wait_time == 0
+        assert demo.celery_task_id is None
+        assert demo.modal_dispatch_status is None
+        assert demo.modal_job_type is None
+        assert demo.modal_request_id is None
+        assert demo.modal_retry_count == 0
+        assert demo.processing_error is None
+        assert demo.warning_message is None
+    finally:
+        session.close()
 
 
 def test_list_transcriptions_returns_only_current_users_items_newest_first():
@@ -746,6 +805,102 @@ def test_local_status_response_masks_stale_modal_required_without_mutating_row()
         assert stored.modal_retry_at is not None
     finally:
         session.close()
+
+
+def test_status_cleanup_skips_celery_inspect_when_no_active_job_is_stale():
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_timeout = config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "fresh-active-owner", "fresh-active@example.com")
+        transcription = models.Transcription(
+            title="Fresh active row",
+            user_id=owner.id,
+            selected_stem="other",
+            is_processed=False,
+            processing_status="processing",
+            celery_task_id="fresh-task-id",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        session.add(transcription)
+        session.commit()
+        transcription_id = transcription.id
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS = 1800
+    finally:
+        session.close()
+
+    try:
+        with patch(
+            "app.api.v1.endpoints.audio._active_celery_task_ids"
+        ) as active_task_ids_mock:
+            response = client.get(
+                f"/api/v1/audio/{transcription_id}/status",
+                headers=auth_headers("fresh-active-owner"),
+            )
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS = original_timeout
+
+    assert response.status_code == 200
+    active_task_ids_mock.assert_not_called()
+
+
+def test_stale_cleanup_throttles_repeated_celery_inspect_failure_logs(caplog):
+    reset_database()
+    original_audio_mode = config.settings.AUDIO_PROCESSING_MODE
+    original_timeout = config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS
+    original_last_log = audio_endpoint._last_celery_inspect_failure_log_at
+    session = TestingSessionLocal()
+    try:
+        owner = create_user(session, "stale-celery-owner", "stale-celery@example.com")
+        transcription = models.Transcription(
+            title="Stale celery row",
+            user_id=owner.id,
+            selected_stem="other",
+            is_processed=False,
+            processing_status="processing",
+            celery_task_id="stale-task-id",
+            created_at=datetime.utcnow() - timedelta(hours=2),
+            updated_at=datetime.utcnow() - timedelta(hours=2),
+        )
+        session.add(transcription)
+        session.commit()
+        config.settings.AUDIO_PROCESSING_MODE = "local"
+        config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS = 1
+        audio_endpoint._last_celery_inspect_failure_log_at = None
+
+        with patch(
+            "app.api.v1.endpoints.audio.celery_app.control.inspect",
+            side_effect=RuntimeError("redis refused"),
+        ):
+            with caplog.at_level(logging.INFO, logger="app.api.v1.endpoints.audio"):
+                first_cleanup_count = (
+                    audio_endpoint._cleanup_stale_active_transcription_jobs(session)
+                )
+                second_cleanup_count = (
+                    audio_endpoint._cleanup_stale_active_transcription_jobs(session)
+                )
+
+        assert first_cleanup_count == 0
+        assert second_cleanup_count == 0
+
+        session.refresh(transcription)
+        assert transcription.processing_status == "processing"
+    finally:
+        config.settings.AUDIO_PROCESSING_MODE = original_audio_mode
+        config.settings.STALE_TRANSCRIPTION_TIMEOUT_SECONDS = original_timeout
+        audio_endpoint._last_celery_inspect_failure_log_at = original_last_log
+        session.close()
+
+    inspect_failure_logs = [
+        record
+        for record in caplog.records
+        if "Could not inspect active Celery tasks during stale cleanup" in record.message
+    ]
+    assert len(inspect_failure_logs) == 1
 
 
 def test_modal_status_response_preserves_modal_required_fields():
@@ -2882,7 +3037,9 @@ def test_extract_audio_from_youtube_returns_service_unavailable_for_verification
         config.settings.YOUTUBE_COOKIES = original_cookies
 
     assert response.status_code == 503
-    assert "YOUTUBE_COOKIES" in response.json()["detail"]
+    assert response.json()["detail"] == (
+        "YouTube rejected this request. Please upload the audio directly or refresh cookies/PO token."
+    )
 
 
 def test_extract_audio_from_youtube_rejects_missing_cookie_file_before_ytdlp(tmp_path):
@@ -3151,24 +3308,32 @@ def test_extract_audio_from_youtube_rejects_env_cookies_without_youtube_domain_b
     youtube_dl.assert_not_called()
 
 
-def test_extract_audio_from_youtube_returns_cookie_rejected_detail_when_loaded_cookies_fail():
+def test_extract_audio_from_youtube_retries_without_cookies_then_returns_rejected_detail(caplog):
     reset_database()
     original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
     original_cookies = config.settings.YOUTUBE_COOKIES
+    original_po_token = config.settings.YOUTUBE_PO_TOKEN
+    raw_secret_cookie = "fresh-cookie-that-must-not-log"
+    raw_po_token = "po-token-that-must-not-log"
     config.settings.YOUTUBE_COOKIES_FILE = None
     config.settings.YOUTUBE_COOKIES = (
         "# Netscape HTTP Cookie File\n"
-        ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfresh-cookie\n"
+        f".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\t{raw_secret_cookie}\n"
     )
+    config.settings.YOUTUBE_PO_TOKEN = raw_po_token
+    caplog.set_level("INFO", logger="app.api.v1.endpoints.audio")
     session = TestingSessionLocal()
     try:
         create_user(session, "youtube-rejected-cookies", "youtube-rejected-cookies@example.com")
     finally:
         session.close()
 
+    calls = []
+
     class RaisingYoutubeDL:
         def __init__(self, options):
             self.options = options
+            calls.append(options.copy())
 
         def __enter__(self):
             return self
@@ -3192,12 +3357,136 @@ def test_extract_audio_from_youtube_returns_cookie_rejected_detail_when_loaded_c
     finally:
         config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
         config.settings.YOUTUBE_COOKIES = original_cookies
+        config.settings.YOUTUBE_PO_TOKEN = original_po_token
 
     assert response.status_code == 503
     assert response.json()["detail"] == (
-        "Cookies were loaded, but YouTube rejected them. "
-        "Re-export fresh cookies, add YOUTUBE_PO_TOKEN, or upload audio directly."
+        "YouTube rejected this request. Please upload the audio directly or refresh cookies/PO token."
     )
+    assert len(calls) == 2
+    assert "cookiefile" in calls[0]
+    assert "cookiefile" not in calls[1]
+    assert [call["format"] for call in calls] == ["bestaudio/best", "bestaudio/best"]
+    assert "cookies_loaded=True" in caplog.text
+    assert "cookies_loaded=False" in caplog.text
+    assert "po_token_configured=True" in caplog.text
+    assert "yt_dlp_version=" in caplog.text
+    assert "retry_without_cookies=True" in caplog.text
+    assert raw_secret_cookie not in caplog.text
+    assert raw_po_token not in caplog.text
+
+
+def test_extract_audio_from_youtube_cookie_rejection_retry_can_succeed():
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfresh-cookie\n"
+    )
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-retry-success", "youtube-retry-success@example.com")
+    finally:
+        session.close()
+
+    calls = []
+
+    class RetryYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+            calls.append(options.copy())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def extract_info(self, url, download):
+            if "cookiefile" in self.options:
+                raise RuntimeError("Sign in to confirm you're not a bot. Use --cookies for authentication.")
+            outtmpl = self.options["outtmpl"]["default"]
+            output_name = outtmpl.replace("%(ext)s", "wav")
+            output_path = Path(self.options["paths"]["home"]) / output_name
+            output_path.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+            return {"title": "Retry worked"}
+
+    try:
+        with (
+            patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", RetryYoutubeDL),
+            patch("app.api.v1.endpoints.audio._start_transcription_processing", return_value=None),
+        ):
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-retry-success"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Retry worked"
+    assert len(calls) == 2
+    assert "cookiefile" in calls[0]
+    assert "cookiefile" not in calls[1]
+    assert [call["format"] for call in calls] == ["bestaudio/best", "bestaudio/best"]
+
+
+def test_extract_audio_from_youtube_does_not_retry_cookie_attempt_for_unrelated_error():
+    reset_database()
+    original_cookies_file = config.settings.YOUTUBE_COOKIES_FILE
+    original_cookies = config.settings.YOUTUBE_COOKIES
+    config.settings.YOUTUBE_COOKIES_FILE = None
+    config.settings.YOUTUBE_COOKIES = (
+        "# Netscape HTTP Cookie File\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfresh-cookie\n"
+    )
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-no-retry", "youtube-no-retry@example.com")
+    finally:
+        session.close()
+
+    calls = []
+
+    class RaisingYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+            calls.append(options.copy())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def extract_info(self, url, download):
+            raise RuntimeError("Temporary filesystem failure")
+
+    try:
+        with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", RaisingYoutubeDL):
+            response = client.post(
+                "/api/v1/audio/youtube",
+                headers=auth_headers("youtube-no-retry"),
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "selected_stem": "other",
+                },
+            )
+    finally:
+        config.settings.YOUTUBE_COOKIES_FILE = original_cookies_file
+        config.settings.YOUTUBE_COOKIES = original_cookies
+
+    assert response.status_code == 500
+    assert len(calls) == 1
+    assert "cookiefile" in calls[0]
+    assert calls[0]["format"] == "bestaudio/best"
 
 
 def test_youtube_download_options_include_cookiefile_when_configured():
@@ -3212,15 +3501,125 @@ def test_youtube_download_options_include_cookiefile_when_configured():
     assert options["cookiefile"] == "/app/secrets/youtube.cookies.txt"
 
 
+def test_youtube_download_options_use_default_format_without_extractor_args():
+    from app.api.v1.endpoints.audio import _build_youtube_download_options
+
+    original_po_token = config.settings.YOUTUBE_PO_TOKEN
+    original_player_client = config.settings.YOUTUBE_PLAYER_CLIENT
+    original_visitor_data = config.settings.YOUTUBE_VISITOR_DATA
+    config.settings.YOUTUBE_PO_TOKEN = None
+    config.settings.YOUTUBE_PLAYER_CLIENT = None
+    config.settings.YOUTUBE_VISITOR_DATA = None
+
+    try:
+        options = _build_youtube_download_options(
+            unique_filename="song",
+            ffmpeg_path="/usr/bin",
+        )
+    finally:
+        config.settings.YOUTUBE_PO_TOKEN = original_po_token
+        config.settings.YOUTUBE_PLAYER_CLIENT = original_player_client
+        config.settings.YOUTUBE_VISITOR_DATA = original_visitor_data
+
+    assert options["format"] == "bestaudio/best"
+    assert options["noplaylist"] is True
+    assert options["quiet"] is True
+    assert options["no_warnings"] is True
+    assert "extractor_args" not in options
+
+
+def test_extract_audio_from_youtube_does_not_retry_format_selection():
+    reset_database()
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-format-no-retry", "youtube-format-no-retry@example.com")
+    finally:
+        session.close()
+
+    calls = []
+
+    class FormatFailYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+            calls.append(options.copy())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def extract_info(self, url, download):
+            raise RuntimeError("Requested format is not available")
+
+    with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", FormatFailYoutubeDL):
+        response = client.post(
+            "/api/v1/audio/youtube",
+            headers=auth_headers("youtube-format-no-retry"),
+            json={
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "selected_stem": "other",
+            },
+        )
+
+    assert response.status_code == 500
+    assert len(calls) == 1
+    assert calls[0]["format"] == "bestaudio/best"
+
+
+def test_extract_audio_from_youtube_logs_youtube_debug_options(caplog):
+    reset_database()
+    caplog.set_level("WARNING", logger="app.api.v1.endpoints.audio")
+    session = TestingSessionLocal()
+    try:
+        create_user(session, "youtube-format-fail", "youtube-format-fail@example.com")
+    finally:
+        session.close()
+
+    calls = []
+
+    class FormatFailYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+            calls.append(options.copy())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def extract_info(self, url, download):
+            raise RuntimeError("Requested format is not available")
+
+    with patch("app.api.v1.endpoints.audio.yt_dlp.YoutubeDL", FormatFailYoutubeDL):
+        response = client.post(
+            "/api/v1/audio/youtube",
+            headers=auth_headers("youtube-format-fail"),
+            json={
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "selected_stem": "other",
+            },
+        )
+
+    assert response.status_code == 500
+    assert len(calls) == 1
+    assert calls[0]["format"] == "bestaudio/best"
+    assert "youtube_debug format=bestaudio/best" in caplog.text
+    assert "extractor_args_enabled=False" in caplog.text
+    assert "postprocessors_enabled=True" in caplog.text
+    assert "yt_dlp_format_retry" not in caplog.text
+
+
 def test_youtube_download_options_include_po_token_extractor_args():
     from app.api.v1.endpoints.audio import _build_youtube_download_options
 
     original_po_token = config.settings.YOUTUBE_PO_TOKEN
     original_visitor_data = config.settings.YOUTUBE_VISITOR_DATA
-    original_player_clients = config.settings.YOUTUBE_PLAYER_CLIENTS
-    config.settings.YOUTUBE_PO_TOKEN = "web.gvs+token-one,mweb.gvs+token-two"
+    original_player_client = config.settings.YOUTUBE_PLAYER_CLIENT
+    config.settings.YOUTUBE_PO_TOKEN = "token-one"
     config.settings.YOUTUBE_VISITOR_DATA = "visitor-data"
-    config.settings.YOUTUBE_PLAYER_CLIENTS = "web,mweb"
+    config.settings.YOUTUBE_PLAYER_CLIENT = "mweb"
 
     try:
         options = _build_youtube_download_options(
@@ -3230,15 +3629,60 @@ def test_youtube_download_options_include_po_token_extractor_args():
     finally:
         config.settings.YOUTUBE_PO_TOKEN = original_po_token
         config.settings.YOUTUBE_VISITOR_DATA = original_visitor_data
-        config.settings.YOUTUBE_PLAYER_CLIENTS = original_player_clients
+        config.settings.YOUTUBE_PLAYER_CLIENT = original_player_client
 
     assert options["extractor_args"] == {
         "youtube": {
-            "po_token": ["web.gvs+token-one", "mweb.gvs+token-two"],
+            "po_token": ["token-one"],
             "visitor_data": ["visitor-data"],
-            "player_client": ["web", "mweb"],
+            "player_client": ["mweb"],
         }
     }
+
+
+def test_youtube_download_options_include_player_client_without_po_token():
+    from app.api.v1.endpoints.audio import _build_youtube_download_options
+
+    original_po_token = config.settings.YOUTUBE_PO_TOKEN
+    original_player_client = config.settings.YOUTUBE_PLAYER_CLIENT
+    config.settings.YOUTUBE_PO_TOKEN = None
+    config.settings.YOUTUBE_PLAYER_CLIENT = "mweb"
+
+    try:
+        options = _build_youtube_download_options(
+            unique_filename="song",
+            ffmpeg_path="/usr/bin",
+        )
+    finally:
+        config.settings.YOUTUBE_PO_TOKEN = original_po_token
+        config.settings.YOUTUBE_PLAYER_CLIENT = original_player_client
+
+    assert options["extractor_args"] == {
+        "youtube": {
+            "player_client": ["mweb"],
+        }
+    }
+
+
+def test_youtube_download_options_preserve_scoped_po_token():
+    from app.api.v1.endpoints.audio import _build_youtube_download_options
+
+    original_po_token = config.settings.YOUTUBE_PO_TOKEN
+    original_player_client = config.settings.YOUTUBE_PLAYER_CLIENT
+    config.settings.YOUTUBE_PO_TOKEN = "web.gvs+token-one"
+    config.settings.YOUTUBE_PLAYER_CLIENT = "mweb"
+
+    try:
+        options = _build_youtube_download_options(
+            unique_filename="song",
+            ffmpeg_path="/usr/bin",
+        )
+    finally:
+        config.settings.YOUTUBE_PO_TOKEN = original_po_token
+        config.settings.YOUTUBE_PLAYER_CLIENT = original_player_client
+
+    assert options["extractor_args"]["youtube"]["po_token"] == ["web.gvs+token-one"]
+    assert options["extractor_args"]["youtube"]["player_client"] == ["mweb"]
 
 
 def test_list_instrument_tracks_requires_transcription_access():

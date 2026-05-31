@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     ENABLE_USAGE_LIMITS: bool = True
     MAX_ACTIVE_JOBS_PER_USER: int = 1
     DAILY_PROCESSING_JOB_LIMIT: int = 5
+    ENABLE_ADMIN_USAGE_RESET: bool = False
 
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
@@ -74,6 +75,7 @@ class Settings(BaseSettings):
     # Example token format: web.gvs+TOKEN or mweb.gvs+TOKEN.
     YOUTUBE_PO_TOKEN: str | None = None
     YOUTUBE_VISITOR_DATA: str | None = None
+    YOUTUBE_PLAYER_CLIENT: str | None = None
     YOUTUBE_PLAYER_CLIENTS: str | None = None
 
     # Cloudinary durable storage

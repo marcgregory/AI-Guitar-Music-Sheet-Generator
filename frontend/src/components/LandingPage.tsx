@@ -4,6 +4,7 @@ import gsap from "gsap";
 import { MotionPathPlugin } from "gsap/MotionPathPlugin";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Icon } from "./Icon";
+import { Helmet } from "react-helmet-async";
 
 gsap.registerPlugin(MotionPathPlugin, ScrollTrigger);
 
@@ -685,7 +686,22 @@ const LandingPage = () => {
   }, [activeWorkflowIndex]);
 
   return (
-    <main className="landing-page">
+    <>
+      <Helmet>
+        <title>MusicSheet Studio – AI Guitar Tab & Notation Generator</title>
+        <meta name="description" content="Convert your guitar recordings into accurate sheet music, tabs, and chord charts with AI-powered transcription. Upload audio or YouTube links, get synchronized playback, and export MIDI, MusicXML, and TAB files." />
+        <meta property="og:title" content="MusicSheet Studio – AI Guitar Tab & Notation Generator" />
+        <meta property="og:description" content="Convert your guitar recordings into accurate sheet music, tabs, and chord charts with AI-powered transcription. Upload audio or YouTube links, get synchronized playback, and export MIDI, MusicXML, and TAB files." />
+        <meta property="og:image" content="https://yourdomain.com/og-image.jpg" />
+        <meta property="og:url" content="https://yourdomain.com/" />
+        <meta property="og:type" content="website" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="MusicSheet Studio – AI Guitar Tab & Notation Generator" />
+        <meta name="twitter:description" content="Convert your guitar recordings into accurate sheet music, tabs, and chord charts with AI-powered transcription." />
+        <meta name="twitter:image" content="https://yourdomain.com/og-image.jpg" />
+        <link rel="canonical" href="https://yourdomain.com/" />
+      </Helmet>
+      <main className="landing-page">
       <section className="landing-hero cinematic-hero" ref={heroRef}>
         <div className="hero-background-depth" aria-hidden="true">
           <span className="hero-ambient-glow" />
@@ -953,6 +969,7 @@ const LandingPage = () => {
         </div>
       </section>
     </main>
+    </>
   );
 };
 

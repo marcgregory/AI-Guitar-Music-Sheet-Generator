@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Icon } from "../Icon";
 import { AuthStudioShell } from "./AuthStudioShell";
 import { useAuth } from "./AuthContext";
+import { Helmet } from 'react-helmet-async';
 
 const Register: React.FC = () => {
   const { login } = useAuth();
@@ -102,6 +103,21 @@ const Register: React.FC = () => {
   };
 
   return (
+    <>
+      <Helmet>
+        <title>Register – MusicSheet Studio</title>
+        <meta name="description" content="Create your MusicSheet Studio account to start converting guitar recordings into sheet music, tabs, and chord charts." />
+        <meta property="og:title" content="Register – MusicSheet Studio" />
+        <meta property="og:description" content="Create your MusicSheet Studio account to start converting guitar recordings into sheet music, tabs, and chord charts." />
+        <meta property="og:image" content="https://yourdomain.com/og-image.jpg" />
+        <meta property="og:url" content="https://yourdomain.com/register" />
+        <meta property="og:type" content="website" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="Register – MusicSheet Studio" />
+        <meta name="twitter:description" content="Create your MusicSheet Studio account to start converting guitar recordings into sheet music, tabs, and chord charts." />
+        <meta name="twitter:image" content="https://yourdomain.com/og-image.jpg" />
+        <link rel="canonical" href="https://yourdomain.com/register" />
+      </Helmet>
     <AuthStudioShell
       eyebrow="Guitar AI Studio"
       formTitle="Create account"
@@ -234,6 +250,7 @@ const Register: React.FC = () => {
           </div>
         </form>
     </AuthStudioShell>
+    </>
   );
 };
 

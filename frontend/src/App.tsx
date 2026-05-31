@@ -11,6 +11,7 @@ import AdminJobsDashboard from './components/admin/AdminJobsDashboard';
 import LandingPage from './components/LandingPage';
 import { AppShell, PublicShell } from './components/SiteNav';
 import MotionDirector from './components/MotionDirector';
+import { HelmetProvider } from 'react-helmet-async';
 import './App.css';
 
 const PrivateRoute = ({ children }: { children: ReactNode }) => {
@@ -42,20 +43,22 @@ const UnknownRoute = () => {
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <MotionDirector />
-        <Routes>
-          <Route path="/" element={<HomeRoute />} />
-          <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
-          <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
-          <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
-          <Route path="/upload" element={<PrivateRoute><AudioUpload /></PrivateRoute>} />
-          <Route path="/processing/:transcriptionId" element={<PrivateRoute><ProcessingStatus /></PrivateRoute>} />
-          <Route path="/transcription/:transcriptionId" element={<PrivateRoute><TranscriptionViewer /></PrivateRoute>} />
-          <Route path="/admin/jobs" element={<PrivateRoute><AdminJobsDashboard /></PrivateRoute>} />
-          <Route path="*" element={<UnknownRoute />} />
-        </Routes>
-      </BrowserRouter>
+      <HelmetProvider>
+        <BrowserRouter>
+          <MotionDirector />
+          <Routes>
+            <Route path="/" element={<HomeRoute />} />
+            <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
+            <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
+            <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+            <Route path="/upload" element={<PrivateRoute><AudioUpload /></PrivateRoute>} />
+            <Route path="/processing/:transcriptionId" element={<PrivateRoute><ProcessingStatus /></PrivateRoute>} />
+            <Route path="/transcription/:transcriptionId" element={<PrivateRoute><TranscriptionViewer /></PrivateRoute>} />
+            <Route path="/admin/jobs" element={<PrivateRoute><AdminJobsDashboard /></PrivateRoute>} />
+            <Route path="*" element={<UnknownRoute />} />
+          </Routes>
+        </BrowserRouter>
+      </HelmetProvider>
     </AuthProvider>
   );
 }

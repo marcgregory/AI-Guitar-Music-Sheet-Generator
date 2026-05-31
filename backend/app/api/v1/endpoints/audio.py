@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel
 from urllib.parse import parse_qs, urlsplit
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 import random
 
 from .... import db, core, models
@@ -30,6 +31,11 @@ from ....services.audio_source_resolver import (
     resolve_generate_tab_audio_source,
 )
 from ....services.tablature import tablature_to_ascii_tab
+from ....services.usage_limits import (
+    current_utc_day_start,
+    user_daily_usage_count,
+    user_usage_summary,
+)
 from ....celery import celery_app
 
 # Schema for YouTube URL request
@@ -60,9 +66,11 @@ TERMINAL_TRANSCRIPTION_STATUSES = (
 )
 ESTIMATED_SECONDS_PER_SELECTED_STEM_JOB = 300
 DEMO_AUDIO_URL = "/demo/example-guitar-riff.wav"
+CELERY_INSPECT_FAILURE_LOG_COOLDOWN_SECONDS = 30.0
+_last_celery_inspect_failure_log_at: float | None = None
 STEM_READY_MESSAGE = "Stem is ready. Listen first, then generate tabs if the stem sounds useful."
-YOUTUBE_COOKIE_REJECTED_DETAIL = (
-    "Cookies were loaded, but YouTube rejected them. Re-export fresh cookies, add YOUTUBE_PO_TOKEN, or upload audio directly."
+YOUTUBE_REJECTED_REQUEST_DETAIL = (
+    "YouTube rejected this request. Please upload the audio directly or refresh cookies/PO token."
 )
 YOUTUBE_COOKIES_MALFORMED_DETAIL = (
     "YOUTUBE_COOKIES is configured but is not valid Netscape cookie format."
@@ -79,11 +87,10 @@ IMPORTANT_YOUTUBE_COOKIE_NAMES = {
     "VISITOR_INFO1_LIVE",
 }
 LOW_YOUTUBE_COOKIE_COUNT_THRESHOLD = 3
-DEFAULT_YOUTUBE_PLAYER_CLIENTS = ("default", "mweb")
+DEFAULT_YOUTUBE_PLAYER_CLIENT = None
 ACTIVE_JOB_LIMIT_DETAIL = (
     "You already have a transcription job in progress. Please wait for it to finish before starting another."
 )
-DAILY_JOB_LIMIT_DETAIL = "Daily processing limit reached. Please try again tomorrow."
 
 # Define the upload directory relative to the backend package so the location is
 # stable whether uvicorn is launched from the repo root or from backend/.
@@ -1035,12 +1042,21 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
 
 
 def _active_celery_task_ids() -> set[str] | None:
+    global _last_celery_inspect_failure_log_at
     try:
         active = celery_app.control.inspect(timeout=1.0).active() or {}
     except Exception as exc:
-        logger.info("Could not inspect active Celery tasks during stale cleanup: %s", exc)
+        now = monotonic()
+        if (
+            _last_celery_inspect_failure_log_at is None
+            or now - _last_celery_inspect_failure_log_at
+            >= CELERY_INSPECT_FAILURE_LOG_COOLDOWN_SECONDS
+        ):
+            logger.info("Could not inspect active Celery tasks during stale cleanup: %s", exc)
+            _last_celery_inspect_failure_log_at = now
         return None
 
+    _last_celery_inspect_failure_log_at = None
     task_ids: set[str] = set()
     for tasks in active.values():
         for task in tasks or []:
@@ -1052,27 +1068,14 @@ def _active_celery_task_ids() -> set[str] | None:
 
 def _cleanup_stale_active_transcription_jobs(db_session: Session) -> int:
     cutoff = _stale_active_cutoff()
-    active_task_ids = set() if _processing_mode() == "modal" else _active_celery_task_ids()
     active_jobs = (
         db_session.query(models.Transcription)
         .filter(models.Transcription.is_deleted == False)
         .filter(models.Transcription.processing_status.in_(ACTIVE_TRANSCRIPTION_STATUSES))
         .all()
     )
-    stale_jobs = []
+    stale_candidates = []
     for transcription in active_jobs:
-        if (
-            active_task_ids is not None
-            and transcription.celery_task_id
-            and str(transcription.celery_task_id) in active_task_ids
-        ):
-            logger.info(
-                "Skipping stale cleanup for transcription %s because Celery task %s is active",
-                transcription.id,
-                transcription.celery_task_id,
-            )
-            continue
-
         last_activity = (
             _as_aware_utc(transcription.modal_dispatched_at)
             or _as_aware_utc(transcription.updated_at)
@@ -1086,7 +1089,40 @@ def _cleanup_stale_active_transcription_jobs(db_session: Session) -> int:
             continue
         if last_activity >= cutoff:
             continue
+        stale_candidates.append(transcription)
+    if not stale_candidates:
+        return 0
+
+    processing_mode = _processing_mode()
+    active_task_ids: set[str] | None = set()
+    if processing_mode != "modal" and any(job.celery_task_id for job in stale_candidates):
+        active_task_ids = _active_celery_task_ids()
+
+    stale_jobs = []
+    for transcription in stale_candidates:
+        if not transcription.celery_task_id:
+            stale_jobs.append(transcription)
+            continue
+
+        task_id = str(transcription.celery_task_id)
+        if active_task_ids is None:
+            logger.info(
+                "Skipping stale cleanup for transcription %s because Celery task %s could not be inspected",
+                transcription.id,
+                transcription.celery_task_id,
+            )
+            continue
+
+        if task_id in active_task_ids:
+            logger.info(
+                "Skipping stale cleanup for transcription %s because Celery task %s is active",
+                transcription.id,
+                transcription.celery_task_id,
+            )
+            continue
+
         stale_jobs.append(transcription)
+
     if not stale_jobs:
         return 0
 
@@ -2370,17 +2406,11 @@ def _user_active_usage_job_count(
 
 
 def _current_utc_day_start() -> datetime:
-    now = datetime.now(timezone.utc)
-    return datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    return current_utc_day_start()
 
 
 def _user_daily_usage_count(db_session: Session, user_id: int) -> int:
-    return (
-        db_session.query(models.UsageEvent.id)
-        .filter(models.UsageEvent.user_id == user_id)
-        .filter(models.UsageEvent.created_at >= _current_utc_day_start())
-        .count()
-    )
+    return user_daily_usage_count(db_session, user_id)
 
 
 def _enforce_usage_limits(
@@ -2409,7 +2439,11 @@ def _enforce_usage_limits(
     if daily_limit > 0 and _user_daily_usage_count(db_session, current_user.id) >= daily_limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=DAILY_JOB_LIMIT_DETAIL,
+            detail={
+                "error": "Daily processing limit reached.",
+                "message": "Your daily processing attempts are used. Quota resets at 00:00 UTC.",
+                "usage": user_usage_summary(db_session, current_user.id),
+            },
         )
 
 
@@ -2863,6 +2897,7 @@ def _build_youtube_download_options(
     """Build yt-dlp options using a simple filename template for Windows."""
     options = {
         'format': 'bestaudio/best',
+        'noplaylist': True,
         'paths': {'home': str(UPLOAD_DIR)},
         'outtmpl': {'default': f'{unique_filename}.%(ext)s'},
         'postprocessors': [{
@@ -2890,27 +2925,19 @@ def _build_youtube_download_options(
     return options
 
 
-def _split_env_list(value: str | None) -> list[str]:
-    if not value:
-        return []
-    return [item.strip() for item in re.split(r"[,;\s]+", value) if item.strip()]
-
-
 def _build_youtube_extractor_args() -> dict[str, list[str]]:
-    extractor_args: dict[str, list[str]] = {}
-    po_tokens = _split_env_list(core.config.settings.YOUTUBE_PO_TOKEN)
+    extractor_args = {}
+    player_client = (core.config.settings.YOUTUBE_PLAYER_CLIENT or "").strip()
+    if player_client:
+        extractor_args["player_client"] = [player_client]
+    po_token = (core.config.settings.YOUTUBE_PO_TOKEN or "").strip()
+    if po_token:
+        extractor_args["po_token"] = [po_token]
     visitor_data = (core.config.settings.YOUTUBE_VISITOR_DATA or "").strip()
-    player_clients = _split_env_list(core.config.settings.YOUTUBE_PLAYER_CLIENTS)
-
-    if po_tokens:
-        extractor_args["po_token"] = po_tokens
     if visitor_data:
         extractor_args["visitor_data"] = [visitor_data]
-    if po_tokens or visitor_data:
-        extractor_args["player_client"] = player_clients or list(DEFAULT_YOUTUBE_PLAYER_CLIENTS)
-    elif player_clients:
-        extractor_args["player_client"] = player_clients
 
+    logger.info(f"youtube_extractor_args_enabled={bool(extractor_args)}")
     return extractor_args
 
 
@@ -3186,6 +3213,90 @@ def _youtube_verification_detail() -> str:
     )
 
 
+def _log_youtube_download_attempt(
+    *,
+    cookies_loaded: bool,
+    retry_without_cookies: bool,
+) -> None:
+    logger.info(
+        "yt-dlp download attempt cookies_loaded=%s po_token_configured=%s "
+        "yt_dlp_version=%s retry_without_cookies=%s",
+        cookies_loaded,
+        bool((core.config.settings.YOUTUBE_PO_TOKEN or "").strip()),
+        _get_ytdlp_version(),
+        retry_without_cookies,
+    )
+
+
+def _log_youtube_debug_options(yt_dlp_opts: dict, cookiefile: str | None) -> None:
+    extractor_args = yt_dlp_opts.get("extractor_args") or {}
+    youtube_args = extractor_args.get("youtube") if isinstance(extractor_args, dict) else None
+    player_client = None
+    po_token_configured = bool((core.config.settings.YOUTUBE_PO_TOKEN or "").strip())
+    if not po_token_configured and isinstance(youtube_args, dict):
+        player_client_values = youtube_args.get("player_client")
+        if player_client_values:
+            player_client = ",".join(str(value) for value in player_client_values)
+
+    logger.warning(
+        "youtube_debug format=%s cookiefile=%s extractor_args_enabled=%s "
+        "player_client=%s outtmpl=%s postprocessors_enabled=%s",
+        yt_dlp_opts.get("format"),
+        bool(cookiefile),
+        bool(extractor_args),
+        player_client,
+        yt_dlp_opts.get("outtmpl"),
+        bool(yt_dlp_opts.get("postprocessors")),
+    )
+
+
+def _run_youtube_download_attempt(
+    *,
+    youtube_url: str,
+    unique_filename: str,
+    ffmpeg_path: str | None,
+    cookiefile: str | None,
+    retry_without_cookies: bool,
+) -> str:
+    yt_dlp_opts = _build_youtube_download_options(unique_filename, ffmpeg_path, cookiefile)
+    _log_youtube_download_attempt(
+        cookies_loaded=bool(cookiefile),
+        retry_without_cookies=retry_without_cookies,
+    )
+    logger.info("yt-dlp output directory: %s", UPLOAD_DIR)
+    logger.info("yt-dlp output template: %s", yt_dlp_opts["outtmpl"])
+    logger.info("ffmpeg_path: %s", ffmpeg_path)
+
+    _log_youtube_debug_options(yt_dlp_opts, cookiefile)
+    with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
+        info_dict = ydl.extract_info(youtube_url, download=True)
+        return info_dict.get("title", "YouTube Audio") if info_dict else "YouTube Audio"
+
+
+def _resolve_youtube_downloaded_audio_path(unique_filename: str) -> Path:
+    expected_audio_file_path = UPLOAD_DIR / f"{unique_filename}.wav"
+    logger.info("yt-dlp expected output path: %s", expected_audio_file_path)
+
+    if expected_audio_file_path.exists():
+        return expected_audio_file_path
+
+    # Sometimes yt-dlp keeps the original extension. Check common audio types.
+    for ext in ["wav", "mp3", "webm", "opus", "m4a", "ogg"]:
+        candidate = UPLOAD_DIR / f"{unique_filename}.{ext}"
+        if candidate.exists():
+            return candidate
+
+    existing = list(UPLOAD_DIR.glob(f"{unique_filename}.*"))
+    logger.error(
+        "Expected audio file not found. Files matching pattern: %s",
+        existing,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to extract audio from YouTube URL. No output file found.",
+    )
+
+
 @router.post("/youtube", response_model=schemas.TranscriptionInDB)
 async def extract_audio_from_youtube(
     request: YouTubeUploadRequest,
@@ -3252,11 +3363,6 @@ async def extract_audio_from_youtube(
 
     # Keep yt-dlp's template as a plain filename; paths.home carries the directory.
     youtube_cookiefile = _get_youtube_cookiefile()
-    yt_dlp_opts = _build_youtube_download_options(unique_filename, ffmpeg_path, youtube_cookiefile.path)
-
-    logger.info(f"yt-dlp output directory: {UPLOAD_DIR}")
-    logger.info(f"yt-dlp output template: {yt_dlp_opts['outtmpl']}")
-    logger.info(f"ffmpeg_path: {ffmpeg_path}")
     logger.info(
         "yt-dlp cookies configured: %s source=%s",
         youtube_cookiefile.loaded,
@@ -3266,20 +3372,43 @@ async def extract_audio_from_youtube(
     video_title = "YouTube Audio"
 
     try:
-        # Download and extract audio in a single pass
         try:
-            with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
-                info_dict = ydl.extract_info(youtube_url, download=True)
-                video_title = info_dict.get('title', 'YouTube Audio') if info_dict else 'YouTube Audio'
+            video_title = _run_youtube_download_attempt(
+                youtube_url=youtube_url,
+                unique_filename=unique_filename,
+                ffmpeg_path=ffmpeg_path,
+                cookiefile=youtube_cookiefile.path,
+                retry_without_cookies=False,
+            )
+        except Exception as first_error:
+            should_retry_without_cookies = (
+                youtube_cookiefile.loaded and _is_youtube_verification_error(first_error)
+            )
+            if not should_retry_without_cookies:
+                raise
+            logger.warning(
+                "yt-dlp cookie attempt rejected by YouTube; retrying once without cookies."
+            )
+            try:
+                video_title = _run_youtube_download_attempt(
+                    youtube_url=youtube_url,
+                    unique_filename=unique_filename,
+                    ffmpeg_path=ffmpeg_path,
+                    cookiefile=None,
+                    retry_without_cookies=True,
+                )
+            except Exception as retry_error:
+                if _is_youtube_verification_error(retry_error):
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=YOUTUBE_REJECTED_REQUEST_DETAIL,
+                    ) from retry_error
+                raise
         finally:
             if youtube_cookiefile.cleanup and youtube_cookiefile.path:
                 _delete_local_file(youtube_cookiefile.path)
 
-        expected_audio_file_path = UPLOAD_DIR / f"{unique_filename}.wav"
-        logger.info("yt-dlp expected output path: %s", expected_audio_file_path)
-
-        # After download, the file should be at the resolved path
-        audio_file_path = expected_audio_file_path
+        audio_file_path = _resolve_youtube_downloaded_audio_path(unique_filename)
 
         # Check if the file exists
         if not audio_file_path.exists():
@@ -3311,11 +3440,7 @@ async def extract_audio_from_youtube(
         if _is_youtube_verification_error(e):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    YOUTUBE_COOKIE_REJECTED_DETAIL
-                    if youtube_cookiefile.loaded
-                    else _youtube_verification_detail()
-                ),
+                detail=YOUTUBE_REJECTED_REQUEST_DETAIL,
             ) from e
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -3326,11 +3451,7 @@ async def extract_audio_from_youtube(
         if _is_youtube_verification_error(e):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    YOUTUBE_COOKIE_REJECTED_DETAIL
-                    if youtube_cookiefile.loaded
-                    else _youtube_verification_detail()
-                ),
+                detail=YOUTUBE_REJECTED_REQUEST_DETAIL,
             ) from e
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

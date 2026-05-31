@@ -16,8 +16,13 @@ import {
   Video,
 } from "lucide-react";
 import audioService, {
+  DAILY_LIMIT_QUEUE_EMPTY_MESSAGE,
+  getDailyProcessingLimitMessage,
+  getDailyProcessingLimitUsage,
+  isDailyProcessingLimitError,
   type StemSelection,
   type Transcription,
+  type UserUsage,
 } from "../services/audioService";
 import { getStemLimitationNotice } from "../utils/transcriptionMetadata";
 import { useAuth } from "./auth/AuthContext";
@@ -41,6 +46,8 @@ const AudioUpload: React.FC = () => {
     useState(true);
   const [processingSlotBusy, setProcessingSlotBusy] = useState(false);
   const [isCheckingSlot, setIsCheckingSlot] = useState(false);
+  const [usage, setUsage] = useState<UserUsage | null>(null);
+  const [isUsageLoading, setIsUsageLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -205,7 +212,32 @@ const AudioUpload: React.FC = () => {
     loadActiveTranscriptions();
   }, [loadActiveTranscriptions]);
 
+  const loadUsage = useCallback(async () => {
+    if (!token) {
+      setUsage(null);
+      setIsUsageLoading(false);
+      return;
+    }
+
+    setIsUsageLoading(true);
+    try {
+      const response = await audioService.getMyUsage(token);
+      setUsage(response);
+    } catch {
+      setUsage(null);
+    } finally {
+      setIsUsageLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void loadUsage();
+  }, [loadUsage]);
+
   const fallbackErrorMessage = (err: any, fallback: string): string => {
+    if (isDailyProcessingLimitError(err)) {
+      return getDailyProcessingLimitMessage(err) ?? DAILY_LIMIT_QUEUE_EMPTY_MESSAGE;
+    }
     const detail = err.response?.data?.detail;
     if (typeof detail === "string") return detail;
     if (
@@ -216,6 +248,24 @@ const AudioUpload: React.FC = () => {
       return detail.error;
     }
     return err.message || fallback;
+  };
+
+  const isQuotaExhausted =
+    usage !== null &&
+    !usage.is_unlimited &&
+    usage.remaining_quota !== null &&
+    usage.remaining_quota <= 0;
+
+  const quotaBlockedMessage =
+    "Your daily processing attempts are used. Quota resets at 00:00 UTC.";
+
+  const handleDailyLimitError = async (err: unknown) => {
+    const structuredUsage = getDailyProcessingLimitUsage(err);
+    if (structuredUsage) {
+      setUsage(structuredUsage);
+      return;
+    }
+    await loadUsage();
   };
 
   const showProcessingSlotBusy = () => {
@@ -308,6 +358,11 @@ const AudioUpload: React.FC = () => {
       return;
     }
 
+    if (isQuotaExhausted) {
+      setError(quotaBlockedMessage);
+      return;
+    }
+
     setIsUploading(true);
     setUploadProgress(0);
     setError(null);
@@ -329,6 +384,7 @@ const AudioUpload: React.FC = () => {
           response.duplicate_message ||
             "This song and stem were already processed. Existing result was loaded.",
         );
+        void loadUsage();
         setTimeout(() => {
           navigate(`/transcription/${response.id}`);
         }, 1200);
@@ -341,11 +397,15 @@ const AudioUpload: React.FC = () => {
       setTimeout(() => {
         navigate(`/processing/${response.id}`);
       }, 1500);
+      void loadUsage();
     } catch (err: any) {
       setUploadProgress(0);
       if (err.response?.status === 409) {
         showProcessingSlotBusy();
       } else {
+        if (isDailyProcessingLimitError(err)) {
+          void handleDailyLimitError(err);
+        }
         setError(fallbackErrorMessage(err, "Upload failed. Please try again."));
       }
     } finally {
@@ -376,6 +436,11 @@ const AudioUpload: React.FC = () => {
       return;
     }
 
+    if (isQuotaExhausted) {
+      setError(quotaBlockedMessage);
+      return;
+    }
+
     const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
     if (!youtubeRegex.test(youtubeUrl)) {
       setError("Please enter a valid YouTube URL");
@@ -399,6 +464,7 @@ const AudioUpload: React.FC = () => {
           response.duplicate_message ||
             "This song and stem were already processed. Existing result was loaded.",
         );
+        void loadUsage();
         setTimeout(() => {
           navigate(`/transcription/${response.id}`);
         }, 1200);
@@ -411,11 +477,15 @@ const AudioUpload: React.FC = () => {
       setTimeout(() => {
         navigate(`/processing/${response.id}`);
       }, 1500);
+      void loadUsage();
     } catch (err: any) {
       setUploadProgress(0);
       if (err.response?.status === 409) {
         showProcessingSlotBusy();
       } else {
+        if (isDailyProcessingLimitError(err)) {
+          void handleDailyLimitError(err);
+        }
         setError(
           fallbackErrorMessage(
             err,
@@ -450,17 +520,19 @@ const AudioUpload: React.FC = () => {
       ? `${Math.round(Math.max(0, Math.min(100, uploadProgress)))}%`
       : null;
   const fileUploadStatusDetail = uploadPercentLabel ?? "We'll handle the rest";
-  const fileUploadDisabled =
+  const fileBrowseDisabled =
     isUploading ||
     isActiveTranscriptionLoading ||
     processingSlotBusy ||
     !selectedStem;
+  const fileUploadDisabled = fileBrowseDisabled || isQuotaExhausted;
   const youtubeSubmitDisabled =
     isUploading ||
     !youtubeUrl.trim() ||
     isActiveTranscriptionLoading ||
     processingSlotBusy ||
-    !selectedStem;
+    !selectedStem ||
+    isQuotaExhausted;
 
   return (
     <div className="audio-upload-container" ref={rootRef}>
@@ -520,6 +592,10 @@ const AudioUpload: React.FC = () => {
                   </p>
                 </div>
               )}
+              <UsageQuotaNotice
+                usage={usage}
+                isLoading={isUsageLoading}
+              />
               <StemSelector
                 selectedStem={selectedStem}
                 onSelect={(stem) => {
@@ -553,7 +629,7 @@ const AudioUpload: React.FC = () => {
                     onClick={() =>
                       document.getElementById("file-input")?.click()
                     }
-                    disabled={fileUploadDisabled}
+                    disabled={fileBrowseDisabled}
                   >
                     <Folder aria-hidden="true" />
                     Browse files
@@ -701,6 +777,65 @@ const AudioUpload: React.FC = () => {
         )}
       </section>
     </div>
+  );
+};
+
+const formatUtcResetTime = (value: string | null): string => {
+  if (!value) return "00:00";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "00:00";
+  const hours = String(date.getUTCHours()).padStart(2, "0");
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+};
+
+const UsageQuotaNotice = ({
+  usage,
+  isLoading,
+}: {
+  usage: UserUsage | null;
+  isLoading: boolean;
+}) => {
+  if (isLoading) {
+    return (
+      <section className="usage-quota-card is-loading" aria-live="polite">
+        <Clock3 aria-hidden="true" />
+        <div>
+          <strong>Checking daily processing quota</strong>
+          <span>Confirming today&apos;s available attempts.</span>
+        </div>
+      </section>
+    );
+  }
+
+  if (!usage) return null;
+
+  if (usage.is_unlimited) {
+    return (
+      <section className="usage-quota-card is-unlimited" aria-live="polite">
+        <ShieldCheck aria-hidden="true" />
+        <div>
+          <strong>Unlimited daily processing</strong>
+          <span>Processing attempts are not capped today.</span>
+        </div>
+      </section>
+    );
+  }
+
+  const remaining = usage.remaining_quota ?? 0;
+  const tone = remaining === 0 ? "is-exhausted" : remaining === 1 ? "is-warning" : "";
+
+  return (
+    <section className={`usage-quota-card ${tone}`} aria-live="polite">
+      <Clock3 aria-hidden="true" />
+      <div>
+        <strong>
+          {usage.usage_count} of {usage.daily_limit} daily processing attempts used
+        </strong>
+        <span>{remaining} remaining today</span>
+        <small>Resets at {formatUtcResetTime(usage.resets_at)} UTC</small>
+      </div>
+    </section>
   );
 };
 

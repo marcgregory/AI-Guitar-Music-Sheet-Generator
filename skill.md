@@ -691,3 +691,66 @@ Implement a shared strict resolver so manual `bass`/`other` TAB generation can o
   - `python -m pytest backend/tests/test_music_output_services.py`
   - `python -m pytest backend/tests/test_audio_list_endpoint.py`
   - focused Vitest for `TranscriptionViewer.test.tsx`
+
+# Structured Daily Quota 429 Payloads
+
+## Summary
+
+Implement structured 429 payloads for daily quota exhaustion only. Preserve active-job/concurrency 429 responses exactly as they are.
+
+## Backend Changes
+
+- In `_enforce_usage_limits`, change only the daily quota failure branch to raise:
+  ```python
+  HTTPException(
+      status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+      detail={
+          "error": "Daily processing limit reached.",
+          "message": "Your daily processing attempts are used. Quota resets at 00:00 UTC.",
+          "usage": user_usage_summary(db_session, current_user.id),
+      },
+  )
+  ```
+- Import and reuse `user_usage_summary(...)`.
+- Do not change `ACTIVE_JOB_LIMIT_DETAIL` behavior.
+- Preserve unlimited behavior: `daily_limit == 0` must not raise daily quota 429.
+
+## Frontend Changes
+
+- Update `isDailyProcessingLimitError` to detect both:
+  - old string detail containing `Daily processing limit reached`
+  - new object detail with `error: "Daily processing limit reached."`
+- Add safe helpers in `audioService` to extract structured quota detail and usage.
+- In `AudioUpload`, when a daily quota 429 occurs:
+  - prefer `detail.message` for the visible error
+  - if `detail.usage` exists, immediately update quota state from it
+  - otherwise keep existing refetch fallback
+
+## Tests
+
+- Backend:
+  - Structured daily-limit `detail`
+  - `usage.remaining_quota === 0`
+  - `usage.resets_at` exists for limited users
+  - rejected actions do not increment usage events
+  - active-job/concurrency 429 remains plain string
+- Frontend:
+  - old and new 429 formats are recognized
+  - structured message appears in upload UI
+  - structured usage updates quota state immediately
+  - old string fallback still works
+
+## Verification
+
+Run:
+
+```bash
+python -m pytest tests\test_usage_limits.py
+npm test -- --run src/services/audioService.test.ts src/components/AudioUpload.test.tsx
+npm run build
+```
+
+## Assumptions
+
+- No database migration is needed.
+- Backend remains authoritative; frontend quota state is advisory.

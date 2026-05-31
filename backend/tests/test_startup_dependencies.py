@@ -12,9 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 def test_startup_health_uses_local_processing_by_default(caplog):
     main = importlib.import_module("main")
+    original_admin_token = main.settings.ADMIN_API_TOKEN
+    main.settings.ADMIN_API_TOKEN = None
 
-    with caplog.at_level(logging.INFO), TestClient(main.app) as client:
-        response = client.get("/health")
+    try:
+        with caplog.at_level(logging.INFO), TestClient(main.app) as client:
+            response = client.get("/health")
+    finally:
+        main.settings.ADMIN_API_TOKEN = original_admin_token
 
     assert response.status_code == 200
     assert response.json() == {
@@ -30,9 +35,14 @@ def test_startup_health_uses_local_processing_by_default(caplog):
 
 def test_deployment_health_reports_safe_readiness_details():
     main = importlib.import_module("main")
+    original_admin_token = main.settings.ADMIN_API_TOKEN
+    main.settings.ADMIN_API_TOKEN = None
 
-    with TestClient(main.app) as client:
-        response = client.get("/health/deployment")
+    try:
+        with TestClient(main.app) as client:
+            response = client.get("/health/deployment")
+    finally:
+        main.settings.ADMIN_API_TOKEN = original_admin_token
 
     assert response.status_code == 200
     payload = response.json()
