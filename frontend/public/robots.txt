@@ -12,4 +12,4 @@ Disallow: /transcription
 Disallow: /admin
 
 # Sitemap location
-Sitemap: https://ai-guitar-music-sheet-generator-sta.vercel.app/sitemap.xml
+Sitemap: https://musicsheetstudio.vercel.app/sitemap.xml
